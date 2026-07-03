@@ -13,5 +13,8 @@ struct PokePartyApp: App {
         WindowGroup {
             ContentView()
         }
+        // Keep the window from shrinking smaller than its content needs,
+        // so panes can't be cut off.
+        .windowResizability(.contentMinSize)
     }
 }
