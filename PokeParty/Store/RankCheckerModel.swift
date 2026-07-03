@@ -19,9 +19,28 @@ final class RankCheckerModel {
     var levelCap: Double = 50
 
     /// IVs clamped to the valid 0–15 range.
-    var atk: Int = 15 { didSet { atk = clamp(atk) } }
-    var def: Int = 15 { didSet { def = clamp(def) } }
-    var hp: Int = 15 { didSet { hp = clamp(hp) } }
+    ///
+    /// Clamping happens in the setters rather than in a `didSet`: under the
+    /// `@Observable` macro these become computed properties, so assigning to
+    /// them inside their own `didSet` re-enters the synthesized setter and
+    /// recurses infinitely. The private stored backing properties are still
+    /// tracked by observation.
+    var atk: Int {
+        get { atkStorage }
+        set { atkStorage = clamp(newValue) }
+    }
+    var def: Int {
+        get { defStorage }
+        set { defStorage = clamp(newValue) }
+    }
+    var hp: Int {
+        get { hpStorage }
+        set { hpStorage = clamp(newValue) }
+    }
+
+    private var atkStorage: Int = 15
+    private var defStorage: Int = 15
+    private var hpStorage: Int = 15
 
     var ivs: IVs { IVs(atk: atk, def: def, hp: hp) }
 

@@ -93,28 +93,11 @@ struct PokemonDetailView: View {
         .onChange(of: charged2Id) { simulated = nil }
     }
 
-    private func moveName(_ id: String) -> String {
-        store.move(id: id)?.name ?? id.replacingOccurrences(of: "_", with: " ").capitalized
-    }
-
     // MARK: - Live simulation controls
 
     @ViewBuilder
     private var simulateSection: some View {
         Section {
-            if let pokemon {
-                Picker("Fast Move", selection: $fastMoveId) {
-                    ForEach(pokemon.fastMoves, id: \.self) { Text(moveName($0)).tag($0) }
-                }
-                Picker("Charged 1", selection: $charged1Id) {
-                    ForEach(pokemon.chargedMoves, id: \.self) { Text(moveName($0)).tag($0) }
-                }
-                Picker("Charged 2", selection: $charged2Id) {
-                    Text("None").tag("")
-                    ForEach(pokemon.chargedMoves, id: \.self) { Text(moveName($0)).tag($0) }
-                }
-            }
-
             // Menu style, not segmented: segmented pickers inside a macOS List
             // emit "AttributeGraph: cycle detected" whenever the list re-lays-out.
             Picker("Your Shields", selection: $yourShields) {
@@ -238,16 +221,45 @@ struct PokemonDetailView: View {
 
     @ViewBuilder
     private var movesetSection: some View {
-        let moves = entry.moveset.compactMap { store.move(id: $0) }
-        Section("Recommended Moveset") {
-            if moves.isEmpty {
+        // Counts use the selected fast move, so they stay in sync with the moveset.
+        let fastEnergyGain = store.move(id: fastMoveId)?.energyGain
+        Section {
+            if let pokemon {
+                MoveSelectorRow(
+                    slot: "Fast",
+                    selection: $fastMoveId,
+                    optionIds: pokemon.fastMoves,
+                    recommendedId: entry.moveset.first,
+                    includesNone: false,
+                    fastEnergyGain: nil,
+                    store: store
+                )
+                MoveSelectorRow(
+                    slot: "Charged",
+                    selection: $charged1Id,
+                    optionIds: pokemon.chargedMoves,
+                    recommendedId: entry.moveset.count > 1 ? entry.moveset[1] : nil,
+                    includesNone: false,
+                    fastEnergyGain: fastEnergyGain,
+                    store: store
+                )
+                MoveSelectorRow(
+                    slot: "Charged",
+                    selection: $charged2Id,
+                    optionIds: pokemon.chargedMoves,
+                    recommendedId: entry.moveset.count > 2 ? entry.moveset[2] : nil,
+                    includesNone: true,
+                    fastEnergyGain: fastEnergyGain,
+                    store: store
+                )
+            } else {
                 Text("No moveset data available.")
                     .foregroundStyle(.secondary)
-            } else {
-                ForEach(moves) { move in
-                    MoveRow(move: move)
-                }
             }
+        } header: {
+            Text("Moveset")
+        } footer: {
+            Text("Tap a move to change it — the meta simulation below uses this moveset.")
         }
     }
 
@@ -293,34 +305,123 @@ struct PokemonDetailView: View {
     }
 }
 
-/// A single move with its type and PvPoke-colored power/energy stats.
-private struct MoveRow: View {
-    let move: Move
+/// An editable moveset slot: a menu to pick the move (with the recommended
+/// choice flagged and DPS/EPS shown per option) plus PvPoke-colored stat chips
+/// for the current selection.
+private struct MoveSelectorRow: View {
+    let slot: String
+    @Binding var selection: String
+    let optionIds: [String]
+    /// The PvPoke-recommended move for this slot, flagged in the menu.
+    let recommendedId: String?
+    /// Whether this slot offers a "None" choice (second charged move).
+    let includesNone: Bool
+    /// Energy gained per use of the selected fast move, used for charged-move counts.
+    let fastEnergyGain: Int?
+    let store: RankingsStore
+
+    private var move: Move? { store.move(id: selection) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(move.name)
-                    .font(.body.weight(.medium))
-                TypeBadge(type: move.type)
+                Menu {
+                    if includesNone {
+                        selectionButton(id: "", label: "None")
+                    }
+                    ForEach(optionIds, id: \.self) { id in
+                        selectionButton(id: id, label: optionLabel(id))
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(move?.name ?? "None")
+                            .font(.body.weight(.medium))
+                        if let move { TypeBadge(type: move.type) }
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
                 Spacer()
-                Text(move.isFast ? "Fast" : "Charged")
+                Text(slot)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
-            HStack(spacing: 8) {
-                MoveStat(label: "PWR", value: "\(move.power)", color: Theme.movePower)
-                if move.isFast {
-                    MoveStat(label: "NRG", value: "+\(move.energyGain)", color: Theme.moveEnergy)
-                    if let turns = move.turns {
-                        MoveStat(label: "TURNS", value: "\(turns)", color: Theme.moveDuration)
+            if let move {
+                HStack(spacing: 8) {
+                    MoveStat(label: "PWR", value: "\(move.power)", color: Theme.movePower,
+                             help: "Power — base damage this move deals before type effectiveness and stats.")
+                    if move.isFast {
+                        MoveStat(label: "NRG", value: "+\(move.energyGain)", color: Theme.moveEnergy,
+                                 help: "Energy gained — energy this fast move adds to your meter each use.")
+                        if let turns = move.turns {
+                            MoveStat(label: "TURNS", value: "\(turns)", color: Theme.moveDuration,
+                                     help: String(format: "Turns — duration in 0.5s battle turns (%d turns = %.1fs).", turns, Double(turns) * 0.5))
+                        }
+                    } else {
+                        MoveStat(label: "NRG", value: "\(move.energy)", color: Theme.moveEnergy,
+                                 help: "Energy cost — energy required to fire this charged move.")
+                        if let countText = countText(for: move) {
+                            MoveStat(label: "COUNT", value: countText, color: Theme.moveDuration,
+                                     help: "Count — fast moves needed to reach this move on each of the next 5 throws, carrying leftover energy between them.")
+                        }
                     }
-                } else {
-                    MoveStat(label: "NRG", value: "\(move.energy)", color: Theme.moveEnergy)
                 }
             }
         }
         .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func selectionButton(id: String, label: String) -> some View {
+        Button {
+            selection = id
+        } label: {
+            if id == selection {
+                Label(label, systemImage: "checkmark")
+            } else {
+                Text(label)
+            }
+        }
+    }
+
+    /// Menu label: move name, "(Recommended)" flag, and DPS/EPS (fast) or DPE (charged).
+    private func optionLabel(_ id: String) -> String {
+        guard let m = store.move(id: id) else { return id }
+        var name = m.name
+        if id == recommendedId { name += " (Recommended)" }
+        if m.isFast {
+            let turns = m.turns ?? max(m.cooldown / 500, 1)
+            let seconds = Double(turns) * 0.5
+            guard seconds > 0 else { return name }
+            let dps = Double(m.power) / seconds
+            let eps = Double(m.energyGain) / seconds
+            return String(format: "%@  ·  %d turns · %.1f DPS · %.1f EPS", name, turns, dps, eps)
+        } else if m.energy > 0 {
+            let dpe = Double(m.power) / Double(m.energy)
+            return String(format: "%@  ·  %d PWR · %.2f DPE", name, m.power, dpe)
+        }
+        return name
+    }
+
+    /// Fast-move counts to fire this charged move on each of the next 5 throws,
+    /// carrying leftover energy between throws. "Straight N" when every throw is
+    /// the same, otherwise a dash-separated series like "5 - 4 - 4 - 4 - 4".
+    private func countText(for move: Move) -> String? {
+        guard !move.isFast, let gain = fastEnergyGain, gain > 0, move.energy > 0 else { return nil }
+        var stored = 0
+        var counts: [Int] = []
+        for _ in 0..<5 {
+            let needed = max(0, move.energy - stored)
+            let fastMoves = Int((Double(needed) / Double(gain)).rounded(.up))
+            counts.append(fastMoves)
+            stored += fastMoves * gain - move.energy
+        }
+        if let first = counts.first, counts.allSatisfy({ $0 == first }) {
+            return "Straight \(first)"
+        }
+        return counts.map(String.init).joined(separator: " - ")
     }
 }
 
@@ -329,6 +430,8 @@ private struct MoveStat: View {
     let label: String
     let value: String
     let color: Color
+    /// Tooltip shown on hover (macOS) and surfaced to VoiceOver.
+    var help: String = ""
 
     var body: some View {
         HStack(spacing: 4) {
@@ -342,5 +445,6 @@ private struct MoveStat: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
         .background(color, in: Capsule())
+        .help(help)
     }
 }
