@@ -8,7 +8,7 @@
 import Foundation
 
 /// A Pokémon's static data: dex number, base stats, types and available moves.
-struct Pokemon: Decodable, Identifiable, Hashable {
+nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
     let dex: Int
     let speciesName: String
     let speciesId: String

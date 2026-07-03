@@ -12,7 +12,7 @@
 
 import Foundation
 
-enum MatchupSimulator {
+nonisolated enum MatchupSimulator {
 
     /// A combatant specification drawn from the app's data.
     struct Combatant {

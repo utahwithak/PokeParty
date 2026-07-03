@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum DamageCalculator {
+nonisolated enum DamageCalculator {
     /// Damage dealt by `move` from `attacker` to `defender` (charge defaults to 1).
     static func damage(_ attacker: BattlePokemon, _ defender: BattlePokemon, _ move: BattleMove, charge: Double = 1) -> Int {
         let effectiveness = defender.typeEffectiveness(for: move.type)

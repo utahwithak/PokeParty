@@ -10,7 +10,7 @@ import Foundation
 
 /// Reference type: the engine mutates `damage`, `dpe`, `stab`, and
 /// `buffApplyMeter` during simulation, matching PvPoke's mutable move objects.
-final class BattleMove {
+nonisolated final class BattleMove {
     let moveId: String
     let name: String
     let type: String

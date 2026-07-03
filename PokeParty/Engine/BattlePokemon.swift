@@ -8,7 +8,7 @@
 
 import Foundation
 
-final class BattlePokemon {
+nonisolated final class BattlePokemon {
     let speciesId: String
     let speciesName: String
     let types: [String]

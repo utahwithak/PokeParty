@@ -8,7 +8,7 @@
 
 import Foundation
 
-final class Battle {
+nonisolated final class Battle {
     private(set) var pokemon: [BattlePokemon]
     private(set) var turns = 1
     private(set) var time = 0

@@ -10,6 +10,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var store = RankingsStore()
     @State private var rankChecker = RankCheckerModel()
+    @State private var teamBuilder = TeamBuilderModel()
     @State private var selection: SidebarSelection = .format(.great)
     @State private var selectedEntryID: RankingEntry.ID?
 
@@ -42,6 +43,8 @@ struct ContentView: View {
             RankingsListView(store: store, selection: $selectedEntryID)
         case .rankChecker:
             RankCheckerInputView(store: store, model: rankChecker)
+        case .teamBuilder:
+            TeamBuilderView(store: store, model: teamBuilder)
         }
     }
 
@@ -61,6 +64,8 @@ struct ContentView: View {
             }
         case .rankChecker:
             RankCheckerResultsView(store: store, model: rankChecker)
+        case .teamBuilder:
+            TeamAnalysisView(store: store, model: teamBuilder)
         }
     }
 }

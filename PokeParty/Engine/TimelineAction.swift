@@ -7,7 +7,7 @@
 
 import Foundation
 
-final class TimelineAction {
+nonisolated final class TimelineAction {
     enum Kind: String { case fast, charged, wait }
 
     let type: Kind

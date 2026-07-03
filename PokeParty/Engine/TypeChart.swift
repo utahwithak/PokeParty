@@ -8,7 +8,7 @@
 import Foundation
 
 /// Damage multiplier constants (exactly as PvPoke defines them).
-enum DamageMultiplier {
+nonisolated enum DamageMultiplier {
     static let bonus = 1.2999999523162841796875
     static let superEffective = 1.60000002384185791015625
     static let resisted = 0.625
@@ -18,7 +18,7 @@ enum DamageMultiplier {
     static let shadowDef = 0.83333331
 }
 
-enum TypeChart {
+nonisolated enum TypeChart {
     struct Traits {
         var weaknesses: Set<String> = []
         var resistances: Set<String> = []

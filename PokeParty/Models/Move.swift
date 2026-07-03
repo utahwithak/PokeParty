@@ -10,7 +10,7 @@ import Foundation
 /// A single move. PvPoke stores fast and charged moves in the same list;
 /// fast moves have `energy == 0` (they generate energy via `energyGain`),
 /// while charged moves cost `energy` to use.
-struct Move: Decodable, Identifiable, Hashable {
+nonisolated struct Move: Decodable, Identifiable, Hashable {
     let moveId: String
     let name: String
     let type: String

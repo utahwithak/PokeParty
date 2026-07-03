@@ -11,6 +11,7 @@ import SwiftUI
 enum SidebarSelection: Hashable {
     case format(RankingFormat)
     case rankChecker
+    case teamBuilder
 }
 
 /// Sidebar listing tools, the core PvP leagues, and active cups (e.g. Summer Cup).
@@ -23,6 +24,8 @@ struct LeagueSidebar: View {
             Section("Tools") {
                 Label("Rank Checker", systemImage: "checklist")
                     .tag(SidebarSelection.rankChecker)
+                Label("Team Builder", systemImage: "person.3.sequence.fill")
+                    .tag(SidebarSelection.teamBuilder)
             }
 
             Section("Leagues") {

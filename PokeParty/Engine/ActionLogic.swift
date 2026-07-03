@@ -10,7 +10,7 @@
 import Foundation
 
 /// A state in the optimal move-sequence search.
-private final class BattleState {
+private nonisolated final class BattleState {
     var energy: Int
     var oppHealth: Int
     var turn: Int
@@ -24,7 +24,7 @@ private final class BattleState {
     }
 }
 
-enum ActionLogic {
+nonisolated enum ActionLogic {
 
     struct ShieldDecision { var value: Bool; var shieldWeight: Int; var noShieldWeight: Int }
 

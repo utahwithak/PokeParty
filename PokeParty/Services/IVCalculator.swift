@@ -10,14 +10,14 @@
 import Foundation
 
 /// A set of individual values (0–15 each).
-struct IVs: Hashable {
+nonisolated struct IVs: Hashable {
     var atk: Int
     var def: Int
     var hp: Int
 }
 
 /// A league/format for IV ranking, identified by its CP cap.
-enum CheckLeague: Int, CaseIterable, Identifiable {
+nonisolated enum CheckLeague: Int, CaseIterable, Identifiable {
     case little = 500
     case great = 1500
     case ultra = 2500
@@ -46,7 +46,7 @@ enum CheckLeague: Int, CaseIterable, Identifiable {
     }
 }
 
-enum IVCalculator {
+nonisolated enum IVCalculator {
 
     /// Combat Power Multipliers indexed by `(level - 1) * 2`, i.e. half-level
     /// steps from level 1 to 54.5. Verbatim from PvPoke's Pokemon.js.
