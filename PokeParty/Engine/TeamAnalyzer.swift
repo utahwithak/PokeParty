@@ -97,7 +97,7 @@ struct TeamAnalysis: Hashable {
 
 /// A meta Pokémon considered as a threat / teammate candidate. Sendable so the
 /// analysis can fan out across cores.
-struct MetaCandidate: Sendable, Hashable {
+nonisolated struct MetaCandidate: Sendable, Hashable {
     let species: Pokemon
     let shadow: Bool
     let fastMoveId: String
@@ -106,6 +106,10 @@ struct MetaCandidate: Sendable, Hashable {
     /// Whether this mon is "meta relevant" (drives PvPoke's 0.85 weighting).
     /// APPROX: we treat the top slice of the ranking list as the meta group.
     let metaRelevant: Bool
+    /// IV-optimal stats straight from the downloaded ranking data. When present we
+    /// use these instead of re-running the (expensive) IV optimizer — the single
+    /// biggest analysis speedup, and exactly what PvPoke does.
+    let precomputedStats: BattlePokemon.Stats?
 
     var combatant: MatchupSimulator.Combatant {
         .init(species: species, shadow: shadow,
@@ -146,6 +150,13 @@ enum TeamAnalyzer {
         return s
     }
 
+    /// A candidate's IV-optimal stats: the precomputed ones from the ranking data
+    /// when available, otherwise (rarely) computed on the fly. Avoiding the IV
+    /// optimizer here is the main analysis speedup.
+    private nonisolated static func stats(for cand: MetaCandidate, cpCap: Int) -> BattlePokemon.Stats? {
+        cand.precomputedStats ?? MatchupSimulator.optimalStats(for: cand.combatant, cpCap: cpCap)
+    }
+
     /// Analyze a team against the given meta. Runs off the main actor and fans
     /// the 1v1 sims out across all cores.
     ///
@@ -162,7 +173,10 @@ enum TeamAnalyzer {
         meta: [MetaCandidate],
         cpCap: Int,
         movesById: [String: Move],
-        shields: Int = 1
+        shields: Int = 1,
+        /// Each member's "switches" category score (same order as `team`); a nil
+        /// entry falls back to PvPoke's default of 60. Empty ⇒ Safety is provisional.
+        switchesScores: [Double?] = []
     ) async -> TeamAnalysis {
         let memberNames = team.map { $0.species.speciesName }
         let teamSpeciesIds = Set(team.map { $0.species.speciesId })
@@ -172,8 +186,7 @@ enum TeamAnalyzer {
         let threats = await withTaskGroup(of: ThreatEntry?.self) { group in
             for cand in meta {
                 group.addTask {
-                    guard let candStats = MatchupSimulator.optimalStats(
-                        for: cand.combatant, cpCap: cpCap) else { return nil }
+                    guard let candStats = stats(for: cand, cpCap: cpCap) else { return nil }
                     var ratings: [Int] = []
                     ratings.reserveCapacity(team.count)
                     for (i, member) in team.enumerated() {
@@ -252,17 +265,21 @@ enum TeamAnalyzer {
             : consistencyValues.reduce(0, +) / Double(consistencyValues.count)
         let consistency = LetterGrade.grade(value: consistencyValue, goal: 98)
 
-        // Safety: mean of members' "switches" category score. PROVISIONAL (plan
-        // §2.9 / M1.8) — we don't yet fetch the switches rankings, so use PvPoke's
-        // default of 60 for every member.
-        let safetyValue = 60.0
+        // Safety: mean of members' "switches" category score (PvPoke uses a default
+        // of 60 for any member without ranking data). Provisional only if we were
+        // given no switches data at all.
+        let hasSafetyData = !switchesScores.isEmpty
+        let safetyValues: [Double] = team.indices.map { i in
+            (i < switchesScores.count ? switchesScores[i] : nil) ?? 60
+        }
+        let safetyValue = safetyValues.isEmpty ? 60 : safetyValues.reduce(0, +) / Double(safetyValues.count)
         let safety = LetterGrade.grade(value: safetyValue, goal: 98)
 
         let grades = TeamGrades(
             coverage: coverage, bulk: bulk, safety: safety, consistency: consistency,
             coverageValue: coverageValue, bulkValue: bulkValue,
             safetyValue: safetyValue, consistencyValue: consistencyValue,
-            safetyProvisional: true)
+            safetyProvisional: !hasSafetyData)
 
         return TeamAnalysis(
             grades: grades,
@@ -290,9 +307,9 @@ enum TeamAnalyzer {
         var opponents: [Opp] = []
         for t in counterTeam {
             guard let cand = meta.first(where: { $0.species.speciesId == t.speciesId }),
-                  let stats = MatchupSimulator.optimalStats(for: cand.combatant, cpCap: cpCap)
+                  let oppStats = Self.stats(for: cand, cpCap: cpCap)
             else { continue }
-            opponents.append(Opp(combatant: cand.combatant, stats: stats))
+            opponents.append(Opp(combatant: cand.combatant, stats: oppStats))
         }
         guard !opponents.isEmpty else { return [] }
 
@@ -301,8 +318,7 @@ enum TeamAnalyzer {
                 if excludeSpecies.contains(cand.species.speciesId) { continue }
                 if let fam = cand.familyId, excludeFamilies.contains(fam) { continue }
                 group.addTask {
-                    guard let candStats = MatchupSimulator.optimalStats(
-                        for: cand.combatant, cpCap: cpCap) else { return nil }
+                    guard let candStats = stats(for: cand, cpCap: cpCap) else { return nil }
                     var scores: [Double] = []
                     scores.reserveCapacity(opponents.count)
                     for opp in opponents {

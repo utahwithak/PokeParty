@@ -505,5 +505,5 @@ nonisolated enum ActionLogic {
 }
 
 private extension Int {
-    var isNonZero: Bool { self != 0 }
+    nonisolated var isNonZero: Bool { self != 0 }
 }

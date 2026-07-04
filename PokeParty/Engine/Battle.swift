@@ -22,13 +22,24 @@ nonisolated final class Battle {
     private var roundChargedMoveUsed = 0
     private var roundShieldUsed = false
     private var usePriority = false
+    /// Clock offset the battle starts at. The 3v3 orchestrator passes the elapsed
+    /// time so consecutive segments share the single 240s battle limit; defaults to
+    /// 0 for standalone 1v1 battles.
+    private let startTime: Int
 
-    init(_ a: BattlePokemon, _ b: BattlePokemon) {
+    /// When true, a `BattleFrame` is captured at each key event (for the timeline
+    /// viewer). Off by default — keep it off in the analyzer/finder hot loops.
+    private let record: Bool
+    private var frames: [BattleFrame] = []
+
+    init(_ a: BattlePokemon, _ b: BattlePokemon, startTime: Int = 0, record: Bool = false) {
         a.index = 0
         b.index = 1
         a.setOpponent(b)
         b.setOpponent(a)
         pokemon = [a, b]
+        self.startTime = startTime
+        self.record = record
     }
 
     private func opponent(of i: Int) -> BattlePokemon { pokemon[i == 0 ? 1 : 0] }
@@ -45,12 +56,38 @@ nonisolated final class Battle {
     private func start() {
         for p in pokemon { p.reset() }
         usePriority = pokemon[0].stats.atk != pokemon[1].stats.atk
-        time = 0
+        time = startTime
         turns = 1
         lastProcessedTurn = 0
         queuedActions = []
         turnActions = []
         previousTurnActions = []
+        frames = []
+        recordFrame(nil)   // initial full-state frame
+    }
+
+    // MARK: - Timeline recording
+
+    private func recordFrame(_ event: BattleEvent?) {
+        guard record else { return }
+        frames.append(BattleFrame(
+            turn: turns, timeMs: time,
+            hp: [pokemon[0].hp, pokemon[1].hp],
+            energy: [pokemon[0].energy, pokemon[1].energy],
+            shields: [pokemon[0].shields, pokemon[1].shields],
+            buffs: [pokemon[0].statBuffs, pokemon[1].statBuffs],
+            event: event))
+    }
+
+    /// The recorded timeline + end-state residuals. Call after `simulate()`.
+    /// Only meaningful when the battle was created with `record: true`.
+    func makeLog() -> BattleLog {
+        BattleLog(
+            frames: frames,
+            ratingA: battleRating(forIndex: 0), ratingB: battleRating(forIndex: 1),
+            hpA: pokemon[0].hp, hpB: pokemon[1].hp,
+            energyA: pokemon[0].energy, energyB: pokemon[1].energy,
+            shieldsA: pokemon[0].shields, shieldsB: pokemon[1].shields)
     }
 
     // MARK: - Turn step
@@ -259,6 +296,18 @@ nonisolated final class Battle {
         if defender.hp <= 0 { defender.faintSource = move.energy > 0 ? "charged" : "fast" }
 
         applyBuffs(move, attacker: attacker, defender: defender, shielded: defenderUsedShield)
+
+        if record {
+            recordFrame(BattleEvent(
+                actor: attacker.index,
+                kind: move.energy > 0 ? .charged : .fast,
+                moveId: move.moveId, damage: damage, shielded: defenderUsedShield))
+            if defender.hp <= 0 {
+                recordFrame(BattleEvent(
+                    actor: defender.index, kind: .faint,
+                    moveId: nil, damage: nil, shielded: false))
+            }
+        }
     }
 
     /// Deterministic buff application (guaranteed buffs always apply; probabilistic

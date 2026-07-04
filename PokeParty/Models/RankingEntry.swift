@@ -17,6 +17,9 @@ struct RankingEntry: Decodable, Identifiable, Hashable {
     let speciesName: String
     let rating: Double
     let score: Double?
+    /// PvPoke's per-category sub-scores (0–100), in the order
+    /// [leads, closers, switches, chargers, attackers, consistency].
+    let scores: [Double]?
     let moveset: [String]
     let matchups: [Matchup]
     let counters: [Matchup]
@@ -27,6 +30,10 @@ struct RankingEntry: Decodable, Identifiable, Hashable {
 
     /// Preferred number to display in lists (0–100). Falls back to `rating`.
     var displayScore: Double { score ?? rating }
+
+    /// The "switches" category score (index 2) — how safely this Pokémon can come
+    /// in at an energy disadvantage. Drives the team Safety grade.
+    var switchesScore: Double? { (scores?.count ?? 0) > 2 ? scores?[2] : nil }
 
     /// A battle outcome against a specific opponent.
     struct Matchup: Decodable, Identifiable, Hashable {

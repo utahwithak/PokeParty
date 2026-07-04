@@ -2,19 +2,68 @@
 //  Consistency.swift
 //  PokeParty
 //
-//  Port of PvPoke's Pokemon.calculateConsistency() (plan §2.6): a 0–100 measure
-//  of how bait-independent a moveset is. Feeds the team's Consistency grade.
-//
-//  APPROX: this captures the core of PvPoke's algorithm — DPE relationship of the
-//  two charged moves, energy proximity, buff-chance penalty, and the flat
-//  per-move penalties — using neutral (no-opponent) move damage. It is not yet a
-//  byte-for-byte port; a few tie-break special cases are simplified. See M1.4 /
-//  the plan for the exact reference to finish porting.
+//  Faithful port of PvPoke's Pokemon.calculateConsistency() (src/js/pokemon/
+//  Pokemon.js). A 0–100 measure of how bait-independent a moveset is; feeds the
+//  team's Consistency grade. Every constant, comparison, special-case move id and
+//  the operator structure of the big baiting condition match the source.
 //
 
 import Foundation
 
 enum Consistency {
+
+    /// A charged/fast move in the form calculateConsistency needs. Reference type
+    /// because the algorithm sorts the array and mutates `dpe` in place.
+    private final class CMove {
+        let moveId: String
+        let name: String
+        let type: String
+        let energy: Int
+        let energyGain: Int
+        let buffs: [Int]?
+        let buffApplyChance: Double
+        let selfBuffing: Bool
+        let selfDebuffing: Bool
+        let selfAttackDebuffing: Bool
+        let selfDefenseDebuffing: Bool
+        var stab: Double
+        var damage: Double
+        var dpe: Double = 0
+
+        init(move: Move, types: Set<String>) {
+            moveId = move.moveId
+            name = move.name
+            type = move.type.lowercased()
+            energy = move.energy
+            energyGain = move.energyGain
+            let b = move.buffs
+            buffs = b
+            let chance = move.buffApplyChanceValue ?? 0
+            buffApplyChance = chance
+
+            // Flag derivation, matching PvPoke's GameMaster.getMoveById exactly.
+            let target = move.buffTarget
+            if let b, chance == 1,
+               target == "opponent" || (target == "self" && ((b.first ?? 0) > 0 || (b.count > 1 && b[1] > 0))) {
+                selfBuffing = true
+            } else {
+                selfBuffing = false
+            }
+            if let b, target == "self", chance >= 0.5, move.moveId != "DRAGON_ASCENT",
+               (b.first ?? 0) < 0 || (b.count > 1 && b[1] < 0) {
+                selfDebuffing = true
+            } else {
+                selfDebuffing = false
+            }
+            // NOTE: PvPoke sets these for ANY move with a negative attack/defense
+            // buff, regardless of target or chance.
+            selfAttackDebuffing = (b?.first ?? 0) < 0
+            selfDefenseDebuffing = (b?.count ?? 0) > 1 && (b?[1] ?? 0) < 0
+
+            stab = types.contains(type) ? 1.2 : 1     // DamageMultiplier.STAB
+            damage = Double(move.power) * stab         // power * stab (no floor)
+        }
+    }
 
     /// Consistency score in 0…100 for a member's moveset.
     static func score(
@@ -23,86 +72,86 @@ enum Consistency {
         types: [String],
         movesById: [String: Move]
     ) -> Double {
-        let charged = chargedMoveIds.compactMap { movesById[$0] }
-        // With fewer than two charged moves there is no bait decision to make.
-        guard charged.count >= 2 else { return 100 }
-
-        let lowerTypes = Set(types.map { $0.lowercased() })
-        func stab(_ m: Move) -> Double { lowerTypes.contains(m.type.lowercased()) ? 1.2 : 1 }
-        func neutralDamage(_ m: Move, _ eff: Double) -> Double {
-            Double(m.power) * stab(m) * eff
-        }
-        func dpe(_ m: Move, _ eff: Double) -> Double {
-            guard m.energy > 0 else { return 0 }
-            var d = neutralDamage(m, eff) / Double(m.energy)
-            if m.moveId == "POWER_UP_PUNCH" { d *= 2 }   // treated as high value
-            return d
-        }
-
-        // Effectiveness scenarios: neutral always; if the two charged moves are
-        // different types also test each being resisted.
-        var scenarios: [[Double]] = [[1, 1]]
-        if charged[0].type != charged[1].type {
-            scenarios.append([0.625, 1])
-            scenarios.append([1, 0.625])
-        }
+        guard let fastData = movesById[fastMoveId] else { return 100 }
+        let typeSet = Set(types.map { $0.lowercased() })
+        let fast = CMove(move: fastData, types: typeSet)
+        var charged = chargedMoveIds.compactMap { movesById[$0] }.map { CMove(move: $0, types: typeSet) }
 
         var consistencyScore = 1.0
-        for eff in scenarios {
-            // Rank the two moves by DPE under this scenario.
-            let d0 = dpe(charged[0], eff[0])
-            let d1 = dpe(charged[1], eff[1])
-            let (highDPE, lowDPE) = d0 >= d1 ? (d0, d1) : (d1, d0)
 
-            // Identify cheaper (spammable) vs expensive move by energy cost.
-            let zeroIsCheaper = charged[0].energy <= charged[1].energy
-            let cheaper = zeroIsCheaper ? charged[0] : charged[1]
-            let expensive = zeroIsCheaper ? charged[1] : charged[0]
-
-            // Base factor: how close the moves' DPE are (relying on one move is
-            // fine when both hit similarly hard).
-            var factor = highDPE > 0 ? (lowDPE / highDPE) : 1
-
-            // Energy-proximity bonus: if the cheaper move's energy is close to the
-            // expensive one, the moveset is more consistent.
-            let expE = Double(expensive.energy)
-            let cheapE = Double(cheaper.energy)
-            if expE > 30 {
-                let proximity = max(0, min(1, (cheapE - 30) / (expE - 30)))
-                factor += (1 - factor) * proximity * 0.5
+        // Only calculated with exactly two charged moves; otherwise stays 1 (→100).
+        if charged.count == 2 {
+            var scenarios: [[Double]] = [[1, 1]]
+            if charged[0].type != charged[1].type {
+                scenarios.append([0.625, 1])
+                scenarios.append([1, 0.625])
             }
-            factor = max(0, min(1, factor))
 
-            // Buff-chance penalty for probabilistic buff moves (chance in .15…1).
-            var buffChanceFactor = 1.0
-            var buffCount = 0
-            var buffSum = 0.0
-            for m in charged {
-                if let chance = m.buffApplyChanceValue, chance > 0.15, chance < 1, m.buffs != nil {
-                    let buffConsistency = 0.5 + abs(0.5 - chance)
-                    let stages = Double(m.buffs?.reduce(0) { $0 + abs($1) } ?? 0)
-                    let dmg = neutralDamage(m, 1)
-                    let buffsAsDamage = dmg + stages * 25 * (1 - buffConsistency)
-                    buffSum += buffsAsDamage > 0 ? dmg / buffsAsDamage : 1
-                } else {
-                    buffSum += 1
+            for eff in scenarios {
+                // Deterministic starting order (by name, descending), then by DPE.
+                charged.sort { $0.name > $1.name }
+                charged[0].dpe = (charged[0].damage / Double(charged[0].energy)) * eff[0]
+                charged[1].dpe = (charged[1].damage / Double(charged[1].energy)) * eff[1]
+                charged.sort { $0.dpe > $1.dpe }
+
+                // Power-Up Punch is spammable, so treat its value as doubled.
+                if charged[1].moveId == "POWER_UP_PUNCH" {
+                    charged[1].dpe *= 2
+                    charged.sort { $0.dpe > $1.dpe }
                 }
-                buffCount += 1
-            }
-            if buffCount > 0 { buffChanceFactor = buffSum / Double(buffCount) }
 
-            consistencyScore *= factor * buffChanceFactor
+                let cycleFastMoves = (Double(charged[0].energy) / Double(fast.energyGain)).rounded(.up)
+                var cycleFastDamage = fast.damage * cycleFastMoves
+                let cycleDamage = cycleFastDamage + charged[0].damage
+                if fast.type == charged[0].type {
+                    cycleFastDamage *= eff[0]
+                } else if fast.type == charged[1].type {
+                    cycleFastDamage *= eff[1]
+                }
+
+                var factor = 1.0
+                let energyDiff = charged[1].energy - charged[0].energy
+                if charged[0].energy > charged[1].energy
+                    || (charged[0].energy == charged[1].energy && charged[1].moveId == "ACID_SPRAY")
+                    || (charged[0].selfAttackDebuffing && !charged[1].selfDebuffing && energyDiff <= 10)
+                    || (charged[0].selfDebuffing && charged[0].energy > 50 && !charged[1].selfDebuffing && energyDiff <= 10) {
+                    factor = (cycleFastDamage / cycleDamage)
+                        + ((charged[0].damage / cycleDamage) * (charged[1].dpe / charged[0].dpe))
+
+                    // Small energy gaps improve consistency (players play straight more).
+                    if charged[1].energy < charged[0].energy && !charged[0].selfBuffing {
+                        factor += (1 - factor) * (Double(charged[1].energy - 30) / Double(charged[0].energy - 30)) * 0.5
+                    } else if charged[1].energy < charged[0].energy && charged[0].selfBuffing {
+                        factor += (1 - factor) * (Double(charged[1].energy - 20) / Double(charged[0].energy - 20))
+                    }
+                }
+
+                // Probabilistic buff moves add chaos, reducing consistency.
+                var buffChanceFactor = 0.0
+                for m in charged {
+                    if let bs = m.buffs, m.buffApplyChance < 1, m.buffApplyChance > 0.15 {
+                        let buffStages = Double(abs(bs.first ?? 0) + abs(bs.count > 1 ? bs[1] : 0))
+                        let buffConsistency = 0.5 + abs(0.5 - m.buffApplyChance)
+                        let buffsAsDamage = m.damage + (buffStages * 25 * (1 - buffConsistency))
+                        buffChanceFactor += buffsAsDamage != 0 ? m.damage / buffsAsDamage : 1
+                    } else {
+                        buffChanceFactor += 1
+                    }
+                }
+                buffChanceFactor /= Double(charged.count)
+
+                consistencyScore *= factor * buffChanceFactor
+            }
+
+            consistencyScore = pow(consistencyScore, 1.0 / Double(scenarios.count))
         }
 
-        // Geometric mean across scenarios.
-        consistencyScore = pow(consistencyScore, 1.0 / Double(scenarios.count))
-
-        // Flat per-move penalties.
-        let ids = Set(chargedMoveIds)
-        if ids.contains("POWER_UP_PUNCH") { consistencyScore *= 0.85 }
-        if ids.contains("LUNGE") { consistencyScore *= 0.85 }
-        if ids.contains("FEATHER_DANCE") { consistencyScore *= 0.75 }
-        if ids.contains("BUBBLE_BEAM") { consistencyScore *= 0.75 }
+        // Per-move penalties (checked across the whole moveset, like `hasMove`).
+        let allMoveIds = Set([fastMoveId] + chargedMoveIds)
+        if allMoveIds.contains("POWER_UP_PUNCH") { consistencyScore *= 0.85 }
+        if allMoveIds.contains("LUNGE") { consistencyScore *= 0.85 }
+        if allMoveIds.contains("FEATHER_DANCE") { consistencyScore *= 0.75 }
+        if allMoveIds.contains("BUBBLE_BEAM") { consistencyScore *= 0.75 }
 
         return (consistencyScore * 1000).rounded() / 10
     }

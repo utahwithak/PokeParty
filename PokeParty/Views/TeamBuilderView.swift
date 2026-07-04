@@ -2,9 +2,9 @@
 //  TeamBuilderView.swift
 //  PokeParty
 //
-//  Middle column of the 3v3 Team Builder: shows the three team slots and lets the
-//  user add Pokémon from the current league. Analysis (grades / threats /
-//  suggestions) is shown in the detail column by `TeamAnalysisView`.
+//  Middle column of the 3v3 Team Builder: the "Add Pokémon" palette. Tapping a
+//  Pokémon adds it to the team, which is shown and edited in the main panel
+//  (`TeamBuilderDetailView`).
 //
 
 import SwiftUI
@@ -26,20 +26,7 @@ struct TeamBuilderView: View {
 
     var body: some View {
         List {
-            Section("Team (\(model.members.count)/3)") {
-                if model.members.isEmpty {
-                    Text("Add up to three Pokémon below.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(model.slots.enumerated()), id: \.offset) { index, slot in
-                        if let member = slot, let pokemon = store.pokemonById[member.speciesId] {
-                            memberRow(pokemon: pokemon, member: member, index: index)
-                        }
-                    }
-                }
-            }
-
-            Section("Add Pokémon") {
+            Section {
                 ForEach(searchResults) { pokemon in
                     Button {
                         if let member = model.makeMember(speciesId: pokemon.speciesId, store: store) {
@@ -52,10 +39,13 @@ struct TeamBuilderView: View {
                             Spacer()
                             TypeBadgeRow(types: pokemon.displayTypes)
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.members.count >= 3)
+                    .disabled(model.isFull)
                 }
+            } header: {
+                Text(model.isFull ? "Team full — remove one to add another" : "Add Pokémon")
             }
         }
         .navigationTitle("Team Builder")
@@ -66,35 +56,5 @@ struct TeamBuilderView: View {
                 ContentUnavailableView.search(text: searchText)
             }
         }
-        .onAppear { analyzeIfNeeded() }
-        .onChange(of: model.members) { analyzeIfNeeded() }
-        .onChange(of: store.format) { analyzeIfNeeded() }
-    }
-
-    private func memberRow(pokemon: Pokemon, member: TeamMember, index: Int) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(pokemon.speciesName)
-                        .font(.body.weight(.semibold))
-                    if member.shadow { ShadowBadge() }
-                }
-                TypeBadgeRow(types: pokemon.displayTypes)
-            }
-            Spacer()
-            Button {
-                model.removeMember(at: index)
-            } label: {
-                Image(systemName: "minus.circle.fill")
-                    .foregroundStyle(.red)
-            }
-            .buttonStyle(.plain)
-            .help("Remove from team")
-        }
-    }
-
-    private func analyzeIfNeeded() {
-        guard model.hasMembers else { return }
-        model.analyze(using: store)
     }
 }

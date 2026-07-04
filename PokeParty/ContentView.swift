@@ -65,7 +65,7 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerResultsView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamAnalysisView(store: store, model: teamBuilder)
+            TeamBuilderDetailView(store: store, model: teamBuilder)
         }
     }
 }

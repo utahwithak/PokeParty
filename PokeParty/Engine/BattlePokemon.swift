@@ -19,7 +19,7 @@ nonisolated final class BattlePokemon {
     var disguiseActive: Bool = false
 
     // Permanent stats (effective at the chosen level/IVs).
-    struct Stats { var atk: Double; var def: Double; var hp: Int }
+    struct Stats: Hashable, Sendable { var atk: Double; var def: Double; var hp: Int }
     let stats: Stats
 
     // Moves
@@ -37,6 +37,10 @@ nonisolated final class BattlePokemon {
     var shields: Int = 0
     var startingShields: Int = 0
     var startEnergy: Int = 0
+    /// Starting HP for the next `reset()`. 0 means "full HP" (the normal 1v1 case);
+    /// the 3v3 orchestrator sets this to carry a Pokémon's remaining HP across
+    /// battle segments when it stays in after an opponent faints.
+    var startHp: Int = 0
     var statBuffs: [Int] = [0, 0]
     var startStatBuffs: [Int] = [0, 0]
     var cooldown: Int = 0           // ms remaining on fast-move
@@ -137,8 +141,25 @@ nonisolated final class BattlePokemon {
 
     func setOpponent(_ opponent: BattlePokemon) { self.opponent = opponent }
 
+    /// A fresh copy with the same config and start-state knobs, safe to mutate in a
+    /// throwaway battle without touching the original (used for switch-decision sims).
+    func clone() -> BattlePokemon {
+        let c = BattlePokemon(
+            speciesId: speciesId, speciesName: speciesName, types: types,
+            shadow: shadow, hasDisguise: hasDisguise, stats: stats,
+            fastMove: fastMove.clone(), chargedMoves: chargedMoves.map { $0.clone() })
+        c.startEnergy = startEnergy
+        c.startingShields = startingShields
+        c.startHp = startHp
+        c.startStatBuffs = startStatBuffs
+        c.baitShields = baitShields
+        c.optimizeMoveTiming = optimizeMoveTiming
+        c.farmEnergy = farmEnergy
+        return c
+    }
+
     func reset() {
-        hp = stats.hp
+        hp = startHp > 0 ? min(startHp, stats.hp) : stats.hp
         energy = startEnergy
         shields = startingShields
         statBuffs = startStatBuffs

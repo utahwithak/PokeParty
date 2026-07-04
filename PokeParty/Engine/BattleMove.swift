@@ -55,16 +55,16 @@ nonisolated final class BattleMove {
         buffApplyChance = chance
 
         // Derived flags (GameMaster.js logic).
-        if let b, let target = move.buffTarget, target == "self",
+        if let b, move.buffTarget == "self",
            chance >= 0.5, move.moveId != "DRAGON_ASCENT", (b.first ?? 0) < 0 || (b.count > 1 && b[1] < 0) {
             selfDebuffing = true
-            selfAttackDebuffing = (b.first ?? 0) < 0
-            selfDefenseDebuffing = (b.count > 1 && b[1] < 0)
         } else {
             selfDebuffing = false
-            selfAttackDebuffing = false
-            selfDefenseDebuffing = false
         }
+        // PvPoke sets these for ANY move carrying a negative attack/defense buff,
+        // regardless of target or apply chance (used by move-ordering and shield AI).
+        selfAttackDebuffing = (b?.first ?? 0) < 0
+        selfDefenseDebuffing = (b?.count ?? 0) > 1 && (b?[1] ?? 0) < 0
 
         if let b, chance == 1,
            (move.buffTarget == "opponent" || (move.buffTarget == "self" && ((b.first ?? 0) > 0 || (b.count > 1 && b[1] > 0)))) {
@@ -78,4 +78,16 @@ nonisolated final class BattleMove {
             buffApplyMeter = chance == 0.5 ? 0 : chance
         }
     }
+
+    /// Copies every field (used to clone a Pokémon into a throwaway battle).
+    private init(copy m: BattleMove) {
+        moveId = m.moveId; name = m.name; type = m.type; power = m.power
+        energy = m.energy; energyGain = m.energyGain; cooldown = m.cooldown; turns = m.turns
+        buffs = m.buffs; buffTarget = m.buffTarget; buffApplyChance = m.buffApplyChance
+        selfDebuffing = m.selfDebuffing; selfBuffing = m.selfBuffing
+        selfAttackDebuffing = m.selfAttackDebuffing; selfDefenseDebuffing = m.selfDefenseDebuffing
+        stab = m.stab; damage = m.damage; dpe = m.dpe; buffApplyMeter = m.buffApplyMeter
+    }
+
+    func clone() -> BattleMove { BattleMove(copy: self) }
 }

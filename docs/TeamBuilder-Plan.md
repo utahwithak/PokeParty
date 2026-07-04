@@ -4,7 +4,7 @@
 > **Milestone checklist** at the bottom and claim a task by marking it
 > `[~] (in progress — <agent/initials>)` before starting, `[x]` when done.
 >
-> Last updated: 2026-07-03
+> Last updated: 2026-07-04
 
 ---
 
@@ -171,6 +171,31 @@ From `base.json`: `leads [1,1] e[0,0]`, `closers [0,0] e[0,0]`,
 `energy` = turns of fast-move advantage preloaded (`energy*500/fastCooldown` fast moves).
 `settings: partySize 3, maxBuffStages 4, buffDivisor 4`.
 
+### 2.11 What we still borrow from PvPoke's precomputed output (→ Milestone 6)
+Everything the Team Builder *shows* is computed by us EXCEPT four things that we
+currently read from PvPoke's downloaded `rankings-{cp}.json`. All four are derivable
+from the gamemaster + our own battle engine — that's exactly what PvPoke's server-side
+`Ranker` does. What we borrow, and how to self-produce it:
+
+| Borrowed value | Used for | How to compute it ourselves |
+|---|---|---|
+| **The meta pool** (which mons) + ordering | threat/teammate candidates, meta-relevance | `MetaPool`: port `generateFilteredPokemonList` — min stat-product filter over gamemaster (§2.7). *Small.* |
+| **`scores[2]` switches score** | Safety grade | Run the **switches** RankerScenario (shields [1,1], energy [4,0]) over the meta and normalize to 0–100 (§2.10). Falls out of the local Ranker. *Medium.* |
+| **Recommended moveset** per mon | meta candidates + default team movesets | Port PvPoke's moveset auto-selection (weighting/search over move combos). *Hardest.* |
+| **Meta-relevance** (the 0.85 group) | threat/teammate weighting | The curated `meta-group`; approximated now as top-40 of rankings. Comes from the local Ranker's overall order. |
+
+Not borrowed but always needed from *somewhere*: `gamemaster.json` (base stats, moves,
+type chart) — raw game data, not a computed seed. Bundle a snapshot or keep fetching it.
+
+**Stats** (`atk/def/hp`) are NOT a real dependency — `IVCalculator` already computes them
+(it's the fallback); we read the ranking copy only for speed.
+
+The local Ranker's core is the **N×N 1v1 matrix across the 5 scenarios**, iterated a few
+passes with opponent-relevance weighting, normalized to 0–100 per category. It is
+expensive (~N²×5 battles, GL N≈600 ⇒ ~1.8M battles) — so compute once per league per
+gamemaster version and **cache to disk** (turn PvPoke's server precompute into our
+first-run precompute). This same matrix is the substrate M3/M4 need, so M6 and M3 share it.
+
 ---
 
 ## 3. Architecture for the new work
@@ -290,14 +315,74 @@ The foundation for the finder. New engine layer above `Battle`.
 3. Investigate whether a simplified, branch-reduced 1v1 kernel is worth a Metal port.
 4. Persist/precompute matrices server-side or on first launch if it's a fixed meta.
 
+### Milestone 6 — Self-hosted rankings (remove online-seeded values)
+Goal: the Team Builder depends only on `gamemaster.json`, never on PvPoke's precomputed
+`rankings-{cp}.json`. See §2.11 for the four borrowed values. Build in this order so each
+step removes a dependency and de-risks the next; **this is also the substrate M3/M4 need**,
+so do M6.1–M6.2 before/with M3.
+1. **M6.1 — `MetaPool`** (`Engine/Meta/MetaPool.swift`): port `generateFilteredPokemonList`
+   (min stat-product per league + released/eligibility/tag filters). Removes the "which
+   mons" dependency; the analyzer builds candidates from this instead of the ranking list.
+   *Self-contained, cheap.*
+2. **M6.2 — Local `Ranker`** (`Engine/Meta/Ranker.swift` + `RankerScenario.swift`): run the
+   N×N matrix across the 5 scenarios (§2.10), iterate with opponent-relevance weighting,
+   normalize to 0–100 per category. Produces per-mon category scores (incl. **switches →
+   Safety**) and the overall order (→ **meta-relevance**). **Cache to disk** per
+   (league, gamemaster-version); recompute in the background on gamemaster change.
+   Expensive — reuse the fast 1v1 path + the M3 matrix substrate.
+3. **M6.3 — Moveset auto-selection** (`Engine/Meta/MovesetSelector.swift`): port PvPoke's
+   per-mon moveset optimization so we no longer read recommended movesets. Hardest; until
+   done, the ranking movesets remain a fine stand-in.
+4. **M6.4 — Cut the cord / offline mode:** switch `TeamAnalyzer` + `TeamBuilderModel` to the
+   local Ranker outputs; keep the online rankings only as an optional cross-check. Validate
+   locally-computed grades/threats match the pvpoke.com-seeded ones.
+
+### Milestone 7 — Interactive Battle Viewer (1v1 & 3v3 timeline)
+Show a battle as a **scrubbable key-frame timeline** with **residuals** (HP / energy /
+shields / buff stages at each frame), the moves thrown, shields used, and faints. Build the
+1v1 viewer first; 3v3 reuses it. This is where the "no UI for the simulator" gap gets closed.
+
+**Prerequisite — engine instrumentation (opt-in, OFF by default):**
+`Battle` today runs to completion and only exposes the final `battleRating`. Add an opt-in
+recording mode — e.g. `Battle(a, b, record: true)` — that appends a frame at each key event.
+It must stay off in the analyzer/finder hot loops (perf). New `Engine/BattleLog.swift`:
+- `enum BattleEventKind { fast, charged, shield, faint, switchIn, timeout }`
+- `struct BattleEvent { actor: Int; kind; moveId: String?; damage: Int?; shielded: Bool }`
+- `struct BattleFrame { turn: Int; timeMs: Int; hp: [Int]; energy: [Int]; shields: [Int]; buffs: [[Int]]; event: BattleEvent? }`
+- `struct BattleLog { frames: [BattleFrame]; ratingA/ratingB; residuals (hp/energy/shields left both sides) }`
+
+`ThreeVThreeBattle` records each segment with `record: true` and stitches them into a
+`TeamBattleLog { segments: [BattleLog]; switches; result: TeamBattleResult }` with switch
+markers between segments.
+
+**Views (`PokeParty/Views/Battle/`):**
+- `BattleTimelineView` — reusable 1v1 viewer: a horizontal key-frame strip (a tick per event,
+  colored by actor / move type), a scrubber, HP/energy/shield bars that reflect the selected
+  frame, and an event list. "Residuals" = the final frame's remaining HP/energy/shields.
+- `TeamBattleView` — 3v3: result header (winner, survivors, margin), the entrance/switch
+  order, and per-segment `BattleTimelineView`s (or one continuous stitched timeline).
+
+**Entry points (navigation):**
+1. **1v1** — from `PokemonDetailView`'s **Battle Simulator**: tapping a simulated matchup row
+   opens its `BattleTimelineView` (re-runs just that matchup with `record: true`). Also from
+   the Team Builder **threat matrix** — tap a cell → that member-vs-threat timeline.
+2. **3v3** — in the **Team Builder**: your team is Team A; add an **opponent team** (reuse the
+   same add/edit cards), then a **"Battle"** button opens `TeamBattleView`. (This supersedes
+   the M2 "dev UI" item.) A standalone sidebar "Battle" tool for arbitrary team-vs-team is a
+   later option.
+
+**Notes:** recording is per-battle and cheap when off — never enable it in the
+analyzer/finder loops. Determinism means every timeline is exactly reproducible (good for
+snapshot tests and caching).
+
 ---
 
 ## 5. Open questions (resolve as they block work)
 - **Q1 — Format source:** does the team builder follow the sidebar's selected league/cup,
   or have its own independent format picker? (Leaning: its own picker, defaulting to the
   sidebar selection.)
-- **Q2 — Safety grade data:** fetch PvPoke's `switches` rankings (§2.9-A, matches site
-  exactly, needs network) vs recompute locally (offline, bigger). Milestone 1 uses (A).
+- **Q2 — Safety grade data:** ✅ RESOLVED. The overall rankings we already download carry a
+  per-mon `scores` array; Safety reads `scores[2]`. Fully offline computation is M6.2.
 - **Q3 — Team persistence/sharing:** SwiftData-persisted saved teams? Import/export via
   PvPoke team codes (their URL/pastebin format)? Nice-to-have, not blocking M1.
 - **Q4 — 3v3 AI fidelity:** how faithful must switch AI be to PvPoke? Start with a simple
@@ -320,17 +405,36 @@ The foundation for the finder. New engine layer above `Battle`.
 - [x] M1.1 — `Team` / `TeamMember` models (`Models/Team.swift`)
 - [x] M1.2 — `TeamBuilderModel` (`Store/TeamBuilderModel.swift`)
 - [x] M1.3 — Meta pool — uses the loaded ranking list directly (approx of `generateFilteredPokemonList`; a dedicated `MetaPool` with the min-stat-product filter is still TODO)
-- [~] M1.4 — `Consistency` port (`Engine/Consistency.swift`) — **APPROX**, not yet byte-for-byte; finish the exact port
+- [x] M1.4 — `Consistency` port (`Engine/Consistency.swift`) — **exact** byte-for-byte port of PvPoke's `calculateConsistency`. Also aligned `BattleMove.selfAttackDebuffing`/`selfDefenseDebuffing` with PvPoke's broad definition (any negative buff), which the move-ordering & shield AI use too.
 - [x] M1.5 — `TeamAnalyzer` (grades/threats/teammates, parallel) (`Engine/TeamAnalyzer.swift`)
 - [x] M1.6 — Team builder views (`Views/TeamBuilderView.swift`, `Views/TeamAnalysisView.swift`) — compose + grades + threats + suggestions. Moveset editing per-slot still TODO (uses recommended movesets).
 - [x] M1.7 — Sidebar + ContentView wiring (`.teamBuilder`)
-- [ ] M1.8 — Safety grade data — **PROVISIONAL** (uses PvPoke's default 60). Fetch `rankings/{cup}/switches/rankings-{cp}.json` and read `scores[2]`.
+- [x] M1.8 — Safety grade data — **done**. The overall rankings JSON we already download contains a per-mon `scores` array; `RankingEntry.switchesScore` reads index 2 (switches), and the Safety grade averages it (60 fallback per unranked mon, like PvPoke). No extra fetch needed.
 - [ ] M1.9 — Validate grades/threats/teammates against pvpoke.com; verify parallel analysis stays off the main thread
 - [ ] M1.x — In-team-builder format picker (plan Q1); currently follows the sidebar's last-selected league via `store.format`
-- [ ] M2 — True single 3v3 battle engine
+- [~] M2 — True single 3v3 battle engine — **engine done + unit-tested**; refinements pending
+  - [x] `ThreeVThreeBattle` orchestrator (`Engine/ThreeVThreeBattle.swift`) + `TeamBattleResult`
+  - [x] Engine hooks: `BattlePokemon.startHp`, `Battle(startTime:)` (both backward-compatible; 1v1 unchanged)
+  - [x] Unit tests (`PokePartyTests/ThreeVThreeBattleTests.swift`, Swift Testing, synthetic data — 4/4 pass)
+  - [ ] Voluntary mid-battle switching + switch timer (currently faint-only)
+  - [x] Best-matchup switch selection — `SwitchPolicy.bestMatchup` (default): on faint, brings in the alive teammate that scores best vs the opponent's current state (via `BattlePokemon.clone()` throwaway sims). `.teamOrder` still available. Tested.
+  - [ ] Continuous per-mon cooldown across a switch (currently resets each segment)
+  - [ ] Dev/head-to-head UI to pick two teams and view the result/timeline → folded into **M7**
+  - [ ] Validate a few outcomes against pvpoke.com's battle sim
 - [ ] M3 — Advanced Team Finder
 - [ ] M4 — Best Teams
 - [ ] M5 — GPU / heavy parallelization
+- [ ] M6 — Self-hosted rankings (remove online-seeded values; §2.11). Shares the 1v1-matrix substrate with M3.
+  - [ ] M6.1 — `MetaPool` (min stat-product filter → own meta pool, not the ranking list)
+  - [ ] M6.2 — Local `Ranker`: 5-scenario N×N matrix → category scores (Safety) + overall order (meta-relevance), cached to disk
+  - [ ] M6.3 — Moveset auto-selection (stop reading recommended movesets)
+  - [ ] M6.4 — Switch analyzer to local outputs; offline mode; validate vs pvpoke seeds
+- [ ] M7 — Interactive Battle Viewer (1v1 & 3v3 key-frame timeline + residuals)
+  - [x] M7.1 — `BattleLog`/`BattleFrame`/`BattleEvent` (`Engine/BattleLog.swift`) + opt-in `record` mode in `Battle` (`Battle(_,_,record:)`, off by default); `makeLog()` returns the timeline + residuals. Tested (frames time-ordered; fast/charged/faint events; off by default).
+  - [ ] M7.2 — `BattleTimelineView` (1v1: scrubbable key-frames + HP/energy/shield residual bars + event list)
+  - [ ] M7.3 — 1v1 entry points: `PokemonDetailView` matchup → timeline; threat-matrix cell → timeline
+  - [ ] M7.4 — `TeamBattleLog` recording in `ThreeVThreeBattle` (per-segment logs + switch markers)
+  - [ ] M7.5 — `TeamBattleView` (3v3 result + per-segment timelines) + opponent-team builder + "Battle" entry point
 
 ### Milestone 1 status note (2026-07-03)
 Builds cleanly. The Team Builder is wired into the sidebar and produces the four
