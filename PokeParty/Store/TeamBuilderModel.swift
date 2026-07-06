@@ -157,6 +157,73 @@ final class TeamBuilderModel {
         }
     }
 
+    // MARK: - Head-to-head 3v3 battle
+
+    /// Opponent team for the 3v3 battle viewer (species with recommended movesets).
+    private(set) var opponentMembers: [TeamMember] = []
+    private(set) var battleLog: TeamBattleLog?
+    private(set) var isBattling = false
+    private var battleTask: Task<Void, Never>?
+
+    var opponentIsFull: Bool { opponentMembers.count >= Self.maxMembers }
+    func opponentContains(speciesId: String) -> Bool {
+        opponentMembers.contains { $0.speciesId == speciesId }
+    }
+
+    func addOpponent(_ member: TeamMember) {
+        guard !opponentIsFull, !opponentContains(speciesId: member.speciesId) else { return }
+        opponentMembers.append(member)
+        battleLog = nil
+    }
+
+    func removeOpponent(at index: Int) {
+        guard opponentMembers.indices.contains(index) else { return }
+        opponentMembers.remove(at: index)
+        battleLog = nil
+    }
+
+    /// Runs a recorded 3v3 between the current team and the opponent team.
+    func runTeamBattle(using store: RankingsStore) {
+        battleTask?.cancel()
+        guard hasMembers, !opponentMembers.isEmpty,
+              let mine = Self.buildTeam(members, store: store),
+              let opp = Self.buildTeam(opponentMembers, store: store) else { return }
+        let movesById = store.movesById
+        isBattling = true
+        battleLog = nil
+        battleTask = Task {
+            let log = await Task.detached {
+                ThreeVThreeBattle.runRecorded(
+                    teamA: mine.combatants, statsA: mine.stats,
+                    teamB: opp.combatants, statsB: opp.stats,
+                    movesById: movesById)
+            }.value
+            if Task.isCancelled { return }
+            self.battleLog = log
+            self.isBattling = false
+        }
+    }
+
+    /// Builds combatants + IV-optimal stats for a set of members.
+    private static func buildTeam(
+        _ members: [TeamMember], store: RankingsStore
+    ) -> (combatants: [MatchupSimulator.Combatant], stats: [BattlePokemon.Stats])? {
+        let cap = store.format.cp
+        var combatants: [MatchupSimulator.Combatant] = []
+        var stats: [BattlePokemon.Stats] = []
+        for member in members {
+            guard let species = store.pokemonById[member.speciesId] else { continue }
+            let c = MatchupSimulator.Combatant(species: species, shadow: member.shadow,
+                                               fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
+            let s = rankedStats(speciesId: member.speciesId, store: store)
+                ?? MatchupSimulator.optimalStats(for: c, cpCap: cap)
+            guard let s else { continue }
+            combatants.append(c)
+            stats.append(s)
+        }
+        return combatants.isEmpty ? nil : (combatants, stats)
+    }
+
     /// The IV-optimal stats for a species from the loaded ranking data, if present.
     private static func rankedStats(speciesId: String, store: RankingsStore) -> BattlePokemon.Stats? {
         guard let s = store.entry(id: speciesId)?.stats else { return nil }

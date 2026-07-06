@@ -31,6 +31,9 @@ struct PokemonDetailView: View {
     @State private var metaScope: MetaScope = .top100
     @State private var resultCount = 20
 
+    /// The opponent whose battle timeline is being viewed (drives the sheet).
+    @State private var timelineOpponent: RankingEntry.Matchup?
+
     init(entry: RankingEntry, store: RankingsStore) {
         self.entry = entry
         self.store = store
@@ -91,6 +94,53 @@ struct PokemonDetailView: View {
         .onChange(of: fastMoveId) { simulated = nil }
         .onChange(of: charged1Id) { simulated = nil }
         .onChange(of: charged2Id) { simulated = nil }
+        .sheet(item: $timelineOpponent) { matchup in
+            timelineSheet(for: matchup)
+        }
+    }
+
+    /// The battle timeline for one matchup, re-run with recording on.
+    @ViewBuilder
+    private func timelineSheet(for matchup: RankingEntry.Matchup) -> some View {
+        NavigationStack {
+            Group {
+                if let replay = store.battleReplay(
+                    for: entry, fastMoveId: fastMoveId, chargedMoveIds: chargedMoveIds,
+                    opponentId: matchup.opponent,
+                    yourShields: yourShields, opponentShields: opponentShields) {
+                    ScrollView {
+                        BattleTimelineView(
+                            log: replay.log,
+                            sideA: BattleParticipant(name: entry.speciesName,
+                                                     types: pokemon?.displayTypes ?? [],
+                                                     shadow: pokemon?.isShadow ?? false),
+                            sideB: opponentParticipant(matchup.opponent),
+                            move: { store.move(id: $0) },
+                            scenario: replay.scenario)
+                        .padding(20)
+                    }
+                } else {
+                    ContentUnavailableView("Couldn't build battle", systemImage: "exclamationmark.triangle")
+                }
+            }
+            .navigationTitle("\(entry.speciesName) vs \(store.name(forSpeciesId: matchup.opponent))")
+            .inlineNavigationTitle()
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { timelineOpponent = nil }
+                }
+            }
+        }
+        .frame(minWidth: 560, minHeight: 520)
+    }
+
+    private func opponentParticipant(_ id: String) -> BattleParticipant {
+        let p = store.pokemonById[id]
+            ?? (id.hasSuffix("_shadow") ? store.pokemonById[String(id.dropLast("_shadow".count))] : nil)
+        return BattleParticipant(
+            name: store.name(forSpeciesId: id),
+            types: p?.displayTypes ?? [],
+            shadow: (p?.isShadow ?? false) || id.hasSuffix("_shadow"))
     }
 
     // MARK: - Live simulation controls
@@ -274,31 +324,40 @@ struct PokemonDetailView: View {
         if !matchups.isEmpty {
             Section {
                 ForEach(matchups) { matchup in
-                    HStack(spacing: 12) {
-                        if let rank = store.rankBySpeciesId[matchup.opponent] {
-                            Text("#\(rank)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(minWidth: 34, alignment: .trailing)
+                    Button {
+                        timelineOpponent = matchup
+                    } label: {
+                        HStack(spacing: 12) {
+                            if let rank = store.rankBySpeciesId[matchup.opponent] {
+                                Text("#\(rank)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(minWidth: 34, alignment: .trailing)
+                            }
+                            Text(store.name(forSpeciesId: matchup.opponent))
+                                .font(.subheadline)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            RatingBar(rating: matchup.rating)
+                                .frame(width: 90)
+                            Text("\(matchup.rating)")
+                                .font(.subheadline.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(matchup.isFavorable ? Theme.win : Theme.loss)
+                                .frame(width: 44, alignment: .trailing)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
                         }
-                        Text(store.name(forSpeciesId: matchup.opponent))
-                            .font(.subheadline)
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
-                        RatingBar(rating: matchup.rating)
-                            .frame(width: 90)
-                        Text("\(matchup.rating)")
-                            .font(.subheadline.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(matchup.isFavorable ? Theme.win : Theme.loss)
-                            .frame(width: 44, alignment: .trailing)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
             } header: {
                 Label(title, systemImage: systemImage)
                     .foregroundStyle(tint)
             } footer: {
                 if showFooter {
-                    Text("Battle rating vs. each opponent. 500 is an even fight.")
+                    Text("Battle rating vs. each opponent — tap a row to watch the battle timeline. 500 is an even fight.")
                 }
             }
         }

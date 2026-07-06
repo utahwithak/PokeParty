@@ -375,6 +375,94 @@ markers between segments.
 analyzer/finder loops. Determinism means every timeline is exactly reproducible (good for
 snapshot tests and caching).
 
+### Milestone 8 — Optimal-play battle search (shield & switch decisions)
+Today a battle is ONE deterministic AI-vs-AI playthrough: `ActionLogic.wouldShield` makes a
+greedy shield choice and switching is faint-only / best-matchup. Real optimal play depends on
+*when* each side shields and *when/whether* it switches — and it's a two-player game, so the
+"right" answer is game-theoretic (each side plays its best line against the other). This
+milestone turns the single playthrough into a search over both sides' shield & switch
+decisions. Motivating case: "shielding the first charged move isn't always ideal."
+
+**Decision space:**
+- Shields: at each incoming charged move, shield or not (until the 2-shield pool is spent).
+- Switches: at each turn, stay or switch to a specific teammate (subject to the switch timer);
+  the lead choice is the first switch decision.
+- Two-sided & simultaneous → not a simple max; solve as minimax / a per-decision matrix game.
+
+**Architectural prerequisite:** the battle must be *branchable* — clone full battle state at a
+decision point and explore both branches. `BattlePokemon.clone()` exists; we also need to
+snapshot the `Battle`'s own turn state (or reimplement the loop functionally) and a way to
+*inject* shield/switch decisions (override `ActionLogic`) so the searcher drives them.
+
+**Leads are fixed (design decision):** the first Pokémon on each team IS the lead (set via
+UI order — the team cards already show `LEAD` on index 0 and reorder; the opponent's
+first-added is its lead). Do NOT enumerate the 3×3 lead matrix — it's wasted compute and not
+the question being asked. The question is "*this lead with these two behind vs theirs — who
+wins?*"
+
+**Imperfect information (design principle):** the AI must decide from REVEALED Pokémon only —
+never from the opponent's hidden backline. Reacting to the mon currently on the field (e.g.
+best-matchup replacement on faint) is legitimate; proactively switching a *neutral* lead to a
+back-line counter because we "know" a good matchup is hidden there is NOT — a real player
+wouldn't switch until that threat is revealed. So voluntary switching (M8.3) must run on a
+per-player *perceived* view of the battle, not the full team knowledge the simulator has.
+
+**M8.3 switching model (detailed spec — agree before coding):**
+
+*Knowledge each side has:*
+- Its OWN full team (3 species + movesets) — you built it.
+- The opponent's Pokémon only once **revealed** (has entered the field). The hidden backline
+  is unknown: unknown count-remaining is known (3 minus revealed), but not which species.
+- Simplification: a revealed mon's moveset is treated as known (standard PvPoke assumption).
+  Note it; refine to "known once used" later if needed.
+
+*Perceived state:* the switch AI for side X sees only `{X's full team state} ∪ {revealed
+opponent mons + the on-field opponent}`. It must NOT read unrevealed opponent mons. Implement
+as an explicit `PerceivedState` passed to the decision function, not the full battle.
+
+*When a voluntary switch is considered (decision points):* not every turn (too costly, and
+GBL play is chunky). Evaluate at: (a) each **reveal boundary** (a new opposing mon comes in),
+and (b) when the active mon crosses a "losing" threshold (projected to lose the current 1v1).
+Free switch on faint stays as-is.
+
+*The decision (reactive, revealed-only):* switch active→backup only if, against the
+**currently-revealed** opponent, a backup wins by a margin exceeding a hysteresis threshold AND
+the current matchup is unfavorable. Explicitly forbidden: switching a *neutral/winning* lead to
+pre-counter a hidden backline (the case the user called out). You react to what's on the field.
+
+*Switch cost:* switching hands the opponent tempo — the incoming mon enters at an energy
+deficit. Model with the `switches` RankerScenario energy (opponent ≈ +4 fast-moves of energy;
+§2.10) applied to the incomer. Add a **switch timer**: after switching you can't switch again
+for the GBL cooldown window (track in battle-ms).
+
+*Tractability:* a full imperfect-information Nash solve (belief states over hidden mons) is out
+of scope. Use a deterministic reactive heuristic per side on the perceived state; optionally a
+shallow search over switch/no-switch at the (few) decision points. Document divergence from
+real optimal play.
+
+*Architectural note (important):* the current 3v3 is **segment-based** — each segment runs a
+full 1v1 to a faint, so switches can only happen on faint today. Voluntary switching happens
+*mid-1v1*, which this structure can't express. Two options: **(a)** restrict voluntary switches
+to **reveal boundaries** (start of a segment) — fits the segment model, cheap, captures
+"switch when they bring in X"; **(b)** rewrite the orchestrator to a **turn-driven loop**
+(ties into M8.1 branchable battle) where either side may switch at any decision turn — full
+fidelity, larger lift. Recommend shipping (a) first, then (b).
+
+**Phased approach:**
+1. **M8.1 — Branchable battle:** clone/restore full `Battle` state + a `DecisionPolicy` hook
+   that lets a caller force shield yes/no and switch choices instead of the heuristic.
+2. **M8.2 — 1v1 shield search:** branch shield decisions for both sides; solve the small matrix
+   game (or minimax + alpha-beta) → best-line rating + optimal shield sequence. Fixes the
+   "shield the first" problem.
+3. **M8.3 — Switch search (3v3):** add lead + voluntary-switch branching (with the switch
+   timer) on top of M8.2; minimax over the combined shield+switch tree with pruning.
+4. **M8.4 — Aggregation & perf:** define the value a two-sided search reports (minimax value /
+   margin); memoize identical sub-positions; cap depth/breadth; parallelize.
+
+Supersedes the M2 "voluntary switching + switch timer" and "best-matchup" heuristic items.
+Cost is high, so the finder/rankings (M3/M4) may use a cheaper scenario approximation while the
+head-to-head viewer uses the full solver — see Q6/Q7.
+
 ---
 
 ## 5. Open questions (resolve as they block work)
@@ -389,6 +477,12 @@ snapshot tests and caching).
   heuristic and document divergence; refine later.
 - **Q5 — Finder pool size default:** cap for "up to 10 or whole meta?" and the pruning
   strategy — affects whether M3 is usable without M5.
+- **Q6 — Battle search depth (M8):** full minimax over all shield+switch decisions (accurate,
+  expensive) vs scenario enumeration/averaging (cheap, approximate). Leaning: full solver for
+  the head-to-head viewer; start with 1v1 shield search (M8.2) which both approaches need.
+- **Q7 — Where the solver applies:** head-to-head viewer only (viewer accurate, finder/rankings
+  keep the fast heuristic) vs everywhere (consistent but the finder gets much more expensive).
+  Leaning: viewer now, decide the finder's fidelity at M3.
 
 ## 6. Validation strategy
 - Cross-check Milestone 1 grades/threats/teammates against pvpoke.com for 3–5 known teams
@@ -424,6 +518,14 @@ snapshot tests and caching).
 - [ ] M3 — Advanced Team Finder
 - [ ] M4 — Best Teams
 - [ ] M5 — GPU / heavy parallelization
+- [ ] M8 — Optimal-play battle search (shield & switch decision search / minimax)
+  - [x] M8.1 — Shield-decision injection hook: `Battle.shieldOverride((defenderIndex, opportunityIndex) -> Bool?)` forces a shield decision (nil = heuristic). Tested.
+  - [x] M8.2 — 1v1 shield-decision search (`Engine/ShieldSearch.swift`): enumerates each side's shield timings (subsets of the first `shields+2` opportunities), builds the payoff matrix, solves maximin (A) / best-response (B). `Solution` also reports the **win/loss/tie distribution across all distinct shield scenarios** + best/worst-case rating. `optimal()` / `optimalLog()`; `RankingsStore.battleReplay` returns log + scenario stats. Wired into the 1v1 Battle Simulator, which now shows optimal (not greedy) shielding **and a "9W · 2L of 11 shield scenarios · best/worst" stat row**. Tested.
+  - [~] M8.3 — 3v3 optimal shields + information-aware switching. Leads UI-designated (position 0, `LEAD` badge on both teams) — NO lead enumeration.
+    - [x] Optimal shields per 3v3 segment: `ShieldSearch.optimalPolicy(a,b)` solves the shield game from each segment's current carried state (on clones); `ThreeVThreeBattle.optimalShields` (default on) applies it. Information-legitimate (decides shields for the revealed matchup only). Head-to-head `TeamBattleView` now uses it.
+    - [ ] Information-aware *voluntary* switching (see detailed spec in §4/M8). Phase (a): reveal-boundary switches within the segment model + `PerceivedState` + switch timer + energy penalty. Phase (b): turn-driven orchestrator for mid-1v1 switches.
+    - [x] Per-segment shield-scenario stats surfaced in the 3v3: each `TeamBattleLog.Segment` carries its `ShieldSearch.Solution`, and `TeamBattleView` shows the "NW · ML of K shield scenarios · best/worst" row on each segment's timeline (reusing the 1v1 stat).
+  - [ ] M8.4 — Aggregation criterion + memoization + parallelism; decide finder fidelity (Q7)
 - [ ] M6 — Self-hosted rankings (remove online-seeded values; §2.11). Shares the 1v1-matrix substrate with M3.
   - [ ] M6.1 — `MetaPool` (min stat-product filter → own meta pool, not the ranking list)
   - [ ] M6.2 — Local `Ranker`: 5-scenario N×N matrix → category scores (Safety) + overall order (meta-relevance), cached to disk
@@ -431,10 +533,10 @@ snapshot tests and caching).
   - [ ] M6.4 — Switch analyzer to local outputs; offline mode; validate vs pvpoke seeds
 - [ ] M7 — Interactive Battle Viewer (1v1 & 3v3 key-frame timeline + residuals)
   - [x] M7.1 — `BattleLog`/`BattleFrame`/`BattleEvent` (`Engine/BattleLog.swift`) + opt-in `record` mode in `Battle` (`Battle(_,_,record:)`, off by default); `makeLog()` returns the timeline + residuals. Tested (frames time-ordered; fast/charged/faint events; off by default).
-  - [ ] M7.2 — `BattleTimelineView` (1v1: scrubbable key-frames + HP/energy/shield residual bars + event list)
-  - [ ] M7.3 — 1v1 entry points: `PokemonDetailView` matchup → timeline; threat-matrix cell → timeline
-  - [ ] M7.4 — `TeamBattleLog` recording in `ThreeVThreeBattle` (per-segment logs + switch markers)
-  - [ ] M7.5 — `TeamBattleView` (3v3 result + per-segment timelines) + opponent-team builder + "Battle" entry point
+  - [x] M7.2 — `BattleTimelineView` (`Views/Battle/BattleTimelineView.swift`): **two synced lanes, one per Pokémon** (fixed name labels + column-aligned event ticks: short=fast, tall=charged, ✕=faint), scrubbable (tap tick / slider / step), per-side HP/energy/shield residual bars, event text. Derives max-HP from the initial frame. `BattleParticipant` display struct reused by 3v3. Verified via `#Preview`/RenderPreview.
+  - [~] M7.3 — 1v1 entry point: **done** from `PokemonDetailView` — tap any Key Wins/Counters row → sheet re-runs that matchup with `record:true` (`RankingsStore.battleLog(...)`) → `BattleTimelineView`. Still TODO: tapping a Team Builder threat-matrix cell → timeline.
+  - [x] M7.4 — `TeamBattleLog` recording in `ThreeVThreeBattle`: `runRecorded()` / static `runRecorded(...)` capture a `BattleLog` per 1v1 segment (with active team indices) + the result. `run()` refactored to a shared `simulateCore(record:)`. Tested.
+  - [x] M7.5 — `TeamBattleView` (`Views/Battle/TeamBattleView.swift`): pick an opponent team (search + tap, recommended movesets), "Simulate Battle" runs the recorded 3v3 off-main, shows the outcome (winner / survivors / timed-out) and each segment as a `BattleTimelineView`. Entry: **"Battle" button** in `TeamBuilderDetailView` → sheet. Opponent team + runner live on `TeamBuilderModel`.
 
 ### Milestone 1 status note (2026-07-03)
 Builds cleanly. The Team Builder is wired into the sidebar and produces the four

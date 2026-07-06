@@ -122,4 +122,71 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
         battle.simulate()
         #expect(battle.makeLog().frames.isEmpty)
     }
+
+    @Test func recordedTeamBattleHasSegments() {
+        let a = team("A", atk: 155, def: 115, hp: 165)
+        let b = team("B", atk: 120, def: 95, hp: 130)
+        let tlog = ThreeVThreeBattle(teamA: a, teamB: b).runRecorded()
+
+        #expect(!tlog.segments.isEmpty)
+        #expect(tlog.result.winner == .teamA)
+        #expect(tlog.segments.allSatisfy { !$0.log.frames.isEmpty })
+        #expect(tlog.segments.allSatisfy { $0.indexA >= 0 && $0.indexB >= 0 })
+        // First segment is the two leads.
+        #expect(tlog.segments.first?.indexA == 0)
+        #expect(tlog.segments.first?.indexB == 0)
+    }
+
+    // MARK: - M8 shield search
+
+    @Test func shieldOverrideForcesDecision() {
+        func run(shieldB: Bool) -> (hp: Int, shields: Int) {
+            let a = makePoke("A", type: "water", atk: 160, def: 110, hp: 150)
+            let b = makePoke("B", type: "grass", atk: 110, def: 120, hp: 170)
+            b.startingShields = 2
+            let battle = Battle(a, b)
+            battle.shieldOverride = { defenderIndex, _ in defenderIndex == 1 ? shieldB : nil }
+            battle.simulate()
+            return (b.hp, b.shields)
+        }
+        let never = run(shieldB: false)
+        let always = run(shieldB: true)
+
+        // Forced no-shield never spends a shield; shielding blocks damage.
+        #expect(never.shields == 2)
+        #expect(always.shields < 2)
+        #expect(always.hp >= never.hp)
+    }
+
+    @Test func shieldSearchReturnsSolution() throws {
+        let fast = Move(moveId: "f", name: "Fast", type: "water", power: 3, energy: 0,
+                        energyGain: 8, cooldown: 500, turns: 1, buffs: nil, buffTarget: nil, buffApplyChance: nil)
+        let charged = Move(moveId: "c", name: "Charged", type: "water", power: 60, energy: 35,
+                           energyGain: 0, cooldown: 0, turns: 0, buffs: nil, buffTarget: nil, buffApplyChance: nil)
+        let moves = ["f": fast, "c": charged]
+        func species(_ id: String) -> Pokemon {
+            Pokemon(dex: 1, speciesName: id, speciesId: id,
+                    baseStats: .init(atk: 150, def: 120, hp: 150),
+                    types: ["water"], fastMoves: ["f"], chargedMoves: ["c"],
+                    tags: nil, released: true, family: nil, formChange: nil)
+        }
+        let a = MatchupSimulator.Combatant(species: species("a"), shadow: false, fastMoveId: "f", chargedMoveIds: ["c"])
+        let b = MatchupSimulator.Combatant(species: species("b"), shadow: false, fastMoveId: "f", chargedMoveIds: ["c"])
+        let stats = BattlePokemon.Stats(atk: 150, def: 120, hp: 150)
+
+        let sol = ShieldSearch.optimal(a, statsA: stats, b, statsB: stats, movesById: moves, shieldsA: 2, shieldsB: 2)
+        #expect(sol != nil)
+        let s = try #require(sol)
+        #expect(s.ratingA >= 0 && s.ratingA <= 1000)
+        #expect(s.policyA.count <= 2)   // never shields more than the pool
+        // Scenario distribution is complete and self-consistent.
+        #expect(s.scenarioCount > 0)
+        #expect(s.scenarioWins + s.scenarioLosses + s.scenarioTies == s.scenarioCount)
+        #expect(s.bestCaseA >= s.worstCaseA)
+        #expect(s.ratingA >= s.worstCaseA && s.ratingA <= s.bestCaseA)
+
+        let log = ShieldSearch.optimalLog(a, statsA: stats, b, statsB: stats, movesById: moves, shieldsA: 2, shieldsB: 2)
+        #expect(log != nil)
+        #expect(!(log?.frames.isEmpty ?? true))
+    }
 }

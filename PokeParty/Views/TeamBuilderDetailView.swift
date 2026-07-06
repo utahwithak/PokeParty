@@ -14,6 +14,7 @@ import SwiftUI
 struct TeamBuilderDetailView: View {
     @Bindable var store: RankingsStore
     @Bindable var model: TeamBuilderModel
+    @State private var showingBattle = false
 
     var body: some View {
         ScrollView {
@@ -33,6 +34,9 @@ struct TeamBuilderDetailView: View {
         // League changes reload the ranking list asynchronously; re-analyze once
         // the new meta has arrived.
         .onChange(of: store.entries) { analyzeIfNeeded() }
+        .sheet(isPresented: $showingBattle) {
+            TeamBattleView(store: store, model: model)
+        }
     }
 
     private func analyzeIfNeeded() {
@@ -58,6 +62,13 @@ struct TeamBuilderDetailView: View {
             .pickerStyle(.menu)
             .fixedSize()
             Spacer()
+            Button {
+                showingBattle = true
+            } label: {
+                Label("Battle", systemImage: "bolt.fill")
+            }
+            .disabled(!model.hasMembers)
+            .help("Simulate a 3v3 against an opponent team")
             Text("\(model.members.count)/\(TeamBuilderModel.maxMembers)")
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.secondary)

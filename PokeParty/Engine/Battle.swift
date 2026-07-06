@@ -32,6 +32,13 @@ nonisolated final class Battle {
     private let record: Bool
     private var frames: [BattleFrame] = []
 
+    /// M8 shield-search hook. Given (defenderIndex, shieldOpportunityIndex) — the
+    /// n-th charged move this defender has faced while holding a shield — return
+    /// true = shield, false = don't, nil = use the built-in heuristic. Lets a search
+    /// drive shield timing instead of the greedy default.
+    var shieldOverride: ((Int, Int) -> Bool?)?
+    private var shieldOpportunities = [0, 0]
+
     init(_ a: BattlePokemon, _ b: BattlePokemon, startTime: Int = 0, record: Bool = false) {
         a.index = 0
         b.index = 1
@@ -62,6 +69,7 @@ nonisolated final class Battle {
         queuedActions = []
         turnActions = []
         previousTurnActions = []
+        shieldOpportunities = [0, 0]
         frames = []
         recordFrame(nil)   // initial full-state frame
     }
@@ -270,6 +278,14 @@ nonisolated final class Battle {
                         }
                         _ = aBest
                     }
+                }
+
+                // M8: let an external search force the decision for this shield
+                // opportunity, overriding the heuristic above.
+                let opportunity = shieldOpportunities[defender.index]
+                shieldOpportunities[defender.index] += 1
+                if let forced = shieldOverride?(defender.index, opportunity) {
+                    useShield = forced
                 }
 
                 if useShield {

@@ -43,6 +43,20 @@ nonisolated struct TeamBattleResult: Hashable {
     let entrancesB: [Int]
 }
 
+/// A recorded 3v3 battle: one `BattleLog` per 1v1 segment (with the team indices
+/// that were active) plus the overall result (plan M7.4).
+nonisolated struct TeamBattleLog: Sendable, Hashable {
+    struct Segment: Sendable, Hashable {
+        let indexA: Int          // team A Pokémon active this segment
+        let indexB: Int          // team B Pokémon active this segment
+        let log: BattleLog
+        /// Shield-scenario distribution for this segment (when optimal shields were used).
+        let shieldScenario: ShieldSearch.Solution?
+    }
+    let segments: [Segment]
+    let result: TeamBattleResult
+}
+
 nonisolated struct ThreeVThreeBattle {
     /// How a team picks its next Pokémon after one faints.
     enum SwitchPolicy: Sendable {
@@ -60,12 +74,31 @@ nonisolated struct ThreeVThreeBattle {
     var shieldsA: Int
     var shieldsB: Int
     var switchPolicy: SwitchPolicy
+    /// Search the optimal shield play for each 1v1 segment (both sides) instead of
+    /// the engine's greedy default. Information-legitimate — shields are decided for
+    /// the currently-revealed matchup only.
+    var optimalShields: Bool
+    /// Allow reactive, revealed-info-only voluntary switching at segment boundaries
+    /// (turn-0 safe-swap + counter-switch when the opponent reveals a new mon). The
+    /// switch timer prevents thrashing. Off by default (M8.3).
+    var voluntarySwitching: Bool
 
     private let battleTimeLimit = 240_000
+    /// GBL switch cooldown: after a voluntary switch a side can't switch again for
+    /// this long (battle-ms). (Live-game value is often cited as 60s; set to 30s per
+    /// project spec — one constant to change.)
+    private static let switchTimerMs = 30_000
+    /// A backup must beat the current active by at least this rating to be worth a
+    /// voluntary switch (hysteresis to avoid marginal flip-flopping).
+    private static let switchHysteresis = 75
+    /// Tempo cost of switching: the side that stays gets this many free fast moves of
+    /// energy while the other spends its turn switching.
+    private static let switchTempoFastMoves = 3
 
     init(teamA: [BattlePokemon], teamB: [BattlePokemon],
          leadA: Int = 0, leadB: Int = 0, shieldsA: Int = 2, shieldsB: Int = 2,
-         switchPolicy: SwitchPolicy = .bestMatchup) {
+         switchPolicy: SwitchPolicy = .bestMatchup, optimalShields: Bool = true,
+         voluntarySwitching: Bool = false) {
         self.teamA = teamA
         self.teamB = teamB
         self.leadA = leadA
@@ -73,11 +106,22 @@ nonisolated struct ThreeVThreeBattle {
         self.shieldsA = shieldsA
         self.shieldsB = shieldsB
         self.switchPolicy = switchPolicy
+        self.optimalShields = optimalShields
+        self.voluntarySwitching = voluntarySwitching
     }
 
     /// Runs the full team battle. Mutates the passed `BattlePokemon` objects, so
     /// pass freshly-built teams (see `makeTeam`).
-    func run() -> TeamBattleResult {
+    func run() -> TeamBattleResult { simulateCore(record: false).result }
+
+    /// Runs and records each 1v1 segment for the timeline viewer (M7.4/M7.5).
+    func runRecorded() -> TeamBattleLog {
+        let out = simulateCore(record: true)
+        return TeamBattleLog(segments: out.segments, result: out.result)
+    }
+
+    private func simulateCore(record: Bool) -> (result: TeamBattleResult, segments: [TeamBattleLog.Segment]) {
+        var segments: [TeamBattleLog.Segment] = []
         // Every Pokémon starts fresh; the loop updates start* to carry state.
         for p in teamA + teamB {
             p.startHp = 0
@@ -95,6 +139,10 @@ nonisolated struct ThreeVThreeBattle {
         var entrancesB = [activeB]
         var globalTime = 0
         var timedOut = false
+        // Time of each side's last voluntary switch (for the switch timer). Start
+        // off-cooldown so a turn-0 safe-swap is allowed.
+        var lastSwitchA = -Self.switchTimerMs
+        var lastSwitchB = -Self.switchTimerMs
 
         // Safety bound: at most (all Pokémon faint) + 1 segments.
         let maxSegments = teamA.count + teamB.count + 1
@@ -102,14 +150,48 @@ nonisolated struct ThreeVThreeBattle {
 
         while segment < maxSegments {
             segment += 1
+
+            // Voluntary switching at the boundary (turn-0 safe-swap + counter-switch
+            // vs the revealed opponent). Both sides decide simultaneously from the
+            // current on-field mons; the switch timer prevents thrashing.
+            if voluntarySwitching {
+                let aCanSwitch = globalTime - lastSwitchA >= Self.switchTimerMs
+                let bCanSwitch = globalTime - lastSwitchB >= Self.switchTimerMs
+                let aTarget = aCanSwitch ? voluntarySwitchTarget(
+                    team: teamA, fainted: faintedA, active: activeA,
+                    opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields) : nil
+                let bTarget = bCanSwitch ? voluntarySwitchTarget(
+                    team: teamB, fainted: faintedB, active: activeB,
+                    opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields) : nil
+                if let aTarget { activeA = aTarget; lastSwitchA = globalTime; entrancesA.append(aTarget) }
+                if let bTarget { activeB = bTarget; lastSwitchB = globalTime; entrancesB.append(bTarget) }
+                // Tempo cost: if exactly one side switched, the other gets free energy.
+                if (aTarget != nil) != (bTarget != nil) {
+                    let stayer = aTarget != nil ? teamB[activeB] : teamA[activeA]
+                    stayer.startEnergy = min(100, stayer.startEnergy + stayer.fastMove.energyGain * Self.switchTempoFastMoves)
+                }
+            }
+
             let a = teamA[activeA]
             let b = teamB[activeB]
             a.startingShields = teamAShields
             b.startingShields = teamBShields
 
-            let battle = Battle(a, b, startTime: globalTime)
+            let battle = Battle(a, b, startTime: globalTime, record: record)
+            var shieldSolution: ShieldSearch.Solution?
+            if optimalShields {
+                let sol = ShieldSearch.optimalSolution(a, b)
+                shieldSolution = sol
+                battle.shieldOverride = { defenderIndex, opportunity in
+                    defenderIndex == 0 ? sol.policyA.contains(opportunity) : sol.policyB.contains(opportunity)
+                }
+            }
             battle.simulate()
             globalTime = battle.time
+            if record {
+                segments.append(.init(indexA: activeA, indexB: activeB,
+                                      log: battle.makeLog(), shieldScenario: shieldSolution))
+            }
 
             // Carry each combatant's state forward (the survivor stays in).
             a.startHp = max(0, a.hp); a.startEnergy = a.energy; a.startStatBuffs = a.statBuffs
@@ -150,12 +232,55 @@ nonisolated struct ThreeVThreeBattle {
             if globalTime > battleTimeLimit { timedOut = true; break }
         }
 
-        return Self.tally(
+        let result = Self.tally(
             teamA: teamA, teamB: teamB,
             faintedA: faintedA, faintedB: faintedB,
             entrancesA: entrancesA, entrancesB: entrancesB,
             shieldsA: teamAShields, shieldsB: teamBShields,
             timedOut: timedOut)
+        return (result, segments)
+    }
+
+    // MARK: - Voluntary switching (information-aware, revealed-only)
+
+    /// Whether to voluntarily switch the active mon, and to whom, given only the
+    /// currently-revealed opponent. Returns a backup index that beats the opponent by
+    /// the hysteresis margin when the current active is losing; otherwise nil. Never
+    /// consults the opponent's hidden backline.
+    private func voluntarySwitchTarget(
+        team: [BattlePokemon], fainted: Set<Int>, active: Int,
+        opponent: BattlePokemon, teamShields: Int, opponentShields: Int
+    ) -> Int? {
+        let backups = (0..<team.count).filter { !fainted.contains($0) && $0 != active }
+        guard !backups.isEmpty else { return nil }
+
+        // Only switch out of a losing matchup.
+        let currentRating = rate(team[active], vs: opponent,
+                                 myShields: teamShields, oppShields: opponentShields, fresh: false)
+        guard currentRating < 500 else { return nil }
+
+        var bestIndex: Int?
+        var bestRating = currentRating + Self.switchHysteresis
+        for i in backups {
+            let r = rate(team[i], vs: opponent, myShields: teamShields, oppShields: opponentShields, fresh: true)
+            if r > bestRating && r > 500 { bestRating = r; bestIndex = i }
+        }
+        return bestIndex
+    }
+
+    /// Rating of `mon` vs `opponent` from a throwaway 1v1 on clones (no mutation).
+    /// `fresh` = the mon enters at full HP/energy (a switch-in); otherwise it uses its
+    /// carried state (the mon currently on the field).
+    private func rate(_ mon: BattlePokemon, vs opponent: BattlePokemon,
+                      myShields: Int, oppShields: Int, fresh: Bool) -> Int {
+        let m = mon.clone()
+        if fresh { m.startHp = 0; m.startEnergy = 0; m.startStatBuffs = [0, 0] }
+        m.startingShields = myShields
+        let o = opponent.clone()
+        o.startingShields = oppShields
+        let battle = Battle(m, o)
+        battle.simulate()
+        return battle.battleRating(forIndex: 0)
     }
 
     // MARK: - Helpers
@@ -277,5 +402,23 @@ nonisolated struct ThreeVThreeBattle {
             leadA: leadA, leadB: leadB,
             shieldsA: shieldsA, shieldsB: shieldsB,
             switchPolicy: switchPolicy).run()
+    }
+
+    /// Convenience: build both teams and run a recorded 3v3 (for the timeline).
+    static func runRecorded(
+        teamA: [MatchupSimulator.Combatant], statsA: [BattlePokemon.Stats],
+        teamB: [MatchupSimulator.Combatant], statsB: [BattlePokemon.Stats],
+        movesById: [String: Move],
+        leadA: Int = 0, leadB: Int = 0,
+        shieldsA: Int = 2, shieldsB: Int = 2,
+        switchPolicy: SwitchPolicy = .bestMatchup
+    ) -> TeamBattleLog? {
+        guard let a = makeTeam(teamA, stats: statsA, movesById: movesById),
+              let b = makeTeam(teamB, stats: statsB, movesById: movesById) else { return nil }
+        return ThreeVThreeBattle(
+            teamA: a, teamB: b,
+            leadA: leadA, leadB: leadB,
+            shieldsA: shieldsA, shieldsB: shieldsB,
+            switchPolicy: switchPolicy).runRecorded()
     }
 }

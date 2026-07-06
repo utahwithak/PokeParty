@@ -229,4 +229,53 @@ final class RankingsStore {
             return results.sorted { $0.rating > $1.rating }
         }
     }
+
+    /// The optimal-shield timeline for a matchup plus the win/loss breakdown across
+    /// every shield scenario (M8.2).
+    struct MatchupReplay: Sendable {
+        let log: BattleLog
+        let scenario: ShieldSearch.Solution
+    }
+
+    /// Records a single matchup — `entry` (with the given moveset) vs one opponent
+    /// (using its recommended moveset) at the given shields — under optimal shield
+    /// play, returning the timeline + scenario stats. Synchronous; a 1v1 is fast.
+    func battleReplay(
+        for entry: RankingEntry,
+        fastMoveId: String, chargedMoveIds: [String],
+        opponentId: String,
+        yourShields: Int, opponentShields: Int
+    ) -> MatchupReplay? {
+        let cap = format.cp
+        guard let meR = Self.resolve(speciesId: entry.speciesId, pokemonById: pokemonById),
+              !chargedMoveIds.isEmpty else { return nil }
+        let me = MatchupSimulator.Combatant(species: meR.species, shadow: meR.shadow,
+                                            fastMoveId: fastMoveId, chargedMoveIds: chargedMoveIds)
+
+        // Opponent: its recommended moveset from the rankings, else its first moves.
+        let opp: MatchupSimulator.Combatant
+        if let oppEntry = self.entry(id: opponentId), let c = Self.combatant(for: oppEntry, pokemonById: pokemonById) {
+            opp = c
+        } else if let r = Self.resolve(speciesId: opponentId, pokemonById: pokemonById),
+                  let fast = r.species.fastMoves.first {
+            opp = MatchupSimulator.Combatant(species: r.species, shadow: r.shadow,
+                                             fastMoveId: fast, chargedMoveIds: Array(r.species.chargedMoves.prefix(2)))
+        } else {
+            return nil
+        }
+
+        guard let meStats = MatchupSimulator.optimalStats(for: me, cpCap: cap),
+              let oppStats = MatchupSimulator.optimalStats(for: opp, cpCap: cap),
+              // Solve the shield game once, then replay the optimal line with recording.
+              let sol = ShieldSearch.optimal(me, statsA: meStats, opp, statsB: oppStats,
+                                             movesById: movesById,
+                                             shieldsA: yourShields, shieldsB: opponentShields),
+              let log = ShieldSearch.play(me, statsA: meStats, opp, statsB: oppStats,
+                                          movesById: movesById,
+                                          shieldsA: yourShields, shieldsB: opponentShields,
+                                          policyA: sol.policyA, policyB: sol.policyB, record: true)?.log
+        else { return nil }
+
+        return MatchupReplay(log: log, scenario: sol)
+    }
 }
