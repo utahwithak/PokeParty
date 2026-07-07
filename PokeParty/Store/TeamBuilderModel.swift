@@ -196,7 +196,7 @@ final class TeamBuilderModel {
                 ThreeVThreeBattle.runRecorded(
                     teamA: mine.combatants, statsA: mine.stats,
                     teamB: opp.combatants, statsB: opp.stats,
-                    movesById: movesById)
+                    movesById: movesById, voluntarySwitching: true)
             }.value
             if Task.isCancelled { return }
             self.battleLog = log

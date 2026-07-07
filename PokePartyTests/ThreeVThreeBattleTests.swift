@@ -137,6 +137,30 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
         #expect(tlog.segments.first?.indexB == 0)
     }
 
+    // MARK: - M8.3 voluntary switching
+
+    @Test func safeSwapSwitchesLosingLead() {
+        // A's lead is Grass (loses to B's Fire lead); A has a Water backup that beats
+        // Fire. With voluntary switching on, A should safe-swap the lead for the Water
+        // counter at the start; with it off, A keeps its lead.
+        func teamA() -> [BattlePokemon] {
+            [makePoke("A-grass", type: "grass", atk: 120, def: 110, hp: 150),
+             makePoke("A-normal", type: "normal", atk: 130, def: 110, hp: 150),
+             makePoke("A-water", type: "water", atk: 145, def: 115, hp: 160)]
+        }
+        func teamB() -> [BattlePokemon] {
+            [makePoke("B-fire", type: "fire", atk: 150, def: 115, hp: 160),
+             makePoke("B-rock", type: "rock", atk: 130, def: 110, hp: 150),
+             makePoke("B-ice", type: "ice", atk: 130, def: 110, hp: 150)]
+        }
+
+        let off = ThreeVThreeBattle(teamA: teamA(), teamB: teamB(), voluntarySwitching: false).runRecorded()
+        #expect(off.segments.first?.indexA == 0)   // no swap: Grass lead stays in
+
+        let on = ThreeVThreeBattle(teamA: teamA(), teamB: teamB(), voluntarySwitching: true).runRecorded()
+        #expect(on.segments.first?.indexA == 2)    // safe-swapped to the Water counter
+    }
+
     // MARK: - M8 shield search
 
     @Test func shieldOverrideForcesDecision() {

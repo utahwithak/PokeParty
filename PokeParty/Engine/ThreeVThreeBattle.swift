@@ -411,7 +411,8 @@ nonisolated struct ThreeVThreeBattle {
         movesById: [String: Move],
         leadA: Int = 0, leadB: Int = 0,
         shieldsA: Int = 2, shieldsB: Int = 2,
-        switchPolicy: SwitchPolicy = .bestMatchup
+        switchPolicy: SwitchPolicy = .bestMatchup,
+        voluntarySwitching: Bool = false
     ) -> TeamBattleLog? {
         guard let a = makeTeam(teamA, stats: statsA, movesById: movesById),
               let b = makeTeam(teamB, stats: statsB, movesById: movesById) else { return nil }
@@ -419,6 +420,6 @@ nonisolated struct ThreeVThreeBattle {
             teamA: a, teamB: b,
             leadA: leadA, leadB: leadB,
             shieldsA: shieldsA, shieldsB: shieldsB,
-            switchPolicy: switchPolicy).runRecorded()
+            switchPolicy: switchPolicy, voluntarySwitching: voluntarySwitching).runRecorded()
     }
 }
