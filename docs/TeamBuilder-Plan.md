@@ -4,7 +4,7 @@
 > **Milestone checklist** at the bottom and claim a task by marking it
 > `[~] (in progress — <agent/initials>)` before starting, `[x]` when done.
 >
-> Last updated: 2026-07-04
+> Last updated: 2026-07-10
 
 ---
 
@@ -515,7 +515,16 @@ head-to-head viewer uses the full solver — see Q6/Q7.
   - [ ] Continuous per-mon cooldown across a switch (currently resets each segment)
   - [ ] Dev/head-to-head UI to pick two teams and view the result/timeline → folded into **M7**
   - [ ] Validate a few outcomes against pvpoke.com's battle sim
-- [ ] M3 — Advanced Team Finder
+- [~] M3 — Advanced Team Finder
+  - [x] M3-lite — **Simplistic 3v3 Party Finder** (2026-07-10): quick suggested teams per format
+    from true 3v3 sims. `Engine/TeamFinder.swift` (all C(pool,3) combos from the top of the
+    ranking list, family/species-deduped, each scored vs a deterministic stride-sampled set of
+    ~24 opponent teams; fast heuristics per Q7 — greedy shields, faint-only best-matchup
+    switching, NO shield search), `Store/TeamFinderModel.swift` (own format picker incl. cups,
+    pool size 10–25, progress + cancellation), `Views/TeamFinderView.swift` (config +
+    ranked-results columns, "Open in Team Builder"), sidebar `.partyFinder`. Unit-tested
+    (`TeamFinderTests`). Still TODO for full M3: user-picked pools, bigger pools/pruning,
+    per-team breakdown UI.
 - [ ] M4 — Best Teams
 - [ ] M5 — GPU / heavy parallelization
 - [ ] M8 — Optimal-play battle search (shield & switch decision search / minimax)

@@ -14,7 +14,10 @@ import SwiftUI
 struct TeamBuilderDetailView: View {
     @Bindable var store: RankingsStore
     @Bindable var model: TeamBuilderModel
+    var savedTeams: SavedTeamsStore
     @State private var showingBattle = false
+    @State private var showingSavePrompt = false
+    @State private var saveName = ""
 
     var body: some View {
         ScrollView {
@@ -35,7 +38,14 @@ struct TeamBuilderDetailView: View {
         // the new meta has arrived.
         .onChange(of: store.entries) { analyzeIfNeeded() }
         .sheet(isPresented: $showingBattle) {
-            TeamBattleView(store: store, model: model)
+            TeamBattleView(store: store, model: model, savedTeams: savedTeams)
+        }
+        .alert("Save Team", isPresented: $showingSavePrompt) {
+            TextField("Team name", text: $saveName)
+            Button("Save") { savedTeams.save(name: saveName, members: model.members) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Saving with an existing team's name replaces that team.")
         }
     }
 
@@ -62,6 +72,7 @@ struct TeamBuilderDetailView: View {
             .pickerStyle(.menu)
             .fixedSize()
             Spacer()
+            teamsMenu
             Button {
                 showingBattle = true
             } label: {
@@ -73,6 +84,39 @@ struct TeamBuilderDetailView: View {
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - Saved teams
+
+    private var teamsMenu: some View {
+        Menu {
+            if savedTeams.teams.isEmpty {
+                Text("No saved teams")
+            }
+            ForEach(savedTeams.teams) { team in
+                Menu(team.name) {
+                    Button("Load") { model.setTeam(team.members) }
+                    Button("Delete", role: .destructive) { savedTeams.delete(team) }
+                }
+            }
+            Divider()
+            Button("Save Current Team…") {
+                saveName = defaultSaveName
+                showingSavePrompt = true
+            }
+            .disabled(!model.hasMembers)
+        } label: {
+            Label("Teams", systemImage: "person.3.sequence")
+        }
+        .fixedSize()
+        .help("Save the current team or load a saved one")
+    }
+
+    /// Default name for the save prompt: the members' species names.
+    private var defaultSaveName: String {
+        model.members
+            .map { store.pokemonById[$0.speciesId]?.speciesName ?? $0.speciesId }
+            .joined(separator: " / ")
     }
 
     // MARK: - Team editor

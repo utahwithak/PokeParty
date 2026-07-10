@@ -83,6 +83,12 @@ final class TeamBuilderModel {
         invalidate()
     }
 
+    /// Replaces the whole team (used when loading a saved team).
+    func setTeam(_ newMembers: [TeamMember]) {
+        members = Array(newMembers.prefix(Self.maxMembers))
+        invalidate()
+    }
+
     func setShadow(_ shadow: Bool, at index: Int) {
         guard members.indices.contains(index), members[index].shadow != shadow else { return }
         members[index].shadow = shadow
@@ -173,6 +179,12 @@ final class TeamBuilderModel {
     func addOpponent(_ member: TeamMember) {
         guard !opponentIsFull, !opponentContains(speciesId: member.speciesId) else { return }
         opponentMembers.append(member)
+        battleLog = nil
+    }
+
+    /// Replaces the whole opponent team (used when loading a saved team).
+    func setOpponentTeam(_ newMembers: [TeamMember]) {
+        opponentMembers = Array(newMembers.prefix(Self.maxMembers))
         battleLog = nil
     }
 

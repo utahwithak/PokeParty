@@ -12,6 +12,7 @@ enum SidebarSelection: Hashable {
     case format(RankingFormat)
     case rankChecker
     case teamBuilder
+    case partyFinder
 }
 
 /// Sidebar listing tools, the core PvP leagues, and active cups (e.g. Summer Cup).
@@ -26,6 +27,8 @@ struct LeagueSidebar: View {
                     .tag(SidebarSelection.rankChecker)
                 Label("Team Builder", systemImage: "person.3.sequence.fill")
                     .tag(SidebarSelection.teamBuilder)
+                Label("Party Finder", systemImage: "wand.and.stars")
+                    .tag(SidebarSelection.partyFinder)
             }
 
             Section("Leagues") {

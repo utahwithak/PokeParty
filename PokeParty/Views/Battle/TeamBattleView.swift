@@ -12,6 +12,7 @@ import SwiftUI
 struct TeamBattleView: View {
     var store: RankingsStore
     @Bindable var model: TeamBuilderModel
+    var savedTeams: SavedTeamsStore
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
 
@@ -58,7 +59,20 @@ struct TeamBattleView: View {
 
     private func teamColumn(title: String, members: [TeamMember], opponent: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.subheadline.weight(.semibold))
+            HStack {
+                Text(title).font(.subheadline.weight(.semibold))
+                if opponent, !savedTeams.teams.isEmpty {
+                    Spacer()
+                    Menu("Load Saved") {
+                        ForEach(savedTeams.teams) { team in
+                            Button(team.name) { model.setOpponentTeam(team.members) }
+                        }
+                    }
+                    .fixedSize()
+                    .font(.caption)
+                    .help("Use a saved team as the opponent")
+                }
+            }
             if members.isEmpty {
                 Text(opponent ? "Add three below" : "Build a team first")
                     .font(.caption).foregroundStyle(.secondary)

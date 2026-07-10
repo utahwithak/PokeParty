@@ -39,6 +39,13 @@ nonisolated final class Battle {
     var shieldOverride: ((Int, Int) -> Bool?)?
     private var shieldOpportunities = [0, 0]
 
+    /// M8.3(b) mid-battle switch hook. Called after each turn while both Pokémon
+    /// are alive; return true to stop the simulation at this point (the 3v3
+    /// orchestrator then performs a voluntary switch and continues in a new
+    /// segment). `interrupted` reports whether the battle ended this way.
+    var interruptCheck: ((Battle) -> Bool)?
+    private(set) var interrupted = false
+
     init(_ a: BattlePokemon, _ b: BattlePokemon, startTime: Int = 0, record: Bool = false) {
         a.index = 0
         b.index = 1

@@ -11,6 +11,8 @@ struct ContentView: View {
     @State private var store = RankingsStore()
     @State private var rankChecker = RankCheckerModel()
     @State private var teamBuilder = TeamBuilderModel()
+    @State private var teamFinder = TeamFinderModel()
+    @State private var savedTeams = SavedTeamsStore()
     @State private var selection: SidebarSelection = .format(.great)
     @State private var selectedEntryID: RankingEntry.ID?
 
@@ -45,6 +47,8 @@ struct ContentView: View {
             RankCheckerInputView(store: store, model: rankChecker)
         case .teamBuilder:
             TeamBuilderView(store: store, model: teamBuilder)
+        case .partyFinder:
+            TeamFinderView(store: store, model: teamFinder)
         }
     }
 
@@ -65,7 +69,10 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerResultsView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamBuilderDetailView(store: store, model: teamBuilder)
+            TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams)
+        case .partyFinder:
+            TeamFinderResultsView(store: store, model: teamFinder,
+                                  teamBuilder: teamBuilder, selection: $selection)
         }
     }
 }
