@@ -27,7 +27,7 @@ final class TeamFinderModel {
     var format: RankingFormat = .great
     /// How many of the format's top-ranked Pokémon form the candidate pool.
     var poolSize: Int = 15
-    static let poolSizes = [10, 15, 20, 25]
+    static let poolSizes = [10, 15, 20, 25, 50, 75, 100]
 
     private(set) var phase: Phase = .idle
     /// Search progress, 0…1 (meaningful while `phase == .searching`).

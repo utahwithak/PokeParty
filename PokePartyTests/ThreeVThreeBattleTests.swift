@@ -192,6 +192,7 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
             Pokemon(dex: 1, speciesName: id, speciesId: id,
                     baseStats: .init(atk: 150, def: 120, hp: 150),
                     types: ["water"], fastMoves: ["f"], chargedMoves: ["c"],
+                    eliteMoves: nil, legacyMoves: nil,
                     tags: nil, released: true, family: nil, formChange: nil)
         }
         let a = MatchupSimulator.Combatant(species: species("a"), shadow: false, fastMoveId: "f", chargedMoveIds: ["c"])

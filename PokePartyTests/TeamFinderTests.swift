@@ -29,6 +29,7 @@ private func makeCandidate(
     let species = Pokemon(dex: dex, speciesName: id, speciesId: id,
                           baseStats: .init(atk: Int(atk), def: Int(def), hp: hp),
                           types: [type], fastMoves: ["f_\(type)"], chargedMoves: ["c_\(type)"],
+                          eliteMoves: nil, legacyMoves: nil,
                           tags: nil, released: true, family: nil, formChange: nil)
     let combatant = MatchupSimulator.Combatant(
         species: species, shadow: false,
@@ -93,5 +94,24 @@ private func makeCandidate(
         #expect(results.first?.members.contains { $0.member.speciesId == "super" } == true)
         // Records are self-consistent and within the opponent sample size.
         #expect(results.allSatisfy { $0.wins + $0.losses + $0.ties <= 10 && $0.winRate >= 0 && $0.winRate <= 1 })
+    }
+
+    @Test func largePoolsShortlistBeforeFullSims() async {
+        // 8 candidates → C(8,3) = 56 trios; a tiny fullSimLimit forces the
+        // 1v1-matrix shortlist path used by the top-50/100 pools.
+        let types = ["fire", "water", "grass", "rock", "ice", "electric", "flying", "ground"]
+        var pool = types.enumerated().map { i, t in makeCandidate(t, dex: i + 1, type: t) }
+        pool[0] = makeCandidate("super", dex: 1, type: "dragon", atk: 175, def: 135, hp: 185)
+        let moves = makeMoves(for: types + ["dragon"])
+
+        let results = await TeamFinder.findTeams(
+            pool: pool, movesById: moves, opponentSampleCount: 8, fullSimLimit: 12)
+
+        // Only the shortlist ran the full gauntlet…
+        #expect(results.count == 12)
+        // …and it still surfaces the overpowered mon's teams first.
+        #expect(results.first?.members.contains { $0.member.speciesId == "super" } == true)
+        let rates = results.map(\.winRate)
+        #expect(rates == rates.sorted(by: >))
     }
 }

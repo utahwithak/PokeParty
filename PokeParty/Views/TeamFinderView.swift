@@ -40,7 +40,7 @@ struct TeamFinderView: View {
                 }
                 .disabled(model.isRunning)
 
-                Text("Every 3-Pokémon combination from the pool battles the same sample of opponent teams in full 3v3 simulations (recommended movesets, best-matchup switching). Larger pools find more teams but take longer.")
+                Text("Every 3-Pokémon combination from the pool battles the same sample of opponent teams in full 3v3 simulations (recommended movesets, best-matchup switching). For large pools a fast 1v1 screen shortlists the most promising teams first, so deep-meta picks can still surface without simulating every combination. Larger pools take longer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -16,6 +16,10 @@ nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
     let types: [String]
     let fastMoves: [String]
     let chargedMoves: [String]
+    /// Moves only obtainable with an Elite TM.
+    let eliteMoves: [String]?
+    /// Moves no longer obtainable at all (event/legacy exclusives).
+    let legacyMoves: [String]?
     let tags: [String]?
     let released: Bool?
     let family: Family?
@@ -36,6 +40,34 @@ nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
     /// Mimikyu's Disguise: a one-time block of the first charged move.
     var hasDisguise: Bool {
         formChange?.effect == "protect"
+    }
+
+    /// Special availability of a move outside the normal TM pool.
+    enum MoveDesignation {
+        case elite
+        case legacy
+
+        var label: String {
+            switch self {
+            case .elite: return "Elite TM"
+            case .legacy: return "Legacy"
+            }
+        }
+
+        /// Tooltip text explaining the marker.
+        var help: String {
+            switch self {
+            case .elite: return "Requires an Elite TM"
+            case .legacy: return "Legacy move — no longer obtainable"
+            }
+        }
+    }
+
+    /// How `moveId` is specially obtained, or nil for a normally available move.
+    func moveDesignation(for moveId: String) -> MoveDesignation? {
+        if eliteMoves?.contains(moveId) == true { return .elite }
+        if legacyMoves?.contains(moveId) == true { return .legacy }
+        return nil
     }
 
     struct BaseStats: Decodable, Hashable {

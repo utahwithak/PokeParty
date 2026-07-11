@@ -282,6 +282,7 @@ struct PokemonDetailView: View {
                     recommendedId: entry.moveset.first,
                     includesNone: false,
                     fastEnergyGain: nil,
+                    species: pokemon,
                     store: store
                 )
                 MoveSelectorRow(
@@ -291,6 +292,7 @@ struct PokemonDetailView: View {
                     recommendedId: entry.moveset.count > 1 ? entry.moveset[1] : nil,
                     includesNone: false,
                     fastEnergyGain: fastEnergyGain,
+                    species: pokemon,
                     store: store
                 )
                 MoveSelectorRow(
@@ -300,6 +302,7 @@ struct PokemonDetailView: View {
                     recommendedId: entry.moveset.count > 2 ? entry.moveset[2] : nil,
                     includesNone: true,
                     fastEnergyGain: fastEnergyGain,
+                    species: pokemon,
                     store: store
                 )
             } else {
@@ -377,9 +380,20 @@ private struct MoveSelectorRow: View {
     let includesNone: Bool
     /// Energy gained per use of the selected fast move, used for charged-move counts.
     let fastEnergyGain: Int?
+    /// Species providing the move pool, for Elite TM / Legacy designations.
+    let species: Pokemon
     let store: RankingsStore
 
     private var move: Move? { store.move(id: selection) }
+    private var designation: Pokemon.MoveDesignation? {
+        species.moveDesignation(for: selection)
+    }
+
+    /// Selected label: PvPoke's `*` convention flags Elite TM / Legacy moves.
+    private var selectedName: String {
+        guard let move else { return "None" }
+        return designation == nil ? move.name : move.name + "*"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -393,8 +407,9 @@ private struct MoveSelectorRow: View {
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        Text(move?.name ?? "None")
+                        Text(selectedName)
                             .font(.body.weight(.medium))
+                            .help(designation?.help ?? "")
                         if let move { TypeBadge(type: move.type) }
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.caption2)
@@ -445,10 +460,14 @@ private struct MoveSelectorRow: View {
         }
     }
 
-    /// Menu label: move name, "(Recommended)" flag, and DPS/EPS (fast) or DPE (charged).
+    /// Menu label: move name, Elite TM / Legacy designation, "(Recommended)"
+    /// flag, and DPS/EPS (fast) or DPE (charged).
     private func optionLabel(_ id: String) -> String {
         guard let m = store.move(id: id) else { return id }
         var name = m.name
+        if let designation = species.moveDesignation(for: id) {
+            name += " (\(designation.label))"
+        }
         if id == recommendedId { name += " (Recommended)" }
         if m.isFast {
             let turns = m.turns ?? max(m.cooldown / 500, 1)

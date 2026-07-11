@@ -279,6 +279,7 @@ private struct TeamMemberCard: View {
                 optionIds: species.fastMoves,
                 recommendedId: recommended.first,
                 includesNone: false,
+                species: species,
                 store: store,
                 onSelect: { if let id = $0 { model.setFastMove(id, at: index) } })
             TeamMovePicker(
@@ -287,6 +288,7 @@ private struct TeamMemberCard: View {
                 optionIds: species.chargedMoves,
                 recommendedId: recommended.count > 1 ? recommended[1] : nil,
                 includesNone: false,
+                species: species,
                 store: store,
                 onSelect: { if let id = $0 { model.setChargedMove(id, slot: 0, at: index) } })
             TeamMovePicker(
@@ -295,6 +297,7 @@ private struct TeamMemberCard: View {
                 optionIds: species.chargedMoves,
                 recommendedId: recommended.count > 2 ? recommended[2] : nil,
                 includesNone: true,
+                species: species,
                 store: store,
                 onSelect: { model.setChargedMove($0, slot: 1, at: index) })
         }
@@ -314,17 +317,23 @@ private struct TeamMemberCard: View {
 
 /// A compact menu to pick a move for a team slot, showing the current move's
 /// name + type. Mirrors `PokemonDetailView`'s picker but sized for the cards.
-private struct TeamMovePicker: View {
+/// Also used by the 1v1 Simulator's combatant cards (`MatchupDetailView`).
+struct TeamMovePicker: View {
     let label: String
     let currentId: String            // "" == none
     let optionIds: [String]
     let recommendedId: String?
     let includesNone: Bool
+    /// Species providing the move pool, for Elite TM / Legacy designations.
+    let species: Pokemon
     let store: RankingsStore
     /// nil argument means "None" was chosen (second charged slot only).
     let onSelect: (String?) -> Void
 
     private var move: Move? { store.move(id: currentId) }
+    private var designation: Pokemon.MoveDesignation? {
+        species.moveDesignation(for: currentId)
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -341,10 +350,11 @@ private struct TeamMovePicker: View {
                 }
             } label: {
                 HStack(spacing: 5) {
-                    Text(move?.name ?? "None")
+                    Text(currentName)
                         .font(.caption.weight(.medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
+                        .help(designation?.help ?? "")
                     if let move { TypeBadge(type: move.type) }
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.up.chevron.down")
@@ -370,9 +380,18 @@ private struct TeamMovePicker: View {
         }
     }
 
+    /// Collapsed label: PvPoke's `*` convention flags Elite TM / Legacy moves.
+    private var currentName: String {
+        guard let move else { return "None" }
+        return designation == nil ? move.name : move.name + "*"
+    }
+
     private func optionLabel(_ id: String) -> String {
         guard let m = store.move(id: id) else { return id }
         var name = m.name
+        if let designation = species.moveDesignation(for: id) {
+            name += " (\(designation.label))"
+        }
         if id == recommendedId { name += " (Recommended)" }
         return name
     }

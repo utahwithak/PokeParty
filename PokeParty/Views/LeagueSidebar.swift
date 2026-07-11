@@ -13,6 +13,7 @@ enum SidebarSelection: Hashable {
     case rankChecker
     case teamBuilder
     case partyFinder
+    case matchup
 }
 
 /// Sidebar listing tools, the core PvP leagues, and active cups (e.g. Summer Cup).
@@ -29,6 +30,8 @@ struct LeagueSidebar: View {
                     .tag(SidebarSelection.teamBuilder)
                 Label("Party Finder", systemImage: "wand.and.stars")
                     .tag(SidebarSelection.partyFinder)
+                Label("1v1 Simulator", systemImage: "bolt.horizontal.fill")
+                    .tag(SidebarSelection.matchup)
             }
 
             Section("Leagues") {
