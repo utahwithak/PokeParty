@@ -131,6 +131,15 @@ final class RankingsStore {
         }
     }
 
+    /// Rankings for an arbitrary format, sharing the browser's per-format cache
+    /// (used by tools pinned to one league, like Breakpoints).
+    func rankings(for format: RankingFormat) async throws -> [RankingEntry] {
+        if let cached = rankingsCache[format] { return cached }
+        let loaded = try await service.rankings(for: format)
+        rankingsCache[format] = loaded
+        return loaded
+    }
+
     // MARK: - Lookups
 
     func entry(id: RankingEntry.ID) -> RankingEntry? {
@@ -163,7 +172,7 @@ final class RankingsStore {
     // MARK: - Live matchup simulation
 
     /// Resolves the species (and shadow flag) for a ranking-entry species id.
-    private nonisolated static func resolve(
+    nonisolated static func resolve(
         speciesId: String, pokemonById: [String: Pokemon]
     ) -> (species: Pokemon, shadow: Bool)? {
         // Shadow Pokémon are their own gamemaster entries (tagged "shadow");
@@ -177,7 +186,7 @@ final class RankingsStore {
     }
 
     /// Builds a combatant from a ranking entry's recommended moveset.
-    private nonisolated static func combatant(
+    nonisolated static func combatant(
         for entry: RankingEntry,
         pokemonById: [String: Pokemon]
     ) -> MatchupSimulator.Combatant? {
