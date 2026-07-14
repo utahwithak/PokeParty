@@ -2,26 +2,32 @@
 //  TeamFinder.swift
 //  PokeParty
 //
-//  The simplistic 3v3 Party Finder (a light first cut of plan Milestones 3/4).
-//  Builds candidate teams constructively from the format's ranking list — each
-//  pool mon seeds teams, partners are its "suggested teammates" (the mons that
-//  best answer its threats, from the pairwise 1v1 matrix), and thirds maximize
-//  the trio's meta coverage. Structurally bad teams are filtered before any
-//  3v3 runs: shared evolutionary family, a type shared by all three members
-//  (mono-type cores get farmed by one counter), or a single top-meta mon that
-//  beats the whole team (a common weakness no rotation can play around).
-//  Survivors are graded with true 3v3 battles (`ThreeVThreeBattle`) against a
-//  deterministic sample of opponent teams drawn from the same candidate space.
+//  The 3v3 Party Finder engine: a streaming, full round-robin tournament
+//  (plan Milestones 3/4).
 //
-//  Per plan Q7, the finder uses the engine's fast heuristics — greedy shields
-//  and faint-only best-matchup switching — NOT the optimal-play shield/switch
-//  search, which is far too expensive for tens of thousands of battles. The
+//  Seeding: a pairwise 1v1 rating matrix over the whole pool ranks every
+//  distinct trio by "meta coverage" (for each other pool mon, the best
+//  member's rating against it). The top `fieldSize` trios form the FIELD.
+//
+//  Tournament: a full round robin — every team battles every other team in
+//  the field in true 3v3 simulations, scheduled with the circle method so
+//  each virtual round gives every team exactly one more game and records
+//  stay comparable all the way down. Nothing is graded against a heuristic
+//  subset: a team's record is its record against the entire field, so a
+//  team that folds to the meta's heavyweights sinks no matter how well it
+//  covers the long tail. `Standings` snapshots stream out as battles
+//  resolve, so the UI can animate the leaderboard live; teams "drop off"
+//  simply by falling out of the visible top `maxResults`.
+//
+//  Per plan Q7, battles use the engine's fast heuristics — greedy shields
+//  and faint-only best-matchup switching — NOT the optimal-play shield/
+//  switch search, which is far too expensive for millions of battles. The
 //  head-to-head viewer keeps the full solver.
 //
-//  Large pools (top 50/100 ⇒ 10⁴–10⁵ trios) are searched in two stages: a cheap
-//  pairwise-1v1 "meta coverage" heuristic shortlists the most promising trios,
-//  and only the shortlist runs the full 3v3 gauntlet. Small pools skip the
-//  shortlist and behave exactly as before.
+//  Trios are enumerated streaming (never materialized all at once): a top-200
+//  pool has C(200,3) ≈ 1.3M combinations, kept only as a bounded best-`limit`
+//  selection of packed indices. Results are Codable so a finished tournament
+//  can be persisted and reviewed later (the meta rarely changes).
 //
 
 import Foundation
@@ -42,94 +48,221 @@ nonisolated enum TeamFinder {
         let stats: BattlePokemon.Stats
     }
 
-    /// One suggested team with its aggregate 3v3 record. Members are in team
-    /// order (index 0 = lead), which follows the ranking order of the pool.
-    struct RankedTeam: Identifiable, Sendable {
-        let members: [Candidate]
+    /// One entrant with its accumulated round-robin record. Members are in
+    /// team order (index 0 = lead), which follows the ranking order of the
+    /// pool. Codable so finished tournaments can be saved and reviewed.
+    struct RankedTeam: Identifiable, Sendable, Codable {
+        /// The displayable slice of a candidate (everything the leaderboard
+        /// and Team Builder handoff need — battle payloads stay engine-side).
+        struct Member: Sendable, Codable, Hashable {
+            let member: TeamMember
+            let speciesName: String
+            let types: [String]
+            let shadow: Bool
+        }
+
+        let members: [Member]
         let wins: Int
         let losses: Int
         let ties: Int
-        /// 0…1 across the opponent sample; a tie counts as half a win.
+        /// 0…1 across the games played so far; a tie counts as half a win.
         let winRate: Double
-        /// Mean team battle rating (0–1000, 500 = even) across the sample.
+        /// Mean team battle rating (0–1000, 500 = even) across games played.
         let averageRating: Double
 
-        var id: String { members.map { $0.member.speciesId }.joined(separator: "+") }
+        var id: String {
+            members.map { m in
+                m.shadow && !m.member.speciesId.hasSuffix("_shadow")
+                    ? m.member.speciesId + "_shadow"
+                    : m.member.speciesId
+            }.joined(separator: "+")
+        }
+        /// Round-robin games played so far (grows as rounds complete).
+        var gamesPlayed: Int { wins + losses + ties }
     }
 
-    /// Scores every candidate team against the opponent sample and returns the
-    /// best `maxResults`, best-first. Fans out across all cores; supports
-    /// cancellation via the surrounding task. `progress` (0…1) is called from
-    /// off the main actor.
+    /// A live snapshot of the tournament, emitted after seeding and then
+    /// periodically as battles resolve, so the UI can animate the leaderboard.
+    struct Standings: Sendable {
+        /// The current best teams, ranked, capped at `maxResults`.
+        var teams: [RankedTeam]
+        /// The size of the round-robin field.
+        var totalEntrants: Int
+        /// Cumulative 3v3 battles fought / the full round-robin total.
+        var battlesFought: Int
+        var totalBattles: Int
+        /// Completed virtual rounds (≈ games every team has played). 0 = seeded.
+        var round: Int
+        var totalRounds: Int
+        var isComplete: Bool
+    }
+
+    /// Runs the round-robin tournament and returns the final `Standings`
+    /// (`isComplete` is true only if every battle was fought — a cancelled
+    /// run returns whatever accumulated). `onSeedingProgress` (0…1) covers
+    /// the pairwise matrix + field shortlist; `onStandings` fires after
+    /// seeding (round 0) and periodically while battles resolve. Both are
+    /// called from off the main actor.
     static func findTeams(
         pool: [Candidate],
         movesById: [String: Move],
-        opponentSampleCount: Int = 24,
-        maxResults: Int = 30,
-        fullSimLimit: Int = 2_000,
-        progress: (@Sendable (Double) -> Void)? = nil
-    ) async -> [RankedTeam] {
-        let allTeams = candidateTeams(from: pool)
-        guard !allTeams.isEmpty else { return [] }
+        fieldSize: Int = 500,
+        maxResults: Int = 100,
+        onSeedingProgress: (@Sendable (Double) -> Void)? = nil,
+        onStandings: (@Sendable (Standings) -> Void)? = nil
+    ) async -> Standings {
+        let empty = Standings(teams: [], totalEntrants: 0, battlesFought: 0,
+                              totalBattles: 0, round: 0, totalRounds: 0, isComplete: false)
+        guard pool.count >= 3 else { return empty }
 
-        // A deterministic, evenly-spread sample of the candidate space serves as
-        // the reference opponents — every team faces the same gauntlet, so the
-        // records are comparable (and reproducible run to run). Sampled from the
-        // FULL combination space, so pruning never changes the gauntlet.
-        let sampleCount = min(opponentSampleCount, allTeams.count)
-        let step = Double(allTeams.count) / Double(sampleCount)
-        let opponents = (0..<sampleCount).map { allTeams[Int(Double($0) * step)] }
-
-        // Stage 1 (large pools only): shortlist by meta coverage from the
-        // pairwise 1v1 matrix — a full 3v3 gauntlet over 10⁵ trios takes minutes.
-        let pruning = allTeams.count > fullSimLimit
-        let matrixShare = pruning ? 0.15 : 0.0   // progress budget for stage 1
-        var teams = allTeams
-        if pruning {
-            let matrix = await ratingMatrix(pool: pool, movesById: movesById) { fraction in
-                progress?(fraction * matrixShare)
-            }
-            if Task.isCancelled { return [] }
-            teams = zip(allTeams, allTeams.map { coverageScore(team: $0, matrix: matrix) })
-                .sorted { $0.1 > $1.1 }
-                .prefix(fullSimLimit)
-                .map(\.0)
+        // Seed: pairwise 1v1 matrix → the coverage-ranked field.
+        let matrix = await ratingMatrix(pool: pool, movesById: movesById) { fraction in
+            onSeedingProgress?(fraction * 0.85)
         }
+        if Task.isCancelled { return empty }
+        let field = await seedEntrants(pool: pool, matrix: matrix, limit: fieldSize) { fraction in
+            onSeedingProgress?(0.85 + fraction * 0.15)
+        }
+        if Task.isCancelled || field.isEmpty { return empty }
 
-        let total = teams.count
-        var completed = 0
-        var scored: [RankedTeam] = []
-        scored.reserveCapacity(total)
+        // Round-robin schedule (circle method): pad odd fields with a bye,
+        // fix seat 0 and rotate the rest; each virtual round pairs seat k
+        // with seat m-1-k, giving every team exactly one game per round.
+        let n = field.count
+        struct Record { var wins = 0; var losses = 0; var ties = 0; var ratingSum = 0; var battles = 0 }
+        var records = [Record](repeating: Record(), count: n)
+        let m = n.isMultiple(of: 2) ? n : n + 1   // seat m-1 is the bye when padded
+        let totalRounds = max(m - 1, 0)
+        let totalBattles = n * (n - 1) / 2
+        var circle = Array(0..<m)
+        var battlesFought = 0
 
-        await withTaskGroup(of: RankedTeam?.self) { group in
-            for team in teams {
-                group.addTask {
-                    guard !Task.isCancelled else { return nil }
-                    return score(team: team, opponents: opponents, pool: pool, movesById: movesById)
-                }
-            }
-            for await result in group {
-                completed += 1
-                if completed % 32 == 0 || completed == total {
-                    progress?(matrixShare + (1 - matrixShare) * Double(completed) / Double(total))
-                }
-                if let result { scored.append(result) }
+        func winRate(_ r: Record) -> Double {
+            r.battles > 0 ? (Double(r.wins) + Double(r.ties) * 0.5) / Double(r.battles) : 0
+        }
+        func averageRating(_ r: Record) -> Double {
+            r.battles > 0 ? Double(r.ratingSum) / Double(r.battles) : 500
+        }
+        /// Field indices ranked best-first: win rate, then rating, then seed.
+        func ranked() -> [Int] {
+            (0..<n).sorted { a, b in
+                let ra = records[a], rb = records[b]
+                let wa = winRate(ra), wb = winRate(rb)
+                if wa != wb { return wa > wb }
+                let ga = averageRating(ra), gb = averageRating(rb)
+                if ga != gb { return ga > gb }
+                return a < b
             }
         }
+        func rankedTeams(_ order: [Int]) -> [RankedTeam] {
+            order.prefix(maxResults).map { index in
+                let r = records[index]
+                return RankedTeam(
+                    members: field[index].map { i in
+                        let c = pool[i]
+                        return RankedTeam.Member(
+                            member: c.member, speciesName: c.speciesName,
+                            types: c.types, shadow: c.shadow)
+                    },
+                    wins: r.wins, losses: r.losses, ties: r.ties,
+                    winRate: winRate(r), averageRating: averageRating(r))
+            }
+        }
+        func snapshot(round: Int) -> Standings {
+            Standings(
+                teams: rankedTeams(ranked()),
+                totalEntrants: n,
+                battlesFought: battlesFought, totalBattles: totalBattles,
+                round: round, totalRounds: totalRounds,
+                isComplete: round == totalRounds && battlesFought == totalBattles)
+        }
 
-        return Array(
-            scored
-                .sorted {
-                    $0.winRate != $1.winRate
-                        ? $0.winRate > $1.winRate
-                        : $0.averageRating > $1.averageRating
+        // Round 0: the seeded field, before any battles.
+        onStandings?(snapshot(round: 0))
+
+        // Emit often enough to feel alive, rarely enough to stay cheap.
+        let emitEvery = max(100, totalBattles / 150)
+        // Rounds per parallel batch: enough work to saturate cores without
+        // hoarding pairings (each round is n/2 battles).
+        let batchRounds = max(1, totalRounds / 32)
+        var completedRounds = 0
+
+        while completedRounds < totalRounds {
+            if Task.isCancelled { break }
+            let roundsThisBatch = min(batchRounds, totalRounds - completedRounds)
+
+            // Collect the batch's pairings, rotating the circle per round.
+            var pairings: [(a: Int, b: Int)] = []
+            pairings.reserveCapacity(roundsThisBatch * m / 2)
+            for _ in 0..<roundsThisBatch {
+                for k in 0..<(m / 2) {
+                    let a = circle[k], b = circle[m - 1 - k]
+                    if a < n && b < n { pairings.append((a, b)) }
                 }
-                .prefix(maxResults))
+                circle = [circle[0], circle[m - 1]] + circle[1..<(m - 1)]
+            }
+
+            // Fight the batch in parallel, chunked to keep task overhead low;
+            // apply deltas (both perspectives) as chunks stream back.
+            var sinceEmit = 0
+            let chunkSize = 32
+            await withTaskGroup(
+                of: [(a: Int, b: Int, winner: TeamBattleResult.Winner, ratingA: Int)].self
+            ) { group in
+                var start = 0
+                while start < pairings.count {
+                    let chunk = Array(pairings[start..<min(start + chunkSize, pairings.count)])
+                    start += chunkSize
+                    group.addTask {
+                        var outcomes: [(a: Int, b: Int, winner: TeamBattleResult.Winner, ratingA: Int)] = []
+                        outcomes.reserveCapacity(chunk.count)
+                        for pair in chunk {
+                            if Task.isCancelled { break }
+                            guard let a = makeTeam(field[pair.a].map { pool[$0] }, movesById: movesById),
+                                  let b = makeTeam(field[pair.b].map { pool[$0] }, movesById: movesById)
+                            else { continue }
+                            let result = ThreeVThreeBattle(
+                                teamA: a, teamB: b,
+                                switchPolicy: .bestMatchup,
+                                optimalShields: false).run()
+                            outcomes.append((pair.a, pair.b, result.winner, result.ratingA))
+                        }
+                        return outcomes
+                    }
+                }
+                for await outcomes in group {
+                    for o in outcomes {
+                        switch o.winner {
+                        case .teamA: records[o.a].wins += 1; records[o.b].losses += 1
+                        case .teamB: records[o.a].losses += 1; records[o.b].wins += 1
+                        case .tie: records[o.a].ties += 1; records[o.b].ties += 1
+                        }
+                        records[o.a].ratingSum += o.ratingA
+                        records[o.b].ratingSum += 1000 - o.ratingA
+                        records[o.a].battles += 1
+                        records[o.b].battles += 1
+                        battlesFought += 1
+                        sinceEmit += 1
+                    }
+                    if sinceEmit >= emitEvery {
+                        sinceEmit = 0
+                        onStandings?(snapshot(round: completedRounds))
+                    }
+                }
+            }
+            if Task.isCancelled { break }
+            completedRounds += roundsThisBatch
+            onStandings?(snapshot(round: completedRounds))
+        }
+
+        return snapshot(round: completedRounds)
     }
 
     /// All 3-member combinations of the pool (as pool indices, ascending — so
     /// the better-ranked member leads), skipping teams that double up on a
     /// species or evolutionary family (e.g. a shadow + regular pair).
+    /// Materializes every trio — fine for small pools and tests; the finder
+    /// itself streams via `seedEntrants`.
     static func candidateTeams(from pool: [Candidate]) -> [[Int]] {
         var teams: [[Int]] = []
         for i in 0..<pool.count {
@@ -149,12 +282,12 @@ nonisolated enum TeamFinder {
         return true
     }
 
-    // MARK: - Stage 1: 1v1-matrix shortlist (large pools)
+    // MARK: - Seeding
 
     /// Pairwise 1v1 ratings for the whole pool: `matrix[i][j]` = pool[i]'s
     /// battle rating vs pool[j] (0…1000), fresh mons at 1 shield each. One
-    /// battle per unordered pair yields both perspectives, so a 100-mon pool
-    /// costs ~5k fast 1v1s. Heuristic input only — never shown to the user.
+    /// battle per unordered pair yields both perspectives, so a 200-mon pool
+    /// costs ~20k fast 1v1s. Heuristic input only — never shown to the user.
     private static func ratingMatrix(
         pool: [Candidate], movesById: [String: Move],
         progress: (@Sendable (Double) -> Void)? = nil
@@ -193,58 +326,70 @@ nonisolated enum TeamFinder {
         return matrix
     }
 
-    /// How well a trio covers the meta: for every other pool mon, the best
-    /// member rating against it, averaged. Rewards teams that keep an answer
-    /// to everything (the same idea as the analyzer's threat score, inverted).
-    private static func coverageScore(team: [Int], matrix: [[Int]]) -> Double {
-        var sum = 0
-        var count = 0
-        for m in 0..<matrix.count where !team.contains(m) {
-            var best = 0
-            for t in team where matrix[t][m] > best { best = matrix[t][m] }
-            sum += best
-            count += 1
-        }
-        return count > 0 ? Double(sum) / Double(count) : 0
-    }
+    /// Streams every distinct trio and keeps the `limit` best by meta
+    /// coverage, best-first. Coverage = for every other pool mon, the best
+    /// member's 1v1 rating against it, summed (all trios divide by the same
+    /// count, so the sum orders identically to the average). Trios are packed
+    /// into a UInt32 (10 bits per index) so a 1.3M-combination sweep never
+    /// allocates per trio; work fans out across cores by lead index.
+    private static func seedEntrants(
+        pool: [Candidate], matrix: [[Int]], limit: Int,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async -> [[Int]] {
+        let n = pool.count
+        precondition(n < 1024, "trio packing supports pools up to 1023")
 
-    /// Runs one candidate team through the whole opponent sample.
-    private static func score(
-        team: [Int], opponents: [[Int]],
-        pool: [Candidate], movesById: [String: Move]
-    ) -> RankedTeam? {
-        let mySet = Set(team)
-        let members = team.map { pool[$0] }
-        var wins = 0, losses = 0, ties = 0
-        var ratingSum = 0
-        var battles = 0
-
-        for opponent in opponents {
-            if Task.isCancelled { return nil }
-            if Set(opponent) == mySet { continue }   // skip the mirror match
-            guard let a = makeTeam(members, movesById: movesById),
-                  let b = makeTeam(opponent.map { pool[$0] }, movesById: movesById)
-            else { return nil }
-
-            let result = ThreeVThreeBattle(
-                teamA: a, teamB: b,
-                switchPolicy: .bestMatchup,
-                optimalShields: false).run()
-            switch result.winner {
-            case .teamA: wins += 1
-            case .teamB: losses += 1
-            case .tie: ties += 1
+        // Pairwise compatibility (no shared species/family), computed once.
+        var compatible = Array(repeating: Array(repeating: false, count: n), count: n)
+        for i in 0..<n {
+            for j in (i + 1)..<n where distinct(pool[i], pool[j]) {
+                compatible[i][j] = true
+                compatible[j][i] = true
             }
-            ratingSum += result.ratingA
-            battles += 1
         }
 
-        guard battles > 0 else { return nil }
-        return RankedTeam(
-            members: members,
-            wins: wins, losses: losses, ties: ties,
-            winRate: (Double(wins) + Double(ties) * 0.5) / Double(battles),
-            averageRating: Double(ratingSum) / Double(battles))
+        var all: [(score: Int, packed: UInt32)] = []
+        var completed = 0
+        await withTaskGroup(of: [(score: Int, packed: UInt32)].self) { [compatible] group in
+            for i in 0..<n {
+                group.addTask {
+                    var local: [(score: Int, packed: UInt32)] = []
+                    let rowI = matrix[i]
+                    for j in (i + 1)..<n where compatible[i][j] {
+                        if Task.isCancelled { return [] }
+                        let rowJ = matrix[j]
+                        // Best-of-pair rating vs every pool mon, reused for all k.
+                        var pairRow = rowI
+                        for m in 0..<n where rowJ[m] > pairRow[m] { pairRow[m] = rowJ[m] }
+                        for k in (j + 1)..<n where compatible[i][k] && compatible[j][k] {
+                            let rowK = matrix[k]
+                            var sum = 0
+                            for m in 0..<n where m != i && m != j && m != k {
+                                sum += max(pairRow[m], rowK[m])
+                            }
+                            local.append((sum, UInt32(i) << 20 | UInt32(j) << 10 | UInt32(k)))
+                        }
+                    }
+                    // Bound memory before handing back to the collector.
+                    if local.count > limit {
+                        local.sort { $0.score > $1.score }
+                        local.removeLast(local.count - limit)
+                    }
+                    return local
+                }
+            }
+            for await part in group {
+                completed += 1
+                progress?(Double(completed) / Double(n))
+                all.append(contentsOf: part)
+            }
+        }
+
+        // Deterministic order: score, then packed indices (reproducible runs).
+        all.sort { $0.score != $1.score ? $0.score > $1.score : $0.packed < $1.packed }
+        return all.prefix(limit).map { entry in
+            [Int(entry.packed >> 20), Int((entry.packed >> 10) & 0x3FF), Int(entry.packed & 0x3FF)]
+        }
     }
 
     /// Fresh `BattlePokemon`s per battle — the 3v3 engine mutates its teams.

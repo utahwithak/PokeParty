@@ -2,15 +2,16 @@
 //  TeamFinderView.swift
 //  PokeParty
 //
-//  The 3v3 Party Finder: pick a format and pool size, run the search, and
-//  browse the suggested teams ranked by their simulated 3v3 record.
-//  `TeamFinderView` is the content column (configuration + run controls);
-//  `TeamFinderResultsView` is the detail column (ranked results).
+//  The 3v3 Party Finder: pick a format, pool and tournament field, run the
+//  round robin, and watch the leaderboard settle. `TeamFinderView` is the
+//  content column (configuration + run controls + saved results);
+//  `TeamFinderResultsView` is the detail column, which hands the live
+//  standings to `TeamFinderSimulationView`.
 //
 
 import SwiftUI
 
-/// Content column: choose the format + candidate pool and start the search.
+/// Content column: configure and start the tournament, or reopen a saved one.
 struct TeamFinderView: View {
     var store: RankingsStore
     var model: TeamFinderModel
@@ -39,8 +40,27 @@ struct TeamFinderView: View {
                     }
                 }
                 .disabled(model.isRunning)
+            }
 
-                Text("Every 3-Pokémon combination from the pool battles the same sample of opponent teams in full 3v3 simulations (recommended movesets, best-matchup switching). For large pools a fast 1v1 screen shortlists the most promising teams first, so deep-meta picks can still surface without simulating every combination. Larger pools take longer.")
+            Section("Tournament field") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Slider(
+                        value: Binding(
+                            get: { Double(model.fieldSize) },
+                            set: { model.fieldSize = Int($0) }),
+                        in: TeamFinderModel.fieldSizeRange,
+                        step: TeamFinderModel.fieldSizeStep
+                    ) {
+                        Text("Field size")
+                    }
+                    .disabled(model.isRunning)
+
+                    Text("\(model.fieldSize) teams — \(model.estimatedBattles.formatted()) battles")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("The most promising teams from the pool fight a full round robin — every team battles every other team in true 3v3 simulations (recommended movesets, best-matchup switching), so a record is measured against the entire field. Bigger fields take longer, but standings stream live and finished tournaments are saved below.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -50,9 +70,16 @@ struct TeamFinderView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         if model.phase == .loadingRankings {
                             ProgressView("Loading rankings…")
+                        } else if let standings = model.standings {
+                            ProgressView(
+                                value: Double(standings.battlesFought),
+                                total: Double(max(standings.totalBattles, 1))
+                            ) {
+                                Text("Round \(standings.round) of \(standings.totalRounds) — \(standings.battlesFought.formatted()) of \(standings.totalBattles.formatted()) battles")
+                            }
                         } else {
                             ProgressView(value: model.progress) {
-                                Text("Simulating battles…")
+                                Text("Seeding tournament…")
                             }
                         }
                         Button("Cancel", role: .cancel) { model.cancel() }
@@ -61,7 +88,7 @@ struct TeamFinderView: View {
                     Button {
                         model.run(using: store)
                     } label: {
-                        Label("Find Teams", systemImage: "wand.and.stars")
+                        Label("Run Tournament", systemImage: "wand.and.stars")
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(store.pokemonById.isEmpty)
@@ -73,13 +100,58 @@ struct TeamFinderView: View {
                         .foregroundStyle(.red)
                 }
             }
+
+            if !model.savedTournaments.runs.isEmpty {
+                Section("Saved tournaments") {
+                    ForEach(model.savedTournaments.runs) { run in
+                        SavedTournamentRow(run: run) {
+                            model.load(run)
+                        } onDelete: {
+                            model.savedTournaments.delete(run)
+                        }
+                        .disabled(model.isRunning)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Party Finder")
     }
 }
 
-/// Detail column: the suggested teams, best 3v3 record first.
+/// One saved run: configuration summary + when it was fought.
+private struct SavedTournamentRow: View {
+    let run: SavedTournament
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack {
+            Button(action: onOpen) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(run.formatTitle)
+                        .font(.subheadline.weight(.medium))
+                    Text("Top \(run.poolSize) pool · \(run.fieldSize)-team field · \(run.date.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+
+            Spacer()
+
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete this saved tournament")
+        }
+    }
+}
+
+/// Detail column: the live tournament leaderboard (which doubles as the
+/// final results once the run completes).
 struct TeamFinderResultsView: View {
     var store: RankingsStore
     var model: TeamFinderModel
@@ -88,14 +160,18 @@ struct TeamFinderResultsView: View {
 
     var body: some View {
         Group {
-            if model.results.isEmpty {
+            if let standings = model.standings {
+                TeamFinderSimulationView(
+                    standings: standings,
+                    format: model.resultsFormat,
+                    poolSize: model.resultsPoolSize,
+                    openInBuilder: openInTeamBuilder)
+            } else {
                 ContentUnavailableView(
                     "Find Suggested Teams",
                     systemImage: "wand.and.stars",
                     description: Text(emptyDescription)
                 )
-            } else {
-                resultsList
             }
         }
         .navigationTitle("Suggested Teams")
@@ -103,28 +179,9 @@ struct TeamFinderResultsView: View {
 
     private var emptyDescription: String {
         switch model.phase {
-        case .searching: "Simulating 3v3 battles…"
+        case .searching: "Seeding the tournament — ranking every candidate trio by meta coverage…"
         case .loadingRankings: "Loading rankings…"
-        default: "Pick a format and run the Party Finder to see suggested teams ranked by their simulated 3v3 record."
-        }
-    }
-
-    private var resultsList: some View {
-        List {
-            if let format = model.resultsFormat {
-                Section {
-                    Text("\(format.title) — every team from the top \(model.resultsPoolSize) ranked Pokémon, graded by 3v3 simulations against a shared sample of opponent teams. The first member is the lead.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section {
-                ForEach(Array(model.results.enumerated()), id: \.element.id) { index, team in
-                    SuggestedTeamRow(rank: index + 1, team: team) {
-                        openInTeamBuilder(team)
-                    }
-                }
-            }
+        default: "Pick a format and run the Party Finder to watch teams battle for the top of the leaderboard."
         }
     }
 
@@ -136,63 +193,5 @@ struct TeamFinderResultsView: View {
         }
         teamBuilder.setTeam(team.members.map(\.member))
         selection = .teamBuilder
-    }
-}
-
-/// One suggested team: rank, record, the three members (lead first).
-private struct SuggestedTeamRow: View {
-    let rank: Int
-    let team: TeamFinder.RankedTeam
-    let openInBuilder: () -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("#\(rank)")
-                .font(.headline.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 36, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 12) {
-                    ForEach(Array(team.members.enumerated()), id: \.offset) { index, member in
-                        memberCell(member, isLead: index == 0)
-                    }
-                }
-                HStack(spacing: 8) {
-                    Text(team.winRate, format: .percent.precision(.fractionLength(0)))
-                        .font(.subheadline.weight(.semibold).monospacedDigit())
-                    Text("\(team.wins)W · \(team.losses)L\(team.ties > 0 ? " · \(team.ties)T" : "")")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    RatingBar(rating: Int(team.averageRating.rounded()))
-                        .frame(maxWidth: 160)
-                }
-            }
-
-            Spacer()
-
-            Button("Open in Team Builder", action: openInBuilder)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func memberCell(_ member: TeamFinder.Candidate, isLead: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Text(member.speciesName)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                if member.shadow { ShadowBadge() }
-                if isLead {
-                    Text("LEAD")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            TypeBadgeRow(types: member.types)
-        }
-        .frame(minWidth: 110, alignment: .leading)
     }
 }

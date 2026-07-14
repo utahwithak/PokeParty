@@ -4,8 +4,10 @@
 //
 //  Observable state for the 3v3 Party Finder. Picks a format (independent of
 //  the sidebar selection), loads that format's rankings, builds a candidate
-//  pool from the top of the list, and runs `TeamFinder` to produce suggested
-//  teams ranked by their simulated 3v3 record.
+//  pool from the top of the list, and runs the `TeamFinder` round-robin
+//  tournament — publishing live `Standings` snapshots so the leaderboard
+//  animates as battles resolve. Completed runs are saved automatically so
+//  an expensive tournament can be reviewed later without re-simulating.
 //
 
 import SwiftUI
@@ -27,13 +29,27 @@ final class TeamFinderModel {
     var format: RankingFormat = .great
     /// How many of the format's top-ranked Pokémon form the candidate pool.
     var poolSize: Int = 15
-    static let poolSizes = [10, 15, 20, 25, 50, 75, 100]
+    static let poolSizes = [10, 15, 20, 25, 50, 75, 100, 125, 150, 200]
+
+    /// How many coverage-seeded teams enter the round robin (slider-driven;
+    /// the tournament fights fieldSize·(fieldSize−1)/2 battles).
+    var fieldSize: Int = 500
+    static let fieldSizeRange = 100.0...2500.0
+    static let fieldSizeStep = 100.0
+
+    /// Completed runs, persisted across launches.
+    let savedTournaments = SavedTournamentsStore()
 
     private(set) var phase: Phase = .idle
-    /// Search progress, 0…1 (meaningful while `phase == .searching`).
+    /// Seeding progress, 0…1 — the pairwise 1v1 matrix + field shortlist
+    /// (meaningful while `phase == .searching` and `standings == nil`).
     private(set) var progress: Double = 0
+    /// Live tournament snapshot; nil until seeding completes. Stays populated
+    /// after the run (and after a cancel) so the leaderboard remains browsable.
+    private(set) var standings: TeamFinder.Standings?
+    /// Final ranked teams (set when the tournament completes).
     private(set) var results: [TeamFinder.RankedTeam] = []
-    /// The format and pool size the current `results` were computed for.
+    /// The format and pool size the current run was started with.
     private(set) var resultsFormat: RankingFormat?
     private(set) var resultsPoolSize = 0
 
@@ -41,23 +57,43 @@ final class TeamFinderModel {
 
     var isRunning: Bool { phase == .loadingRankings || phase == .searching }
 
+    /// Battles a full round robin of the current field size will fight.
+    var estimatedBattles: Int { fieldSize * (fieldSize - 1) / 2 }
+
     func cancel() {
         searchTask?.cancel()
         searchTask = nil
-        if isRunning { phase = results.isEmpty ? .idle : .done }
+        if isRunning { phase = standings == nil ? .idle : .done }
     }
 
-    /// Loads the chosen format's rankings and searches for the best teams.
+    /// Shows a previously saved tournament in the leaderboard.
+    func load(_ run: SavedTournament) {
+        guard !isRunning else { return }
+        results = run.teams
+        resultsFormat = run.format
+        resultsPoolSize = run.poolSize
+        standings = TeamFinder.Standings(
+            teams: run.teams,
+            totalEntrants: run.fieldSize,
+            battlesFought: run.battlesFought, totalBattles: run.battlesFought,
+            round: max(run.fieldSize - 1, 0), totalRounds: max(run.fieldSize - 1, 0),
+            isComplete: true)
+        phase = .done
+    }
+
+    /// Loads the chosen format's rankings and runs the tournament.
     func run(using store: RankingsStore) {
         searchTask?.cancel()
         let format = format
         let poolSize = poolSize
+        let fieldSize = fieldSize
         let movesById = store.movesById
         let pokemonById = store.pokemonById
 
         phase = .loadingRankings
         progress = 0
         results = []
+        standings = nil
         resultsFormat = nil
 
         searchTask = Task {
@@ -79,14 +115,35 @@ final class TeamFinderModel {
             }
 
             phase = .searching
-            let found = await TeamFinder.findTeams(pool: pool, movesById: movesById) { fraction in
-                Task { @MainActor in self.progress = fraction }
-            }
-            if Task.isCancelled { return }
-            results = found
             resultsFormat = format
             resultsPoolSize = pool.count
+            let final = await TeamFinder.findTeams(
+                pool: pool, movesById: movesById, fieldSize: fieldSize,
+                onSeedingProgress: { fraction in
+                    Task { @MainActor in self.progress = max(self.progress, fraction) }
+                },
+                onStandings: { snapshot in
+                    Task { @MainActor in
+                        // Snapshots hop actors independently; never regress.
+                        guard snapshot.battlesFought >= (self.standings?.battlesFought ?? -1) else { return }
+                        withAnimation(.spring(duration: 0.6)) { self.standings = snapshot }
+                    }
+                })
+            if Task.isCancelled { return }
+            results = final.teams
+            withAnimation(.spring(duration: 0.6)) { standings = final }
             phase = .done
+
+            // Only a finished round robin is worth keeping — a cancelled
+            // run's records aren't a full account of the field.
+            if final.isComplete {
+                savedTournaments.save(SavedTournament(
+                    date: .now,
+                    formatTitle: format.title, cup: format.cup, cp: format.cp,
+                    poolSize: pool.count, fieldSize: final.totalEntrants,
+                    battlesFought: final.battlesFought,
+                    teams: final.teams))
+            }
         }
     }
 
