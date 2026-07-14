@@ -14,6 +14,8 @@ nonisolated final class BattleMove {
     let moveId: String
     let name: String
     let type: String
+    /// Index of `type` in `TypeChart.allTypes` (-1 if unknown) for flat lookups.
+    let typeIndex: Int
     let power: Int
     let energy: Int          // charged-move cost; 0 for fast moves
     let energyGain: Int      // fast-move energy gained
@@ -41,6 +43,7 @@ nonisolated final class BattleMove {
         moveId = move.moveId
         name = move.name
         type = move.type.lowercased()
+        typeIndex = TypeChart.index(of: type)
         power = move.power
         energy = move.energy
         energyGain = move.energyGain
@@ -81,7 +84,7 @@ nonisolated final class BattleMove {
 
     /// Copies every field (used to clone a Pokémon into a throwaway battle).
     private init(copy m: BattleMove) {
-        moveId = m.moveId; name = m.name; type = m.type; power = m.power
+        moveId = m.moveId; name = m.name; type = m.type; typeIndex = m.typeIndex; power = m.power
         energy = m.energy; energyGain = m.energyGain; cooldown = m.cooldown; turns = m.turns
         buffs = m.buffs; buffTarget = m.buffTarget; buffApplyChance = m.buffApplyChance
         selfDebuffing = m.selfDebuffing; selfBuffing = m.selfBuffing

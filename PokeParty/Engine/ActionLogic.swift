@@ -10,7 +10,7 @@
 import Foundation
 
 /// A state in the optimal move-sequence search.
-private nonisolated final class BattleState {
+private nonisolated struct BattleState {
     var energy: Int
     var oppHealth: Int
     var turn: Int
@@ -57,13 +57,13 @@ nonisolated enum ActionLogic {
         struct SurvState { var hp: Int; var opEnergy: Int; var turn: Int; var shields: Int }
         var stack: [SurvState] = []
         if opponent.cooldown != 0 {
-            stack.insert(SurvState(hp: poke.hp - oppFastDamage, opEnergy: opponent.energy + opponent.fastMove.energyGain, turn: opponent.cooldown / 500, shields: poke.shields), at: 0)
+            stack.append(SurvState(hp: poke.hp - oppFastDamage, opEnergy: opponent.energy + opponent.fastMove.energyGain, turn: opponent.cooldown / 500, shields: poke.shields))
         } else {
-            stack.insert(SurvState(hp: poke.hp, opEnergy: opponent.energy, turn: 0, shields: poke.shields), at: 0)
+            stack.append(SurvState(hp: poke.hp, opEnergy: opponent.energy, turn: 0, shields: poke.shields))
         }
 
         while !stack.isEmpty {
-            let curr = stack.removeFirst()
+            let curr = stack.removeLast()
 
             if curr.hp > oppFastDamage {
                 if winsCMP {
@@ -75,7 +75,7 @@ nonisolated enum ActionLogic {
 
             if curr.shields != 0 {
                 if curr.opEnergy >= opponent.fastestChargedMove.energy {
-                    stack.insert(SurvState(hp: curr.hp - 1, opEnergy: curr.opEnergy - opponent.fastestChargedMove.energy, turn: curr.turn + 1, shields: curr.shields - 1), at: 0)
+                    stack.append(SurvState(hp: curr.hp - 1, opEnergy: curr.opEnergy - opponent.fastestChargedMove.energy, turn: curr.turn + 1, shields: curr.shields - 1))
                 }
             } else {
                 var koed = false
@@ -89,7 +89,7 @@ nonisolated enum ActionLogic {
                         koed = true
                         break
                     }
-                    stack.insert(SurvState(hp: curr.hp - moveDamage, opEnergy: curr.opEnergy - m.energy, turn: curr.turn + 1, shields: curr.shields), at: 0)
+                    stack.append(SurvState(hp: curr.hp - moveDamage, opEnergy: curr.opEnergy - m.energy, turn: curr.turn + 1, shields: curr.shields))
                 }
                 if koed { /* matches JS break out of for, continue while */ }
             }
@@ -98,7 +98,7 @@ nonisolated enum ActionLogic {
                 turnsToLive = min(curr.turn + opponent.fastMove.turns, turnsToLive)
                 break
             } else {
-                stack.insert(SurvState(hp: curr.hp - oppFastDamage, opEnergy: curr.opEnergy + opponent.fastMove.energyGain, turn: curr.turn + opponent.fastMove.turns, shields: curr.shields), at: 0)
+                stack.append(SurvState(hp: curr.hp - oppFastDamage, opEnergy: curr.opEnergy + opponent.fastMove.energyGain, turn: curr.turn + opponent.fastMove.turns, shields: curr.shields))
             }
         }
 
@@ -339,7 +339,7 @@ nonisolated enum ActionLogic {
         while !queue.isEmpty {
             if stateCount >= 500 { return nil }
             stateCount += 1
-            let curr = queue.removeFirst()
+            var curr = queue.removeFirst()
             curr.buffs = min(4, max(-4, curr.buffs))
 
             if curr.oppHealth <= 0 {

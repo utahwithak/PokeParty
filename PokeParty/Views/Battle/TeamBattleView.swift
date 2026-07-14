@@ -143,19 +143,29 @@ struct TeamBattleView: View {
     // MARK: - Battle controls
 
     private var battleControls: some View {
-        HStack(spacing: 12) {
-            Button {
-                model.runTeamBattle(using: store)
-            } label: {
-                Label("Simulate Battle", systemImage: "bolt.fill")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!model.hasMembers || model.opponentMembers.isEmpty || model.isBattling)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Button {
+                    model.runTeamBattle(using: store)
+                } label: {
+                    Label("Simulate Battle", systemImage: "bolt.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.hasMembers || model.opponentMembers.isEmpty || model.isBattling)
 
-            if model.isBattling {
-                ProgressView().controlSize(.small)
+                if model.isBattling {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
             }
-            Spacer()
+            HStack(spacing: 16) {
+                Toggle("Your team baits shields", isOn: $model.yourTeamBaits)
+                Toggle("Opponent baits shields", isOn: $model.opponentBaits)
+            }
+            .checkboxToggleStyle()
+            .font(.caption)
+            .disabled(model.isBattling)
+            .help("Baiting throws cheap charged moves to draw shields before the big one. Turn off to always throw the best move.")
         }
     }
 

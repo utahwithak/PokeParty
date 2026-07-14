@@ -34,7 +34,7 @@ final class TeamFinderModel {
     /// How many coverage-seeded teams enter the round robin (slider-driven;
     /// the tournament fights fieldSize·(fieldSize−1)/2 battles).
     var fieldSize: Int = 500
-    static let fieldSizeRange = 100.0...2500.0
+    static let fieldSizeRange = 100.0...10000.0
     static let fieldSizeStep = 100.0
 
     /// Completed runs, persisted across launches.

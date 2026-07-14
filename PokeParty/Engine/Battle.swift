@@ -170,11 +170,11 @@ nonisolated final class Battle {
             let opp = opponent(of: action.actor)
             switch action.type {
             case .fast:
-                action.valid = opp.hp >= 1 && !(poke.hp < 1 && poke.faintSource == "charged")
+                action.valid = opp.hp >= 1 && !(poke.hp < 1 && poke.faintSource == .charged)
             case .charged:
                 let move = poke.chargedMoves[action.value]
                 action.valid = poke.energy >= move.energy
-                if usePriority && poke.hp <= 0 && poke.faintSource == "charged" { action.valid = false }
+                if usePriority && poke.hp <= 0 && poke.faintSource == .charged { action.valid = false }
                 // Prevent a charged move on the same turn a lethal fast move lands.
                 var lethalFastMove = false
                 var opponentChargedMoveThisTurn = false
@@ -316,7 +316,7 @@ nonisolated final class Battle {
         }
 
         defender.hp = max(0, defender.hp - damage)
-        if defender.hp <= 0 { defender.faintSource = move.energy > 0 ? "charged" : "fast" }
+        if defender.hp <= 0 { defender.faintSource = move.energy > 0 ? .charged : .fast }
 
         applyBuffs(move, attacker: attacker, defender: defender, shielded: defenderUsedShield)
 

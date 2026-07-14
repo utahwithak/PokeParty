@@ -171,6 +171,11 @@ final class TeamBuilderModel {
     private(set) var isBattling = false
     private var battleTask: Task<Void, Never>?
 
+    /// Whether each side's AI baits shields (selective, the pvpoke default) or
+    /// always throws its best charged move. Takes effect on the next simulation.
+    var yourTeamBaits = true
+    var opponentBaits = true
+
     var opponentIsFull: Bool { opponentMembers.count >= Self.maxMembers }
     func opponentContains(speciesId: String) -> Bool {
         opponentMembers.contains { $0.speciesId == speciesId }
@@ -201,6 +206,8 @@ final class TeamBuilderModel {
               let mine = Self.buildTeam(members, store: store),
               let opp = Self.buildTeam(opponentMembers, store: store) else { return }
         let movesById = store.movesById
+        let baitA = yourTeamBaits
+        let baitB = opponentBaits
         isBattling = true
         battleLog = nil
         battleTask = Task {
@@ -208,7 +215,8 @@ final class TeamBuilderModel {
                 ThreeVThreeBattle.runRecorded(
                     teamA: mine.combatants, statsA: mine.stats,
                     teamB: opp.combatants, statsB: opp.stats,
-                    movesById: movesById, voluntarySwitching: true)
+                    movesById: movesById, voluntarySwitching: true,
+                    baitShieldsA: baitA, baitShieldsB: baitB)
             }.value
             if Task.isCancelled { return }
             self.battleLog = log

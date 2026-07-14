@@ -10,7 +10,7 @@ import Foundation
 nonisolated enum DamageCalculator {
     /// Damage dealt by `move` from `attacker` to `defender` (charge defaults to 1).
     static func damage(_ attacker: BattlePokemon, _ defender: BattlePokemon, _ move: BattleMove, charge: Double = 1) -> Int {
-        let effectiveness = defender.typeEffectiveness(for: move.type)
+        let effectiveness = defender.typeEffectiveness(forTypeIndex: move.typeIndex)
         let attackStat = attacker.getEffectiveStat(0)
         let defenseStat = defender.getEffectiveStat(1)
         let value = (Double(move.power) * move.stab * (attackStat / defenseStat)

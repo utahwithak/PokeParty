@@ -12,6 +12,8 @@ nonisolated final class BattlePokemon {
     let speciesId: String
     let speciesName: String
     let types: [String]
+    /// Indices of `types` in `TypeChart.allTypes` (excluding "none").
+    let typeIndices: [Int]
     let shadow: Bool
     /// Has Mimikyu's Disguise (blocks one charged move).
     let hasDisguise: Bool
@@ -48,7 +50,8 @@ nonisolated final class BattlePokemon {
     var index: Int = 0
     var priority: Int = 0
     var turnsToKO: Int = -1
-    var faintSource: String = ""
+    enum FaintSource { case none, fast, charged }
+    var faintSource: FaintSource = .none
 
     // AI behavior flags
     var baitShields: Int = 1        // 0 none, 1 selective, 2 always
@@ -59,7 +62,9 @@ nonisolated final class BattlePokemon {
     let shadowDefMult: Double
 
     private weak var opponent: BattlePokemon?
-    private var typeEffectivenessCache: [String: Double] = [:]
+    /// Effectiveness of each attacking type against this Pokémon, indexed by
+    /// `TypeChart.allTypes` position.
+    private var typeEffectivenessCache: [Double] = []
 
     init(speciesId: String, speciesName: String, types: [String], shadow: Bool,
          hasDisguise: Bool = false,
@@ -67,6 +72,7 @@ nonisolated final class BattlePokemon {
         self.speciesId = speciesId
         self.speciesName = speciesName
         self.types = types.map { $0.lowercased() }
+        self.typeIndices = self.types.map(TypeChart.index(of:)).filter { $0 >= 0 }
         self.shadow = shadow
         self.hasDisguise = hasDisguise
         self.stats = stats
@@ -80,16 +86,18 @@ nonisolated final class BattlePokemon {
     // MARK: - Type effectiveness (as defender)
 
     private func precomputeTypeEffectiveness() {
-        let allTypes = ["normal", "fighting", "flying", "poison", "ground", "rock",
-                        "bug", "ghost", "steel", "fire", "water", "grass",
-                        "electric", "psychic", "ice", "dragon", "dark", "fairy"]
-        for t in allTypes {
-            typeEffectivenessCache[t] = TypeChart.effectiveness(moveType: t, targetTypes: types)
+        let n = TypeChart.allTypes.count
+        var cache = [Double](repeating: 1, count: n)
+        for a in 0..<n {
+            for d in typeIndices { cache[a] *= TypeChart.matrix[a * n + d] }
         }
+        typeEffectivenessCache = cache
     }
 
-    func typeEffectiveness(for moveType: String) -> Double {
-        typeEffectivenessCache[moveType.lowercased()] ?? 1
+    /// Effectiveness of an attacking type (`TypeChart.allTypes` index) against
+    /// this Pokémon; -1 (unknown type) is neutral.
+    func typeEffectiveness(forTypeIndex index: Int) -> Double {
+        index >= 0 ? typeEffectivenessCache[index] : 1
     }
 
     // MARK: - Stats & buffs
@@ -123,7 +131,7 @@ nonisolated final class BattlePokemon {
     var stab1: Double { DamageMultiplier.stab }
 
     private func stab(for move: BattleMove) -> Double {
-        types.contains(move.type) ? DamageMultiplier.stab : 1
+        typeIndices.contains(move.typeIndex) ? DamageMultiplier.stab : 1
     }
 
     // MARK: - Move boost helper
@@ -166,7 +174,7 @@ nonisolated final class BattlePokemon {
         cooldown = 0
         hasActed = false
         turnsToKO = -1
-        faintSource = ""
+        faintSource = .none
         disguiseActive = hasDisguise
         for m in chargedMoves where m.buffApplyChance > 0 && m.buffApplyChance < 1 {
             m.buffApplyMeter = m.buffApplyChance == 0.5 ? 0 : m.buffApplyChance

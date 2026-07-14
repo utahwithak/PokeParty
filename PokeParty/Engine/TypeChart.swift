@@ -19,6 +19,38 @@ nonisolated enum DamageMultiplier {
 }
 
 nonisolated enum TypeChart {
+    /// Canonical type order for integer-indexed effectiveness lookups.
+    static let allTypes = ["normal", "fighting", "flying", "poison", "ground", "rock",
+                           "bug", "ghost", "steel", "fire", "water", "grass",
+                           "electric", "psychic", "ice", "dragon", "dark", "fairy"]
+
+    private static let indexByType: [String: Int] =
+        Dictionary(uniqueKeysWithValues: allTypes.enumerated().map { ($1, $0) })
+
+    /// Index of a (lowercase) type name in `allTypes`, or -1 for unknown/"none".
+    static func index(of type: String) -> Int {
+        indexByType[type] ?? indexByType[type.lowercased()] ?? -1
+    }
+
+    /// Flat 18×18 matrix: `matrix[moveType * 18 + defenderType]`, built once
+    /// from `traits(for:)` so it stays byte-identical to the PvPoke port.
+    static let matrix: [Double] = {
+        var m = [Double](repeating: 1, count: allTypes.count * allTypes.count)
+        for (d, defender) in allTypes.enumerated() {
+            let t = traits(for: defender)
+            for (a, move) in allTypes.enumerated() {
+                if t.weaknesses.contains(move) {
+                    m[a * allTypes.count + d] = DamageMultiplier.superEffective
+                } else if t.resistances.contains(move) {
+                    m[a * allTypes.count + d] = DamageMultiplier.resisted
+                } else if t.immunities.contains(move) {
+                    m[a * allTypes.count + d] = DamageMultiplier.doubleResisted
+                }
+            }
+        }
+        return m
+    }()
+
     struct Traits {
         var weaknesses: Set<String> = []
         var resistances: Set<String> = []
@@ -52,19 +84,12 @@ nonisolated enum TypeChart {
 
     /// Final type-effectiveness multiplier of a move type against defending types.
     static func effectiveness(moveType: String, targetTypes: [String]) -> Double {
+        let a = index(of: moveType)
+        guard a >= 0 else { return 1 }
         var effectiveness = 1.0
-        let moveType = moveType.lowercased()
         for raw in targetTypes {
-            let t = raw.lowercased()
-            guard t != "none" else { continue }
-            let traits = traits(for: t)
-            if traits.weaknesses.contains(moveType) {
-                effectiveness *= DamageMultiplier.superEffective
-            } else if traits.resistances.contains(moveType) {
-                effectiveness *= DamageMultiplier.resisted
-            } else if traits.immunities.contains(moveType) {
-                effectiveness *= DamageMultiplier.doubleResisted
-            }
+            let d = index(of: raw)
+            if d >= 0 { effectiveness *= matrix[a * allTypes.count + d] }
         }
         return effectiveness
     }

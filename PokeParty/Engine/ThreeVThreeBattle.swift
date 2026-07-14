@@ -405,6 +405,8 @@ nonisolated struct ThreeVThreeBattle {
     }
 
     /// Convenience: build both teams and run a recorded 3v3 (for the timeline).
+    /// `baitShieldsA`/`baitShieldsB` control each side's AI (`BattlePokemon.baitShields`):
+    /// true = selective baiting (the pvpoke default), false = always throw the best move.
     static func runRecorded(
         teamA: [MatchupSimulator.Combatant], statsA: [BattlePokemon.Stats],
         teamB: [MatchupSimulator.Combatant], statsB: [BattlePokemon.Stats],
@@ -412,10 +414,13 @@ nonisolated struct ThreeVThreeBattle {
         leadA: Int = 0, leadB: Int = 0,
         shieldsA: Int = 2, shieldsB: Int = 2,
         switchPolicy: SwitchPolicy = .bestMatchup,
-        voluntarySwitching: Bool = false
+        voluntarySwitching: Bool = false,
+        baitShieldsA: Bool = true, baitShieldsB: Bool = true
     ) -> TeamBattleLog? {
         guard let a = makeTeam(teamA, stats: statsA, movesById: movesById),
               let b = makeTeam(teamB, stats: statsB, movesById: movesById) else { return nil }
+        for p in a { p.baitShields = baitShieldsA ? 1 : 0 }
+        for p in b { p.baitShields = baitShieldsB ? 1 : 0 }
         return ThreeVThreeBattle(
             teamA: a, teamB: b,
             leadA: leadA, leadB: leadB,

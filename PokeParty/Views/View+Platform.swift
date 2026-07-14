@@ -17,4 +17,14 @@ extension View {
         self
         #endif
     }
+
+    /// Applies the checkbox toggle style on platforms that support it (macOS);
+    /// the default style elsewhere (e.g. iOS).
+    func checkboxToggleStyle() -> some View {
+        #if os(macOS)
+        toggleStyle(.checkbox)
+        #else
+        self
+        #endif
+    }
 }

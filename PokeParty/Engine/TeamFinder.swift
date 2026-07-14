@@ -168,8 +168,16 @@ nonisolated enum TeamFinder {
                     winRate: winRate(r), averageRating: averageRating(r))
             }
         }
-        func snapshot(round: Int) -> Standings {
-            Standings(
+        // Every round fights the same number of battles (the bye seat sits out
+        // when the field is padded), so the live round number can be derived
+        // from `battlesFought` — it advances smoothly even mid-batch.
+        let battlesPerRound = m / 2 - (m > n ? 1 : 0)
+        var completedRounds = 0
+        func snapshot() -> Standings {
+            let round = battlesPerRound > 0
+                ? min(battlesFought / battlesPerRound, totalRounds)
+                : completedRounds
+            return Standings(
                 teams: rankedTeams(ranked()),
                 totalEntrants: n,
                 battlesFought: battlesFought, totalBattles: totalBattles,
@@ -178,14 +186,15 @@ nonisolated enum TeamFinder {
         }
 
         // Round 0: the seeded field, before any battles.
-        onStandings?(snapshot(round: 0))
+        onStandings?(snapshot())
 
-        // Emit often enough to feel alive, rarely enough to stay cheap.
-        let emitEvery = max(100, totalBattles / 150)
+        // Throttle snapshots by wall clock: long runs stream updates steadily
+        // while short runs only emit a handful of times.
+        let emitInterval: Duration = .milliseconds(250)
+        var lastEmit = ContinuousClock.now
         // Rounds per parallel batch: enough work to saturate cores without
         // hoarding pairings (each round is n/2 battles).
         let batchRounds = max(1, totalRounds / 32)
-        var completedRounds = 0
 
         while completedRounds < totalRounds {
             if Task.isCancelled { break }
@@ -204,7 +213,6 @@ nonisolated enum TeamFinder {
 
             // Fight the batch in parallel, chunked to keep task overhead low;
             // apply deltas (both perspectives) as chunks stream back.
-            var sinceEmit = 0
             let chunkSize = 32
             await withTaskGroup(
                 of: [(a: Int, b: Int, winner: TeamBattleResult.Winner, ratingA: Int)].self
@@ -242,20 +250,20 @@ nonisolated enum TeamFinder {
                         records[o.a].battles += 1
                         records[o.b].battles += 1
                         battlesFought += 1
-                        sinceEmit += 1
                     }
-                    if sinceEmit >= emitEvery {
-                        sinceEmit = 0
-                        onStandings?(snapshot(round: completedRounds))
+                    let now = ContinuousClock.now
+                    if now - lastEmit >= emitInterval {
+                        lastEmit = now
+                        onStandings?(snapshot())
                     }
                 }
             }
             if Task.isCancelled { break }
             completedRounds += roundsThisBatch
-            onStandings?(snapshot(round: completedRounds))
+            onStandings?(snapshot())
         }
 
-        return snapshot(round: completedRounds)
+        return snapshot()
     }
 
     /// All 3-member combinations of the pool (as pool indices, ascending — so

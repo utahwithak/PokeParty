@@ -99,43 +99,46 @@ private final class SnapshotLog: @unchecked Sendable {
         let moves = makeMoves(for: ["dragon", "fire", "water", "grass", "rock", "ice"])
         let log = SnapshotLog()
 
-        let results = await TeamFinder.findTeams(
-            pool: pool, movesById: moves, gauntletSize: 10,
+        let final = await TeamFinder.findTeams(
+            pool: pool, movesById: moves, fieldSize: 20,
             onStandings: { log.append($0) })
+        let results = final.teams
 
+        #expect(final.isComplete)
         #expect(results.count == 20)   // C(6,3), all under the leaderboard cap
         // Sorted best-first.
         let rates = results.map(\.winRate)
         #expect(rates == rates.sorted(by: >))
         // The overpowered mon anchors the best team.
         #expect(results.first?.members.contains { $0.member.speciesId == "super" } == true)
-        // Records are self-consistent: every survivor faced the whole gauntlet
-        // (one game fewer for gauntlet members, which skip their mirror).
-        #expect(results.allSatisfy { $0.gamesPlayed >= 9 && $0.gamesPlayed <= 10 })
+        // A full round robin: every team played every other team.
+        #expect(results.allSatisfy { $0.gamesPlayed == 19 })
         #expect(results.allSatisfy { $0.winRate >= 0 && $0.winRate <= 1 })
     }
 
-    @Test func standingsStreamMonotonicallyAndCullTheField() async {
-        // 8 candidates → C(8,3) = 56 trios; a tiny entrantLimit forces the
-        // coverage shortlist, and aggressive culling shrinks the field to
-        // maxResults while snapshots stay monotonic.
+    @Test func standingsStreamMonotonicallyWithinTheFieldCap() async {
+        // 8 candidates → C(8,3) = 56 trios; a small fieldSize forces the
+        // coverage shortlist, and maxResults caps the visible leaderboard
+        // while snapshots stay monotonic.
         let types = ["fire", "water", "grass", "rock", "ice", "electric", "flying", "ground"]
         var pool = types.enumerated().map { i, t in makeCandidate(t, dex: i + 1, type: t) }
         pool[0] = makeCandidate("super", dex: 1, type: "dragon", atk: 175, def: 135, hp: 185)
         let moves = makeMoves(for: types + ["dragon"])
         let log = SnapshotLog()
 
-        let results = await TeamFinder.findTeams(
+        let final = await TeamFinder.findTeams(
             pool: pool, movesById: moves,
-            gauntletSize: 6, entrantLimit: 12, maxResults: 4, minGamesBeforeCull: 2,
+            fieldSize: 12, maxResults: 4,
             onStandings: { log.append($0) })
 
-        // The field was culled down to the leaderboard cap…
-        #expect(results.count == 4)
-        // …every finisher completed the full gauntlet (−1 for a mirror skip)…
-        #expect(results.allSatisfy { $0.gamesPlayed >= 5 && $0.gamesPlayed <= 6 })
+        // The leaderboard is capped at maxResults…
+        #expect(final.isComplete)
+        #expect(final.totalEntrants == 12)
+        #expect(final.teams.count == 4)
+        // …every finisher played the full round robin…
+        #expect(final.teams.allSatisfy { $0.gamesPlayed == 11 })
         // …and the overpowered mon's team still tops the board.
-        #expect(results.first?.members.contains { $0.member.speciesId == "super" } == true)
+        #expect(final.teams.first?.members.contains { $0.member.speciesId == "super" } == true)
 
         let snapshots = log.snapshots
         #expect(!snapshots.isEmpty)
@@ -143,16 +146,15 @@ private final class SnapshotLog: @unchecked Sendable {
         #expect(snapshots.first?.round == 0)
         #expect(snapshots.first?.battlesFought == 0)
         #expect(snapshots.first?.totalEntrants == 12)
-        // Rounds strictly increase; battles accumulate; the field only shrinks.
+        // Rounds and battles never regress (emits are wall-clock throttled,
+        // so consecutive snapshots may repeat a round but never go back).
         #expect(zip(snapshots, snapshots.dropFirst()).allSatisfy { a, b in
-            b.round == a.round + 1
-                && b.battlesFought >= a.battlesFought
-                && b.entrantsRemaining <= a.entrantsRemaining
+            b.round >= a.round && b.battlesFought >= a.battlesFought
         })
         // The leaderboard never shows more than maxResults teams.
         #expect(snapshots.allSatisfy { $0.teams.count <= 4 })
-        // The final snapshot is complete and matches the returned results.
+        // The final snapshot is complete and matches the returned standings.
         #expect(snapshots.last?.isComplete == true)
-        #expect(snapshots.last?.teams.map(\.id) == results.map(\.id))
+        #expect(snapshots.last?.teams.map(\.id) == final.teams.map(\.id))
     }
 }
