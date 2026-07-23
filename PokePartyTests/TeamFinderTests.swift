@@ -116,6 +116,81 @@ private final class SnapshotLog: @unchecked Sendable {
         #expect(results.allSatisfy { $0.winRate >= 0 && $0.winRate <= 1 })
     }
 
+    // MARK: - AAAA grade check (GradeFinder)
+
+    @Test func gradeFinderRanksAAAATeamsFirst() async {
+        // Six same-type mons → near-mirror matchups, so Coverage is an easy A.
+        // Five are bulky (def 140 × hp 160 = 22400 ≥ the 19800 A cutoff at CP 1500)
+        // with a high switches score; one is squishy, so its teams grade below
+        // AAAA and must rank after every AAAA team.
+        var pool = (0..<5).map { i in
+            var c = makeCandidate("bulky\(i)", dex: i + 1, type: "normal",
+                                  atk: 120, def: 140, hp: 160)
+            c.switchesScore = 95
+            return c
+        }
+        pool.append(makeCandidate("weak", dex: 6, type: "normal",
+                                  atk: 120, def: 90, hp: 120))
+        let moves = makeMoves(for: ["normal"])
+
+        let teams = await GradeFinder.findTopGradedTeams(
+            pool: pool, cpCap: 1500, movesById: moves)
+
+        #expect(teams.count == 20)   // C(6,3): every trio is returned, ranked
+        let aaaa = teams.filter(\.isAAAA)
+        #expect(aaaa.count == 10)    // C(5,3) — every bulky trio qualifies
+        #expect(aaaa.allSatisfy { team in
+            !team.members.contains { $0.member.speciesId == "weak" }
+        })
+        // AAAA teams rank above everything else (worst-grade-first ordering).
+        #expect(teams.prefix(10).allSatisfy { $0.isAAAA })
+        #expect(teams.dropFirst(10).allSatisfy { !$0.isAAAA })
+        // All AAAA values actually clear the A cutoffs, and letters agree.
+        #expect(aaaa.allSatisfy { Double($0.threatScore) <= 1200 - 0.9 * 680 })
+        #expect(aaaa.allSatisfy { $0.bulkValue >= 0.9 * 22000 })
+        #expect(aaaa.allSatisfy { $0.safetyValue >= 0.9 * 98 })
+        #expect(aaaa.allSatisfy { $0.consistencyValue >= 0.9 * 98 })
+        #expect(aaaa.allSatisfy { $0.gradeString == "AAAA" })
+        // Pool order preserved within a team (lead first).
+        #expect(teams.allSatisfy { $0.poolIndices == $0.poolIndices.sorted() })
+    }
+
+    @Test func gradeFinderSafetyDefaultCapsGradesWithoutSwitchesData() async {
+        // Without ranking switches data, Safety falls back to PvPoke's 60 — a D —
+        // so no team can grade AAAA, but the fallback still returns the best
+        // available teams with an honest Safety letter.
+        let pool = (0..<5).map { i in
+            makeCandidate("m\(i)", dex: i + 1, type: "normal",
+                          atk: 120, def: 140, hp: 160)
+        }
+        let teams = await GradeFinder.findTopGradedTeams(
+            pool: pool, cpCap: 1500, movesById: makeMoves(for: ["normal"]))
+        #expect(!teams.isEmpty)
+        #expect(teams.allSatisfy { !$0.isAAAA })
+        #expect(teams.allSatisfy { $0.safety != .a })
+    }
+
+    @Test func seededFieldBypassesCoverageSeeding() async {
+        // A pre-seeded field (the combined AAAA + tournament method) enters the
+        // round robin exactly as given.
+        let types = ["fire", "water", "grass", "rock", "ice"]
+        let pool = types.enumerated().map { i, t in makeCandidate(t, dex: i + 1, type: t) }
+        let moves = makeMoves(for: types)
+        let seeds = [[0, 1, 2], [0, 1, 3], [2, 3, 4]]
+
+        let final = await TeamFinder.findTeams(
+            pool: pool, movesById: moves, fieldSize: 10,
+            seededField: seeds)
+
+        #expect(final.isComplete)
+        #expect(final.totalEntrants == 3)
+        #expect(final.teams.count == 3)
+        #expect(final.teams.allSatisfy { $0.gamesPlayed == 2 })
+        // Exactly the seeded trios, no coverage shortlist substitutions.
+        let expectedIds = Set(seeds.map { trio in trio.map { pool[$0].member.speciesId }.joined(separator: "+") })
+        #expect(Set(final.teams.map(\.id)) == expectedIds)
+    }
+
     @Test func standingsStreamMonotonicallyWithinTheFieldCap() async {
         // 8 candidates → C(8,3) = 56 trios; a small fieldSize forces the
         // coverage shortlist, and maxResults caps the visible leaderboard

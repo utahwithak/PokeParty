@@ -194,6 +194,22 @@ let rate3v3Parallel = measure("3v3 all cores   ", battles: teamPairs.count) {
 }
 checksum &+= partial3.reduce(0, &+)
 
+// MARK: - Bench 3: 3v3 with the game-theoretic shield search per segment
+
+func fightOptimal(_ i: Int, _ j: Int) -> Int {
+    guard let a = makeTeam(trios[i]), let b = makeTeam(trios[j]) else { return 0 }
+    return ThreeVThreeBattle(teamA: a, teamB: b,
+                             switchPolicy: .bestMatchup, optimalShields: true).run().ratingA
+}
+
+// Warmup
+for (i, j) in teamPairs.prefix(5) { checksum &+= fightOptimal(i, j) }
+
+let optimalSubset = Array(teamPairs.prefix(40))
+let rateOptimalSingle = measure("3v3 optimal shld", battles: optimalSubset.count) {
+    for (i, j) in optimalSubset { checksum &+= fightOptimal(i, j) }
+}
+
 // MARK: - Extrapolation to the real TeamFinder workload
 
 print("\n--- Extrapolated TeamFinder workload (\(cores) cores) ---")

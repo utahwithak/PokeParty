@@ -24,16 +24,44 @@ final class TeamFinderModel {
         case failed(String)
     }
 
+    /// How suggested teams are found: full battle-sim tournament, or the Team
+    /// Builder's static grade analysis (no 3v3 simulations).
+    enum Method: String, CaseIterable, Identifiable {
+        case tournament
+        case gradeCheck
+        case combined
+
+        var id: Self { self }
+        var title: String {
+            switch self {
+            case .tournament: return "Tournament (3v3 battles)"
+            case .gradeCheck: return "AAAA grade check (static analysis)"
+            case .combined: return "AAAA tournament (grades, then battles)"
+            }
+        }
+    }
+
     /// The format whose meta to build teams from (defaults to Great League;
     /// switchable to any core league or active cup).
     var format: RankingFormat = .great
     /// How many of the format's top-ranked Pokémon form the candidate pool.
     var poolSize: Int = 15
-    static let poolSizes = [10, 15, 20, 25, 50, 75, 100, 125, 150, 200]
+    static let poolSizes = [10, 15, 20, 25, 50, 75, 100, 125, 150, 200, 250]
+
+    var method: Method = .tournament
 
     /// How many coverage-seeded teams enter the round robin (slider-driven;
     /// the tournament fights fieldSize·(fieldSize−1)/2 battles).
     var fieldSize: Int = 500
+
+    /// Simulate voluntary switching in tournament battles (turn-0 safe swaps,
+    /// counterswaps onto switch-locked opponents, and switch-timer escapes).
+    /// More realistic, but each battle costs extra throwaway 1v1 sims.
+    var simulateCounterswaps = false
+
+    /// Solve optimal shield timing (the game-theoretic search) for every 1v1
+    /// segment instead of the greedy default. Far more expensive per battle.
+    var optimalShields = false
     static let fieldSizeRange = 100.0...10000.0
     static let fieldSizeStep = 100.0
 
@@ -49,6 +77,8 @@ final class TeamFinderModel {
     private(set) var standings: TeamFinder.Standings?
     /// Final ranked teams (set when the tournament completes).
     private(set) var results: [TeamFinder.RankedTeam] = []
+    /// AAAA teams from a grade-check run (nil unless that method last ran).
+    private(set) var gradedTeams: [GradeFinder.GradedTeam]?
     /// The format and pool size the current run was started with.
     private(set) var resultsFormat: RankingFormat?
     private(set) var resultsPoolSize = 0
@@ -60,15 +90,19 @@ final class TeamFinderModel {
     /// Battles a full round robin of the current field size will fight.
     var estimatedBattles: Int { fieldSize * (fieldSize - 1) / 2 }
 
+    /// Trios a grade-check sweep of the current pool will grade (C(pool, 3)).
+    var estimatedTrios: Int { poolSize * (poolSize - 1) * (poolSize - 2) / 6 }
+
     func cancel() {
         searchTask?.cancel()
         searchTask = nil
-        if isRunning { phase = standings == nil ? .idle : .done }
+        if isRunning { phase = (standings == nil && gradedTeams == nil) ? .idle : .done }
     }
 
     /// Shows a previously saved tournament in the leaderboard.
     func load(_ run: SavedTournament) {
         guard !isRunning else { return }
+        gradedTeams = nil
         results = run.teams
         resultsFormat = run.format
         resultsPoolSize = run.poolSize
@@ -87,13 +121,18 @@ final class TeamFinderModel {
         let format = format
         let poolSize = poolSize
         let fieldSize = fieldSize
+        let simulateCounterswaps = simulateCounterswaps
+        let optimalShields = optimalShields
         let movesById = store.movesById
         let pokemonById = store.pokemonById
+
+        let method = method
 
         phase = .loadingRankings
         progress = 0
         results = []
         standings = nil
+        gradedTeams = nil
         resultsFormat = nil
 
         searchTask = Task {
@@ -117,8 +156,45 @@ final class TeamFinderModel {
             phase = .searching
             resultsFormat = format
             resultsPoolSize = pool.count
+
+            if method == .gradeCheck {
+                let teams = await GradeFinder.findTopGradedTeams(
+                    pool: pool, cpCap: format.cp, movesById: movesById,
+                    onProgress: { fraction in
+                        Task { @MainActor in self.progress = max(self.progress, fraction) }
+                    })
+                if Task.isCancelled { return }
+                withAnimation(.spring(duration: 0.6)) { gradedTeams = teams }
+                phase = .done
+                return
+            }
+
+            // Combined: the AAAA grade check seeds the tournament's field, so the
+            // round robin only ranks teams that already grade A across the board.
+            var seededField: [[Int]]?
+            if method == .combined {
+                let graded = await GradeFinder.findTopGradedTeams(
+                    pool: pool, cpCap: format.cp, movesById: movesById,
+                    maxResults: fieldSize,
+                    onProgress: { fraction in
+                        Task { @MainActor in self.progress = max(self.progress, fraction) }
+                    })
+                if Task.isCancelled { return }
+                let aaaa = graded.filter(\.isAAAA)
+                guard aaaa.count >= 2 else {
+                    phase = .failed(aaaa.isEmpty
+                        ? "No AAAA teams in this pool — try a larger pool."
+                        : "Only one AAAA team in this pool — nothing to battle. Try a larger pool.")
+                    return
+                }
+                seededField = aaaa.map(\.poolIndices)
+            }
+
             let final = await TeamFinder.findTeams(
                 pool: pool, movesById: movesById, fieldSize: fieldSize,
+                voluntarySwitching: simulateCounterswaps,
+                optimalShields: optimalShields,
+                seededField: seededField,
                 onSeedingProgress: { fraction in
                     Task { @MainActor in self.progress = max(self.progress, fraction) }
                 },
@@ -182,7 +258,8 @@ final class TeamFinderModel {
                 familyId: r.species.family?.id,
                 dex: r.species.dex,
                 combatant: combatant,
-                stats: stats))
+                stats: stats,
+                switchesScore: entry.switchesScore))
         }
         return pool
     }

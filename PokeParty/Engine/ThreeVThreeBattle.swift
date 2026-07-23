@@ -7,14 +7,14 @@
 //  engine: it runs consecutive 1v1 segments and carries each Pokémon's HP,
 //  energy, shields and stat buffs across faints, sharing one 240s clock.
 //
-//  Scope for this first version (documented in the plan, M2):
+//  Scope (M2 base + M8.3 switching refinements):
 //   - Leads are specified by the caller (the finder will enumerate lead combos).
 //   - Shields are a per-team pool (default 2) shared across a team's Pokémon.
-//   - Switching happens ONLY on faint (no mid-battle voluntary switching yet);
-//     the replacement is the next non-fainted Pokémon in team order.
+//   - Switching on faint picks the next in team order or the best matchup.
+//   - With `voluntarySwitching`: turn-0 safe swaps, counterswaps punishing a
+//     switch-locked opponent, and mid-segment escapes from a losing matchup the
+//     moment the switch timer allows (via `Battle.interruptCheck`).
 //   - Each segment plays out as an optimal 1v1 via the existing `ActionLogic` AI.
-//  Voluntary switching, the switch timer, and best-matchup switch selection are
-//  future refinements.
 //
 
 import Foundation
@@ -79,7 +79,8 @@ nonisolated struct ThreeVThreeBattle {
     /// the currently-revealed matchup only.
     var optimalShields: Bool
     /// Allow reactive, revealed-info-only voluntary switching at segment boundaries
-    /// (turn-0 safe-swap + counter-switch when the opponent reveals a new mon). The
+    /// (turn-0 safe-swap, counter-switch when the opponent reveals a new mon, and a
+    /// counterswap punishing an opponent locked by its own voluntary switch). The
     /// switch timer prevents thrashing. Off by default (M8.3).
     var voluntarySwitching: Bool
 
@@ -91,6 +92,10 @@ nonisolated struct ThreeVThreeBattle {
     /// A backup must beat the current active by at least this rating to be worth a
     /// voluntary switch (hysteresis to avoid marginal flip-flopping).
     private static let switchHysteresis = 75
+    /// A counter-switch (into an opponent that just switched and is now locked) must
+    /// reach at least this rating: it spends our own switch clock even though the
+    /// target can't escape, so only a dominant answer is worth it.
+    private static let counterSwitchDominance = 650
     /// Tempo cost of switching: the side that stays gets this many free fast moves of
     /// energy while the other spends its turn switching.
     private static let switchTempoFastMoves = 3
@@ -127,6 +132,7 @@ nonisolated struct ThreeVThreeBattle {
             p.startHp = 0
             p.startEnergy = 0
             p.startStatBuffs = [0, 0]
+            p.startDisguiseConsumed = false
         }
 
         var teamAShields = shieldsA
@@ -144,8 +150,11 @@ nonisolated struct ThreeVThreeBattle {
         var lastSwitchA = -Self.switchTimerMs
         var lastSwitchB = -Self.switchTimerMs
 
-        // Safety bound: at most (all Pokémon faint) + 1 segments.
+        // Safety bound: at most (all Pokémon faint) + 1 faint-ended segments, plus —
+        // with voluntary switching — one interrupt-ended segment per switch-timer
+        // window per side over the whole battle.
         let maxSegments = teamA.count + teamB.count + 1
+            + (voluntarySwitching ? 2 * (battleTimeLimit / Self.switchTimerMs) : 0)
         var segment = 0
 
         while segment < maxSegments {
@@ -165,9 +174,26 @@ nonisolated struct ThreeVThreeBattle {
                     opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields) : nil
                 if let aTarget { activeA = aTarget; lastSwitchA = globalTime; entrancesA.append(aTarget) }
                 if let bTarget { activeB = bTarget; lastSwitchB = globalTime; entrancesB.append(bTarget) }
+                var aSwitched = aTarget != nil
+                var bSwitched = bTarget != nil
+                // Counterswap: a side that just switched is locked for the switch
+                // timer, so the other side (if off cooldown) re-evaluates against the
+                // newly revealed mon and may punish with a dominant answer the locked
+                // mon can't escape. (Approximates deciding a turn or two in.)
+                if aSwitched != bSwitched {
+                    if aSwitched, bCanSwitch, let c = counterSwitchTarget(
+                        team: teamB, fainted: faintedB, active: activeB,
+                        opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields) {
+                        activeB = c; lastSwitchB = globalTime; entrancesB.append(c); bSwitched = true
+                    } else if bSwitched, aCanSwitch, let c = counterSwitchTarget(
+                        team: teamA, fainted: faintedA, active: activeA,
+                        opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields) {
+                        activeA = c; lastSwitchA = globalTime; entrancesA.append(c); aSwitched = true
+                    }
+                }
                 // Tempo cost: if exactly one side switched, the other gets free energy.
-                if (aTarget != nil) != (bTarget != nil) {
-                    let stayer = aTarget != nil ? teamB[activeB] : teamA[activeA]
+                if aSwitched != bSwitched {
+                    let stayer = aSwitched ? teamB[activeB] : teamA[activeA]
                     stayer.startEnergy = min(100, stayer.startEnergy + stayer.fastMove.energyGain * Self.switchTempoFastMoves)
                 }
             }
@@ -178,6 +204,27 @@ nonisolated struct ThreeVThreeBattle {
             b.startingShields = teamBShields
 
             let battle = Battle(a, b, startTime: globalTime, record: record)
+            // Mid-segment escape (M8.3b): a side that enters this segment stuck in a
+            // losing matchup because its switch timer is still running gets the
+            // segment stopped the moment the timer expires, so the boundary logic
+            // above can offer it a voluntary switch. A side already off cooldown
+            // never arms this — it just declined a switch at this boundary.
+            if voluntarySwitching {
+                var interruptAt = Int.max
+                let aUnlock = lastSwitchA + Self.switchTimerMs
+                if aUnlock > globalTime, Self.hasBackup(count: teamA.count, fainted: faintedA, active: activeA),
+                   rate(a, vs: b, myShields: teamAShields, oppShields: teamBShields, fresh: false) < 500 {
+                    interruptAt = min(interruptAt, aUnlock)
+                }
+                let bUnlock = lastSwitchB + Self.switchTimerMs
+                if bUnlock > globalTime, Self.hasBackup(count: teamB.count, fainted: faintedB, active: activeB),
+                   rate(b, vs: a, myShields: teamBShields, oppShields: teamAShields, fresh: false) < 500 {
+                    interruptAt = min(interruptAt, bUnlock)
+                }
+                if interruptAt < Int.max {
+                    battle.interruptCheck = { $0.time >= interruptAt }
+                }
+            }
             var shieldSolution: ShieldSearch.Solution?
             if optimalShields {
                 let sol = ShieldSearch.optimalSolution(a, b)
@@ -196,14 +243,18 @@ nonisolated struct ThreeVThreeBattle {
             // Carry each combatant's state forward (the survivor stays in).
             a.startHp = max(0, a.hp); a.startEnergy = a.energy; a.startStatBuffs = a.statBuffs
             b.startHp = max(0, b.hp); b.startEnergy = b.energy; b.startStatBuffs = b.statBuffs
+            a.startDisguiseConsumed = a.hasDisguise && !a.disguiseActive
+            b.startDisguiseConsumed = b.hasDisguise && !b.disguiseActive
             teamAShields = a.shields
             teamBShields = b.shields
 
             let aFainted = a.hp <= 0
             let bFainted = b.hp <= 0
 
-            // Neither fainted → the shared clock ran out.
+            // Neither fainted → either a mid-segment interrupt (back to the boundary
+            // so the freed side can voluntarily switch) or the shared clock ran out.
             if !aFainted && !bFainted {
+                if battle.interrupted && globalTime <= battleTimeLimit { continue }
                 timedOut = true
                 break
             }
@@ -268,6 +319,29 @@ nonisolated struct ThreeVThreeBattle {
         return bestIndex
     }
 
+    /// Counterswap check against an opponent that just voluntarily switched in and is
+    /// therefore switch-locked. Because the locked mon can't escape for the timer,
+    /// this considers switching even out of an even or winning matchup — but only for
+    /// a backup with a dominant matchup (`counterSwitchDominance`), not merely a
+    /// better one, since it spends this side's own switch clock.
+    private func counterSwitchTarget(
+        team: [BattlePokemon], fainted: Set<Int>, active: Int,
+        opponent: BattlePokemon, teamShields: Int, opponentShields: Int
+    ) -> Int? {
+        let backups = (0..<team.count).filter { !fainted.contains($0) && $0 != active }
+        guard !backups.isEmpty else { return nil }
+
+        let currentRating = rate(team[active], vs: opponent,
+                                 myShields: teamShields, oppShields: opponentShields, fresh: false)
+        var bestIndex: Int?
+        var bestRating = max(currentRating + Self.switchHysteresis, Self.counterSwitchDominance)
+        for i in backups {
+            let r = rate(team[i], vs: opponent, myShields: teamShields, oppShields: opponentShields, fresh: true)
+            if r > bestRating { bestRating = r; bestIndex = i }
+        }
+        return bestIndex
+    }
+
     /// Rating of `mon` vs `opponent` from a throwaway 1v1 on clones (no mutation).
     /// `fresh` = the mon enters at full HP/energy (a switch-in); otherwise it uses its
     /// carried state (the mon currently on the field).
@@ -288,6 +362,11 @@ nonisolated struct ThreeVThreeBattle {
     /// First team-order index that hasn't fainted, or nil if the team is wiped.
     private static func nextAlive(count: Int, fainted: Set<Int>) -> Int? {
         (0..<count).first { !fainted.contains($0) }
+    }
+
+    /// Whether the team has a living Pokémon besides the active one.
+    private static func hasBackup(count: Int, fainted: Set<Int>, active: Int) -> Bool {
+        (0..<count).contains { !fainted.contains($0) && $0 != active }
     }
 
     /// Chooses which Pokémon a team brings in next. For `.bestMatchup`, each alive

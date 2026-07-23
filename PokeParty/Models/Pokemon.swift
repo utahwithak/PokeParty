@@ -37,6 +37,11 @@ nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
         tags?.contains("shadow") ?? false
     }
 
+    /// A regular species that can also be caught as a Shadow.
+    var isShadowEligible: Bool {
+        tags?.contains("shadoweligible") ?? false
+    }
+
     /// Mimikyu's Disguise: a one-time block of the first charged move.
     var hasDisguise: Bool {
         formChange?.effect == "protect"

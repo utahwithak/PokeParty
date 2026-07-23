@@ -510,7 +510,7 @@ head-to-head viewer uses the full solver — see Q6/Q7.
   - [x] `ThreeVThreeBattle` orchestrator (`Engine/ThreeVThreeBattle.swift`) + `TeamBattleResult`
   - [x] Engine hooks: `BattlePokemon.startHp`, `Battle(startTime:)` (both backward-compatible; 1v1 unchanged)
   - [x] Unit tests (`PokePartyTests/ThreeVThreeBattleTests.swift`, Swift Testing, synthetic data — 4/4 pass)
-  - [ ] Voluntary mid-battle switching + switch timer (currently faint-only)
+  - [x] Voluntary mid-battle switching + switch timer → done under **M8.3** (`voluntarySwitching`, opt-in)
   - [x] Best-matchup switch selection — `SwitchPolicy.bestMatchup` (default): on faint, brings in the alive teammate that scores best vs the opponent's current state (via `BattlePokemon.clone()` throwaway sims). `.teamOrder` still available. Tested.
   - [ ] Continuous per-mon cooldown across a switch (currently resets each segment)
   - [ ] Dev/head-to-head UI to pick two teams and view the result/timeline → folded into **M7**
@@ -525,16 +525,27 @@ head-to-head viewer uses the full solver — see Q6/Q7.
     ranked-results columns, "Open in Team Builder"), sidebar `.partyFinder`. Unit-tested
     (`TeamFinderTests`). Still TODO for full M3: user-picked pools, bigger pools/pruning,
     per-team breakdown UI.
+  - [x] M3 finder methods (2026-07-23) — the Party Finder now offers three methods
+    (`TeamFinderModel.Method`): **Tournament** (round-robin 3v3s over a coverage-seeded
+    field, now with a per-family diversity cap — `maxFieldSharePerFamily` — so one apex mon
+    can't monopolize the field), **AAAA grade check** (`Engine/GradeFinder.swift`: grades
+    every C(pool,3) trio with the Team Builder's exact formulas from one pairwise 1v1
+    matrix — no 3v3 sims; ranked by worst category so AAAA teams lead), and **Combined**
+    (AAAA teams seed the tournament field via `findTeams(seededField:)`). Tournament
+    battles gain opt-in `voluntarySwitching` (M8.3 counterswaps/escapes) and
+    `optimalShields` toggles; pool sizes up to 250; `Candidate.switchesScore` feeds the
+    Safety grade. Unit-tested (`TeamFinderTests`: GradeFinder ranking, safety fallback,
+    seeded-field bypass).
 - [ ] M4 — Best Teams
 - [ ] M5 — GPU / heavy parallelization
 - [ ] M8 — Optimal-play battle search (shield & switch decision search / minimax)
   - [x] M8.1 — Shield-decision injection hook: `Battle.shieldOverride((defenderIndex, opportunityIndex) -> Bool?)` forces a shield decision (nil = heuristic). Tested.
   - [x] M8.2 — 1v1 shield-decision search (`Engine/ShieldSearch.swift`): enumerates each side's shield timings (subsets of the first `shields+2` opportunities), builds the payoff matrix, solves maximin (A) / best-response (B). `Solution` also reports the **win/loss/tie distribution across all distinct shield scenarios** + best/worst-case rating. `optimal()` / `optimalLog()`; `RankingsStore.battleReplay` returns log + scenario stats. Wired into the 1v1 Battle Simulator, which now shows optimal (not greedy) shielding **and a "9W · 2L of 11 shield scenarios · best/worst" stat row**. Tested.
-  - [~] M8.3 — 3v3 optimal shields + information-aware switching. Leads UI-designated (position 0, `LEAD` badge on both teams) — NO lead enumeration.
+  - [x] M8.3 — 3v3 optimal shields + information-aware switching. Leads UI-designated (position 0, `LEAD` badge on both teams) — NO lead enumeration.
     - [x] Optimal shields per 3v3 segment: `ShieldSearch.optimalPolicy(a,b)` solves the shield game from each segment's current carried state (on clones); `ThreeVThreeBattle.optimalShields` (default on) applies it. Information-legitimate (decides shields for the revealed matchup only). Head-to-head `TeamBattleView` now uses it.
-    - [~] Information-aware *voluntary* switching. Phase (a) **done**: reveal-boundary switches within the segment model — `ThreeVThreeBattle.voluntarySwitching` (turn-0 safe-swap + counter-switch when the opponent reveals a mon), revealed-info only (`voluntarySwitchTarget` never reads the hidden backline), a **30s switch timer** (`switchTimerMs`, tunable — live game often cited as 60s), hysteresis (`switchHysteresis`), and a tempo/energy penalty on the stayer. Enabled in the head-to-head `TeamBattleView`. Tested (safe-swap picks the counter lead). Phase (b) — turn-driven orchestrator for mid-1v1 switches — still pending.
+    - [x] Information-aware *voluntary* switching. Phase (a): reveal-boundary switches within the segment model — `ThreeVThreeBattle.voluntarySwitching` (turn-0 safe-swap + counter-switch when the opponent reveals a mon), revealed-info only (`voluntarySwitchTarget` never reads the hidden backline), a **30s switch timer** (`switchTimerMs`, tunable — live game often cited as 60s), hysteresis (`switchHysteresis`), and a tempo/energy penalty on the stayer. Enabled in the head-to-head `TeamBattleView`. Tested (safe-swap picks the counter lead). Phase (b) **done (2026-07-23)** as two reveal-window mechanisms rather than a full turn-driven orchestrator: **counterswaps** (a side whose opponent just voluntarily switched — and is thus switch-locked — may punish with a dominant answer, `counterSwitchDominance`) and **mid-segment escapes** (`Battle.interruptCheck` stops a segment the moment a losing side's switch timer expires so the boundary logic can offer it a switch). Both tested.
     - [x] Per-segment shield-scenario stats surfaced in the 3v3: each `TeamBattleLog.Segment` carries its `ShieldSearch.Solution`, and `TeamBattleView` shows the "NW · ML of K shield scenarios · best/worst" row on each segment's timeline (reusing the 1v1 stat).
-  - [ ] M8.4 — Aggregation criterion + memoization + parallelism; decide finder fidelity (Q7)
+  - [~] M8.4 — Aggregation criterion + memoization + parallelism; decide finder fidelity (Q7). **Partial (2026-07-23):** `ShieldSearch` now memoizes payoff-matrix cells (a fought battle's rating covers every policy pair agreeing on the shield decisions that actually arose) and caches the 0–2-shield policy sets; the Party Finder exposes fidelity as user toggles (`simulateCounterswaps`, `optimalShields`) instead of a fixed Q7 answer. Still open: aggregation criterion for two-sided search values.
 - [ ] M6 — Self-hosted rankings (remove online-seeded values; §2.11). Shares the 1v1-matrix substrate with M3.
   - [ ] M6.1 — `MetaPool` (min stat-product filter → own meta pool, not the ranking list)
   - [ ] M6.2 — Local `Ranker`: 5-scenario N×N matrix → category scores (Safety) + overall order (meta-relevance), cached to disk

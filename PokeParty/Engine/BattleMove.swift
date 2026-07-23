@@ -76,7 +76,7 @@ nonisolated final class BattleMove {
             selfBuffing = false
         }
 
-        if let b, chance < 1, chance > 0 {
+        if b != nil, chance < 1, chance > 0 {
             // Deterministic buff accumulator (PvPoke seeds the meter at the chance).
             buffApplyMeter = chance == 0.5 ? 0 : chance
         }

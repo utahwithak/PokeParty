@@ -45,11 +45,13 @@ nonisolated final class BattlePokemon {
     var startHp: Int = 0
     var statBuffs: [Int] = [0, 0]
     var startStatBuffs: [Int] = [0, 0]
+    /// Whether the Disguise was already busted in an earlier 3v3 segment — it
+    /// blocks only one charged move per MATCH, not per 1v1 segment.
+    var startDisguiseConsumed = false
     var cooldown: Int = 0           // ms remaining on fast-move
     var hasActed: Bool = false
     var index: Int = 0
     var priority: Int = 0
-    var turnsToKO: Int = -1
     enum FaintSource { case none, fast, charged }
     var faintSource: FaintSource = .none
 
@@ -128,8 +130,6 @@ nonisolated final class BattlePokemon {
         }
     }
 
-    var stab1: Double { DamageMultiplier.stab }
-
     private func stab(for move: BattleMove) -> Double {
         typeIndices.contains(move.typeIndex) ? DamageMultiplier.stab : 1
     }
@@ -160,6 +160,7 @@ nonisolated final class BattlePokemon {
         c.startingShields = startingShields
         c.startHp = startHp
         c.startStatBuffs = startStatBuffs
+        c.startDisguiseConsumed = startDisguiseConsumed
         c.baitShields = baitShields
         c.optimizeMoveTiming = optimizeMoveTiming
         c.farmEnergy = farmEnergy
@@ -173,11 +174,15 @@ nonisolated final class BattlePokemon {
         statBuffs = startStatBuffs
         cooldown = 0
         hasActed = false
-        turnsToKO = -1
         faintSource = .none
-        disguiseActive = hasDisguise
+        disguiseActive = hasDisguise && !startDisguiseConsumed
+        // Fast move included: a Battle may be re-simulated (ShieldSearch reuses
+        // one battle across its payoff matrix), so every meter must reset.
         for m in chargedMoves where m.buffApplyChance > 0 && m.buffApplyChance < 1 {
             m.buffApplyMeter = m.buffApplyChance == 0.5 ? 0 : m.buffApplyChance
+        }
+        if fastMove.buffApplyChance > 0 && fastMove.buffApplyChance < 1 {
+            fastMove.buffApplyMeter = fastMove.buffApplyChance == 0.5 ? 0 : fastMove.buffApplyChance
         }
         resetMoves()
     }

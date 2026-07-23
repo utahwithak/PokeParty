@@ -15,18 +15,14 @@ nonisolated final class TimelineAction {
     let turn: Int
     let value: Int        // charged-move index (into chargedMoves)
     var priority: Int
-    var shielded: Bool
-    var charge: Double
     var valid: Bool = false
     var processed: Bool = false
 
-    init(type: Kind, actor: Int, turn: Int, value: Int, priority: Int, shielded: Bool = false, charge: Double = 1) {
+    init(type: Kind, actor: Int, turn: Int, value: Int, priority: Int) {
         self.type = type
         self.actor = actor
         self.turn = turn
         self.value = value
         self.priority = priority
-        self.shielded = shielded
-        self.charge = charge
     }
 }

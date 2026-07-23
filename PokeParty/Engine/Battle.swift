@@ -37,7 +37,9 @@ nonisolated final class Battle {
     /// true = shield, false = don't, nil = use the built-in heuristic. Lets a search
     /// drive shield timing instead of the greedy default.
     var shieldOverride: ((Int, Int) -> Bool?)?
-    private var shieldOpportunities = [0, 0]
+    /// How many shield opportunities each side has faced (readable after
+    /// `simulate()` — ShieldSearch uses it to dedupe equivalent policies).
+    private(set) var shieldOpportunities = [0, 0]
 
     /// M8.3(b) mid-battle switch hook. Called after each turn while both Pokémon
     /// are alive; return true to stop the simulation at this point (the 3v3
@@ -64,10 +66,15 @@ nonisolated final class Battle {
         start()
         while pokemon[0].hp > 0 && pokemon[1].hp > 0 && time <= 240000 {
             step()
+            if let interruptCheck, pokemon[0].hp > 0, pokemon[1].hp > 0, interruptCheck(self) {
+                interrupted = true
+                break
+            }
         }
     }
 
     private func start() {
+        interrupted = false
         for p in pokemon { p.reset() }
         usePriority = pokemon[0].stats.atk != pokemon[1].stats.atk
         time = startTime
@@ -239,7 +246,7 @@ nonisolated final class Battle {
         case .charged:
             let move = poke.chargedMoves[action.value]
             if poke.energy >= move.energy {
-                useMove(poke, opponent, move, forceShield: action.shielded, charge: action.charge)
+                useMove(poke, opponent, move)
                 roundChargedMoveUsed += 1
             }
         case .wait:
@@ -249,8 +256,8 @@ nonisolated final class Battle {
 
     // MARK: - Apply a move
 
-    private func useMove(_ attacker: BattlePokemon, _ defender: BattlePokemon, _ move: BattleMove, forceShield: Bool = false, charge: Double = 1) {
-        var damage = DamageCalculator.damage(attacker, defender, move, charge: charge)
+    private func useMove(_ attacker: BattlePokemon, _ defender: BattlePokemon, _ move: BattleMove) {
+        var damage = DamageCalculator.damage(attacker, defender, move)
         move.damage = damage
         var defenderUsedShield = false
 
@@ -274,7 +281,7 @@ nonisolated final class Battle {
                 if let dBest = defender.bestChargedMove, dBest.selfDefenseDebuffing {
                     if attacker.shields > 0 {
                         useShield = shieldDecision.value
-                    } else if let aBest = attacker.bestChargedMove {
+                    } else if attacker.bestChargedMove != nil {
                         let fastToNextCharged = Int(ceil(Double(dBest.energy - defender.energy) / Double(defender.fastMove.energyGain)))
                         let turnsToNextCharged = fastToNextCharged * defender.fastMove.turns
                         let cycleDamage = fastToNextCharged * defender.fastMove.damage + dBest.damage
@@ -283,7 +290,6 @@ nonisolated final class Battle {
                         if turnsToNextCharged >= attackerTurnsToNextCharged && attacker.hp <= cycleDamage {
                             useShield = shieldDecision.value
                         }
-                        _ = aBest
                     }
                 }
 
@@ -304,10 +310,13 @@ nonisolated final class Battle {
                 }
             }
 
-            // Mimikyu's Disguise blocks the first charged move (a free, one-time shield).
+            // Mimikyu's Disguise blocks the first charged move (a free, one-time
+            // shield), but busting it drops Mimikyu's Defense one stage for the
+            // rest of the match (PvPoke's "Busted" form; carries across switches).
             if !defenderUsedShield && defender.disguiseActive {
                 damage = 1
                 defender.disguiseActive = false
+                defender.statBuffs[1] = max(defender.statBuffs[1] - 1, -4)
                 roundShieldUsed = true
                 if roundChargedMoveUsed == 0 { time += chargedMinigameTime }
             }

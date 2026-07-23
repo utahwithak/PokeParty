@@ -94,7 +94,7 @@ private struct LeaderboardRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 12) {
                     ForEach(Array(team.members.enumerated()), id: \.offset) { index, member in
-                        memberCell(member, isLead: index == 0)
+                        TeamMemberCell(member: member, isLead: index == 0)
                     }
                 }
                 record
@@ -131,7 +131,15 @@ private struct LeaderboardRow: View {
         }
     }
 
-    private func memberCell(_ member: TeamFinder.RankedTeam.Member, isLead: Bool) -> some View {
+}
+
+/// A member of a suggested team: name, shadow flame, lead marker and types.
+/// Shared by the tournament leaderboard and the AAAA grade-check list.
+private struct TeamMemberCell: View {
+    let member: TeamFinder.RankedTeam.Member
+    let isLead: Bool
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
                 Text(member.speciesName)
@@ -147,5 +155,119 @@ private struct LeaderboardRow: View {
             TypeBadgeRow(types: member.types)
         }
         .frame(minWidth: 110, alignment: .leading)
+    }
+}
+
+// MARK: - AAAA grade-check results
+
+/// The grade-check results: every trio from the pool that the Team Builder's
+/// static analysis grades A in Coverage, Bulk, Safety and Consistency.
+struct GradedTeamsView: View {
+    let teams: [GradeFinder.GradedTeam]
+    /// The format and pool size the run was started with (for the caption).
+    let format: RankingFormat?
+    let poolSize: Int
+    let openInBuilder: (GradeFinder.GradedTeam) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+                .padding()
+            Divider()
+            if teams.isEmpty {
+                ContentUnavailableView(
+                    "No Teams Graded",
+                    systemImage: "wand.and.stars.inverse",
+                    description: Text("The pool was too small to build any teams."))
+                    .frame(maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(displayedTeams.enumerated()), id: \.element.id) { index, team in
+                            GradedTeamRow(rank: index + 1, team: team) {
+                                openInBuilder(team)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    /// All AAAA teams when any exist; otherwise the best-available fallback.
+    private var aaaaTeams: [GradeFinder.GradedTeam] { teams.filter(\.isAAAA) }
+    private var displayedTeams: [GradeFinder.GradedTeam] { aaaaTeams.isEmpty ? teams : aaaaTeams }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(aaaaTeams.isEmpty
+                     ? "No AAAA teams — best available grades"
+                     : "\(aaaaTeams.count) AAAA team\(aaaaTeams.count == 1 ? "" : "s")")
+                    .font(.headline)
+                Spacer()
+            }
+            Text(caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var caption: String {
+        let league = format.map { "\($0.title) — " } ?? ""
+        let base = "\(league)every trio from the top \(poolSize) ranked Pokémon, graded with the Team Builder's static analysis (no battle simulations)."
+        if aaaaTeams.isEmpty {
+            return "\(base) No trio grades A in all of Coverage, Bulk, Safety and Consistency, so these are the teams whose worst grade is best. The first member is the lead."
+        }
+        return "\(base) Only teams graded A across the board are shown, best coverage first. The first member is the lead."
+    }
+}
+
+/// One graded team: rank, members, its grades and the values behind them.
+private struct GradedTeamRow: View {
+    let rank: Int
+    let team: GradeFinder.GradedTeam
+    let openInBuilder: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text("#\(rank)")
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    ForEach(Array(team.members.enumerated()), id: \.offset) { index, member in
+                        TeamMemberCell(member: member, isLead: index == 0)
+                    }
+                }
+                gradeLine
+            }
+
+            Spacer()
+
+            Button("Open in Team Builder", action: openInBuilder)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    private var gradeLine: some View {
+        HStack(spacing: 8) {
+            Text(team.gradeString)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background((team.isAAAA ? Color.green : Color.orange).gradient, in: Capsule())
+                .help("Coverage · Bulk · Safety · Consistency")
+            Text("Threat score \(team.threatScore) · Bulk \(Int(team.bulkValue.rounded()).formatted()) · Safety \(Int(team.safetyValue.rounded())) · Consistency \(Int(team.consistencyValue.rounded()))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
     }
 }

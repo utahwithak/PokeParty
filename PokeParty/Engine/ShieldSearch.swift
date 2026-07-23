@@ -36,7 +36,14 @@ nonisolated enum ShieldSearch {
     /// Candidate shield policies for a side: every subset of the first `shields + 2`
     /// faced charged moves with size ≤ its shield count (so it can skip early moves
     /// and save shields for later). With 2 shields that's 11 policies.
+    /// Precomputed for the only shield counts that occur in play (0…2).
+    private static let cachedPolicies: [[Set<Int>]] = (0...2).map(computePolicies(shields:))
+
     private static func policies(shields: Int) -> [Set<Int>] {
+        (0...2).contains(shields) ? cachedPolicies[shields] : computePolicies(shields: shields)
+    }
+
+    private static func computePolicies(shields: Int) -> [Set<Int>] {
         guard shields > 0 else { return [[]] }
         let opportunities = Array(0..<(shields + 2))
         var result: [Set<Int>] = []
@@ -129,36 +136,65 @@ nonisolated enum ShieldSearch {
         movesById: [String: Move],
         shieldsA: Int, shieldsB: Int
     ) -> Solution? {
-        let polA = policies(shields: shieldsA)
-        let polB = policies(shields: shieldsB)
-        var matrix = [[Int]](repeating: [Int](repeating: 500, count: polB.count), count: polA.count)
-        for i in polA.indices {
-            for j in polB.indices {
-                guard let r = play(a, statsA: statsA, b, statsB: statsB, movesById: movesById,
-                                   shieldsA: shieldsA, shieldsB: shieldsB,
-                                   policyA: polA[i], policyB: polB[j]) else { return nil }
-                matrix[i][j] = r.ratingA
-            }
-        }
-        return solve(matrix: matrix, polA: polA, polB: polB)
+        guard let pa = MatchupSimulator.makeBattlePokemon(a, stats: statsA, movesById: movesById, shields: shieldsA),
+              let pb = MatchupSimulator.makeBattlePokemon(b, stats: statsB, movesById: movesById, shields: shieldsB)
+        else { return nil }
+        return solve(a: pa, b: pb, polA: policies(shields: shieldsA), polB: policies(shields: shieldsB))
     }
 
     /// Optimal shield play + scenario distribution for a 1v1 starting from two live
     /// Pokémon's *current* carried state (used per 3v3 segment). Evaluates on clones
     /// and does not mutate the originals; uses each mon's `startingShields` as its pool.
     static func optimalSolution(_ a: BattlePokemon, _ b: BattlePokemon) -> Solution {
-        let polA = policies(shields: a.startingShields)
-        let polB = policies(shields: b.startingShields)
+        solve(a: a.clone(), b: b.clone(),
+              polA: policies(shields: a.startingShields),
+              polB: policies(shields: b.startingShields))
+    }
+
+    /// Fills the payoff matrix and solves it. One battle serves every cell —
+    /// `simulate()` rebuilds all battle state from the `start*` fields, so only
+    /// the shield policy differs between runs. `a`/`b` are consumed (mutated).
+    ///
+    /// Cells are memoized: a deterministic battle depends only on the shield
+    /// decisions at opportunities that actually arose, so a fought battle's
+    /// rating covers every policy pair that agrees on those first
+    /// `shieldOpportunities` decisions. That collapses most of the matrix.
+    private static func solve(a: BattlePokemon, b: BattlePokemon,
+                              polA: [Set<Int>], polB: [Set<Int>]) -> Solution {
+        let battle = Battle(a, b)
+        // Policies as bitmasks for cheap truncated comparison. Opportunity
+        // counts can exceed the policies' 4-bit range; clamping keeps the
+        // truncation exact (higher bits are always zero) and the shift safe.
+        func mask(_ s: Set<Int>) -> UInt32 { s.reduce(0) { $0 | (1 << UInt32($1)) } }
+        func truncated(_ m: UInt32, _ faced: Int) -> UInt32 { m & ((1 << UInt32(min(faced, 8))) - 1) }
+        let masksA = polA.map(mask)
+        let masksB = polB.map(mask)
+
+        struct Fought { let truncA: UInt32; let facedA: Int; let truncB: UInt32; let facedB: Int; let rating: Int }
+        var fought: [Fought] = []
+
         var matrix = [[Int]](repeating: [Int](repeating: 500, count: polB.count), count: polA.count)
         for i in polA.indices {
+            let pa = polA[i], ma = masksA[i]
             for j in polB.indices {
-                let ca = a.clone(), cb = b.clone()
-                let battle = Battle(ca, cb)
+                let pb = polB[j], mb = masksB[j]
+                if let hit = fought.first(where: {
+                    truncated(ma, $0.facedA) == $0.truncA && truncated(mb, $0.facedB) == $0.truncB
+                }) {
+                    matrix[i][j] = hit.rating
+                    continue
+                }
                 battle.shieldOverride = { defenderIndex, opportunity in
-                    defenderIndex == 0 ? polA[i].contains(opportunity) : polB[j].contains(opportunity)
+                    defenderIndex == 0 ? pa.contains(opportunity) : pb.contains(opportunity)
                 }
                 battle.simulate()
-                matrix[i][j] = battle.battleRating(forIndex: 0)
+                let rating = battle.battleRating(forIndex: 0)
+                matrix[i][j] = rating
+                let facedA = battle.shieldOpportunities[0]
+                let facedB = battle.shieldOpportunities[1]
+                fought.append(Fought(truncA: truncated(ma, facedA), facedA: facedA,
+                                     truncB: truncated(mb, facedB), facedB: facedB,
+                                     rating: rating))
             }
         }
         return solve(matrix: matrix, polA: polA, polB: polB)

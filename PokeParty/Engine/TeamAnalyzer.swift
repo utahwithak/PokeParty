@@ -18,7 +18,7 @@ import Foundation
 
 // MARK: - Result types
 
-enum LetterGrade: String, Hashable {
+enum LetterGrade: String, Hashable, Codable, Sendable {
     case a = "A", b = "B", c = "C", d = "D", f = "F"
 
     /// PvPoke's `calculateLetterGrade(value, goal)`: pure `value / goal`.
@@ -122,7 +122,8 @@ nonisolated struct MetaCandidate: Sendable, Hashable {
 enum TeamAnalyzer {
 
     /// League bulk goals: mean(effectiveDef × hp). Indexed by CP cap. (plan §2.5)
-    private static func bulkGoal(cpCap: Int) -> Double {
+    /// Internal so `GradeFinder` grades trios with the same goals.
+    static func bulkGoal(cpCap: Int) -> Double {
         switch cpCap {
         case 1500: return 22000
         case 2500: return 35000     // NOTE: Premier cups use 33000 (not handled here yet)
@@ -132,8 +133,9 @@ enum TeamAnalyzer {
     }
 
     /// PvPoke's threat/alternative score transform + meta weighting (plan §2.3).
-    /// `nonisolated` so it can be called from the parallel sim tasks.
-    private nonisolated static func softScore(_ rating: Double, metaRelevant: Bool) -> Double {
+    /// `nonisolated` so it can be called from the parallel sim tasks. Internal so
+    /// `GradeFinder` orders threats with the same transform.
+    nonisolated static func softScore(_ rating: Double, metaRelevant: Bool) -> Double {
         var s: Double
         if rating > 500 {
             s = 500 + pow(rating - 500, 0.75)   // compress wins

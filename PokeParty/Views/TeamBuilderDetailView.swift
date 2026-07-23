@@ -208,7 +208,7 @@ private struct TeamMemberCard: View {
                 reorderControls
                 Divider()
                 movesetEditor(member: member, species: species)
-                if species.isShadow || member.shadow {
+                if species.isShadow || species.isShadowEligible || member.shadow {
                     shadowToggle(member: member)
                 }
             }

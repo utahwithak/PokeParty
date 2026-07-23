@@ -161,6 +161,78 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
         #expect(on.segments.first?.indexA == 2)    // safe-swapped to the Water counter
     }
 
+    @Test func counterSwapPunishesSwitchLockedOpponent() {
+        // A's Grass lead safe-swaps out of B's Fire lead into its Water counter at
+        // turn 0, which locks A's switch. B's bench holds a Grass that dominates
+        // Water, so B should counterswap it in before the first segment plays out.
+        func teamA() -> [BattlePokemon] {
+            [makePoke("A-grass", type: "grass", atk: 120, def: 110, hp: 150),
+             makePoke("A-normal", type: "normal", atk: 130, def: 110, hp: 150),
+             makePoke("A-water", type: "water", atk: 145, def: 115, hp: 160)]
+        }
+        func teamB() -> [BattlePokemon] {
+            [makePoke("B-fire", type: "fire", atk: 150, def: 115, hp: 160),
+             makePoke("B-normal", type: "normal", atk: 125, def: 105, hp: 140),
+             makePoke("B-grass", type: "grass", atk: 145, def: 115, hp: 160)]
+        }
+
+        let log = ThreeVThreeBattle(teamA: teamA(), teamB: teamB(), voluntarySwitching: true).runRecorded()
+        #expect(log.segments.first?.indexA == 2)   // A safe-swaps to Water
+        #expect(log.segments.first?.indexB == 2)   // B counterswaps Grass onto the locked Water
+        // Both leads entered before their swaps, so each entrance list starts [0, 2].
+        #expect(Array(log.result.entrancesA.prefix(2)) == [0, 2])
+        #expect(Array(log.result.entrancesB.prefix(2)) == [0, 2])
+    }
+
+    @Test func interruptCheckStopsBattleMidFight() {
+        // Two bulky, evenly matched mons: the battle runs long, so an interrupt at
+        // 10s should stop it with both alive.
+        let a = makePoke("A", type: "water", atk: 120, def: 130, hp: 180)
+        let b = makePoke("B", type: "normal", atk: 120, def: 130, hp: 180)
+        let battle = Battle(a, b)
+        battle.interruptCheck = { $0.time >= 10_000 }
+        battle.simulate()
+
+        #expect(battle.interrupted)
+        #expect(a.hp > 0 && b.hp > 0)
+        #expect(battle.time >= 10_000)
+    }
+
+    @Test func trappedMonEscapesWhenSwitchTimerExpires() {
+        // A's Grass lead safe-swaps into its Water at turn 0 (locking A's switch);
+        // B counterswaps a bulky Grass onto the locked Water. Water is stuck losing.
+        // When A's 30s timer expires the segment should be interrupted and A should
+        // escape to its Fire — so Water leaves the field alive, mid-battle.
+        func teamA() -> [BattlePokemon] {
+            [makePoke("A-grass", type: "grass", atk: 118, def: 108, hp: 145),
+             makePoke("A-fire", type: "fire", atk: 145, def: 120, hp: 170),
+             makePoke("A-water", type: "water", atk: 140, def: 125, hp: 175)]
+        }
+        func teamB() -> [BattlePokemon] {
+            [makePoke("B-fire", type: "fire", atk: 148, def: 115, hp: 160),
+             makePoke("B-normal", type: "normal", atk: 120, def: 105, hp: 140),
+             makePoke("B-grass", type: "grass", atk: 138, def: 135, hp: 190)]
+        }
+
+        let log = ThreeVThreeBattle(teamA: teamA(), teamB: teamB(),
+                                    voluntarySwitching: true).runRecorded()
+        // Turn 0: A safe-swaps to Water (2), B counterswaps to Grass (2).
+        #expect(log.segments.first?.indexA == 2)
+        #expect(log.segments.first?.indexB == 2)
+        // The trapped Water escaped to Fire (1) at the timer, without fainting:
+        // Water never re-enters, so if it escaped it must survive the whole battle.
+        #expect(log.result.entrancesA.contains(1))
+        let waterEscaped = log.segments.contains { $0.indexA == 1 }
+        #expect(waterEscaped)
+        // Two consecutive segments share B's Grass while A changes mons — the
+        // signature of a mid-segment escape rather than a faint.
+        let pairs = log.segments.map { ($0.indexA, $0.indexB) }
+        let escapeBoundary = zip(pairs, pairs.dropFirst()).contains { prev, next in
+            prev.0 == 2 && next.0 == 1 && prev.1 == next.1
+        }
+        #expect(escapeBoundary)
+    }
+
     // MARK: - M8 shield search
 
     @Test func shieldOverrideForcesDecision() {

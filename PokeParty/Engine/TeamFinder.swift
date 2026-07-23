@@ -19,10 +19,11 @@
 //  resolve, so the UI can animate the leaderboard live; teams "drop off"
 //  simply by falling out of the visible top `maxResults`.
 //
-//  Per plan Q7, battles use the engine's fast heuristics — greedy shields
-//  and faint-only best-matchup switching — NOT the optimal-play shield/
-//  switch search, which is far too expensive for millions of battles. The
-//  head-to-head viewer keeps the full solver.
+//  Per plan Q7, battles default to the engine's fast heuristics — greedy
+//  shields and best-matchup switching. `voluntarySwitching` optionally adds
+//  safe swaps, counterswaps and switch-timer escapes (M8.3); `optimalShields`
+//  optionally runs the game-theoretic shield search per segment. Both cost
+//  extra sims per battle — the shield search dramatically so.
 //
 //  Trios are enumerated streaming (never materialized all at once): a top-200
 //  pool has C(200,3) ≈ 1.3M combinations, kept only as a bounded best-`limit`
@@ -46,6 +47,9 @@ nonisolated enum TeamFinder {
         let dex: Int
         let combatant: MatchupSimulator.Combatant
         let stats: BattlePokemon.Stats
+        /// PvPoke "switches" category score from the ranking data (feeds the
+        /// Safety grade in `GradeFinder`); nil falls back to PvPoke's default.
+        var switchesScore: Double? = nil
     }
 
     /// One entrant with its accumulated round-robin record. Members are in
@@ -103,11 +107,18 @@ nonisolated enum TeamFinder {
     /// the pairwise matrix + field shortlist; `onStandings` fires after
     /// seeding (round 0) and periodically while battles resolve. Both are
     /// called from off the main actor.
+    ///
+    /// `seededField` bypasses the coverage seeding entirely: the given trios
+    /// (pool indices, lead first) enter the round robin as-is, capped at
+    /// `fieldSize`. Used by the combined AAAA-grades + tournament method.
     static func findTeams(
         pool: [Candidate],
         movesById: [String: Move],
         fieldSize: Int = 500,
         maxResults: Int = 100,
+        voluntarySwitching: Bool = false,
+        optimalShields: Bool = false,
+        seededField: [[Int]]? = nil,
         onSeedingProgress: (@Sendable (Double) -> Void)? = nil,
         onStandings: (@Sendable (Standings) -> Void)? = nil
     ) async -> Standings {
@@ -115,13 +126,19 @@ nonisolated enum TeamFinder {
                               totalBattles: 0, round: 0, totalRounds: 0, isComplete: false)
         guard pool.count >= 3 else { return empty }
 
-        // Seed: pairwise 1v1 matrix → the coverage-ranked field.
-        let matrix = await ratingMatrix(pool: pool, movesById: movesById) { fraction in
-            onSeedingProgress?(fraction * 0.85)
-        }
-        if Task.isCancelled { return empty }
-        let field = await seedEntrants(pool: pool, matrix: matrix, limit: fieldSize) { fraction in
-            onSeedingProgress?(0.85 + fraction * 0.15)
+        let field: [[Int]]
+        if let seededField {
+            field = Array(seededField.prefix(fieldSize))
+            onSeedingProgress?(1)
+        } else {
+            // Seed: pairwise 1v1 matrix → the coverage-ranked field.
+            let matrix = await ratingMatrix(pool: pool, movesById: movesById) { fraction in
+                onSeedingProgress?(fraction * 0.85)
+            }
+            if Task.isCancelled { return empty }
+            field = await seedEntrants(pool: pool, matrix: matrix, limit: fieldSize) { fraction in
+                onSeedingProgress?(0.85 + fraction * 0.15)
+            }
         }
         if Task.isCancelled || field.isEmpty { return empty }
 
@@ -232,7 +249,8 @@ nonisolated enum TeamFinder {
                             let result = ThreeVThreeBattle(
                                 teamA: a, teamB: b,
                                 switchPolicy: .bestMatchup,
-                                optimalShields: false).run()
+                                optimalShields: optimalShields,
+                                voluntarySwitching: voluntarySwitching).run()
                             outcomes.append((pair.a, pair.b, result.winner, result.ratingA))
                         }
                         return outcomes
@@ -284,7 +302,9 @@ nonisolated enum TeamFinder {
         return teams
     }
 
-    private static func distinct(_ a: Candidate, _ b: Candidate) -> Bool {
+    /// Whether two candidates may share a team (no same species or family).
+    /// Internal so `GradeFinder` enumerates the same trios.
+    static func distinct(_ a: Candidate, _ b: Candidate) -> Bool {
         if a.dex == b.dex { return false }
         if let fa = a.familyId, let fb = b.familyId, fa == fb { return false }
         return true
@@ -395,10 +415,38 @@ nonisolated enum TeamFinder {
 
         // Deterministic order: score, then packed indices (reproducible runs).
         all.sort { $0.score != $1.score ? $0.score > $1.score : $0.packed < $1.packed }
-        return all.prefix(limit).map { entry in
-            [Int(entry.packed >> 20), Int((entry.packed >> 10) & 0x3FF), Int(entry.packed & 0x3FF)]
+
+        // Diversity cap: raw coverage is maximized by anchoring every trio on the
+        // single best-coverage mon, which degenerates the field into "the top mon
+        // plus filler" and makes the round robin an in-bred mirror match. Cap each
+        // species/family to a share of the field (best trios keep priority), then
+        // fill any remaining seats with the skipped best so the field stays full.
+        let cap = max(1, Int((Double(limit) * maxFieldSharePerFamily).rounded(.up)))
+        func unpack(_ packed: UInt32) -> [Int] {
+            [Int(packed >> 20), Int((packed >> 10) & 0x3FF), Int(packed & 0x3FF)]
         }
+        var counts: [String: Int] = [:]
+        var selected: [[Int]] = []
+        var skipped: [[Int]] = []
+        for entry in all {
+            if selected.count == limit { break }
+            let trio = unpack(entry.packed)
+            let keys = trio.map { pool[$0].familyId ?? pool[$0].member.speciesId }
+            if keys.allSatisfy({ counts[$0, default: 0] < cap }) {
+                for key in keys { counts[key, default: 0] += 1 }
+                selected.append(trio)
+            } else {
+                skipped.append(trio)
+            }
+        }
+        if selected.count < limit {
+            selected.append(contentsOf: skipped.prefix(limit - selected.count))
+        }
+        return selected
     }
+
+    /// No species/family may appear in more than this share of the seeded field.
+    private static let maxFieldSharePerFamily = 0.2
 
     /// Fresh `BattlePokemon`s per battle — the 3v3 engine mutates its teams.
     private static func makeTeam(_ members: [Candidate], movesById: [String: Move]) -> [BattlePokemon]? {
