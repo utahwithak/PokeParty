@@ -233,6 +233,74 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
         #expect(escapeBoundary)
     }
 
+    @Test func catchSwapAbsorbsSuperEffectiveMove() throws {
+        // B's lead is a Normal mon carrying a 35-energy WATER charged move. A's Fire
+        // lead wins the open matchup (so no safe swap), but once B banks 35 energy
+        // the water throw would be super effective — A should interrupt the segment
+        // and "catch" it with its Grass, which resists water and still beats B.
+        // The third A mon is neutral to water, so it's never a catch candidate.
+        func teamA() -> [BattlePokemon] {
+            [makePoke("A-fire", type: "fire", atk: 160, def: 125, hp: 170),
+             makePoke("A-grass", type: "grass", atk: 150, def: 115, hp: 160),
+             makePoke("A-normal", type: "normal", atk: 120, def: 100, hp: 130)]
+        }
+        func teamB() -> [BattlePokemon] {
+            [BattlePokemon(speciesId: "B-caster", speciesName: "B-caster", types: ["normal"], shadow: false,
+                           stats: .init(atk: 120, def: 100, hp: 135),
+                           fastMove: makeMove("fast_B", type: "normal", power: 3, energy: 0, gain: 4),
+                           chargedMoves: [makeMove("cm_B", type: "water", power: 60, energy: 35, gain: 0)]),
+             makePoke("B-n1", type: "normal", atk: 115, def: 95, hp: 125),
+             makePoke("B-n2", type: "normal", atk: 115, def: 95, hp: 125)]
+        }
+
+        // Without voluntary switching the Fire lead just stays in.
+        let off = ThreeVThreeBattle(teamA: teamA(), teamB: teamB(), voluntarySwitching: false).runRecorded()
+        #expect(off.segments.first?.indexA == 0)
+        #expect(off.segments.count < 2 || off.segments[1].indexA == 0)
+
+        let on = ThreeVThreeBattle(teamA: teamA(), teamB: teamB(), voluntarySwitching: true).runRecorded()
+        // First segment: the leads, interrupted before the water move is ever
+        // thrown — no charged move lands in it.
+        let firstSegment = try #require(on.segments.first)
+        #expect(firstSegment.indexA == 0)
+        #expect(firstSegment.indexB == 0)
+        #expect(!firstSegment.log.frames.contains { $0.event?.kind == .charged })
+        // The Grass catcher (1) enters against the same opponent, mid-fight.
+        #expect(on.segments.count >= 2)
+        #expect(on.segments[1].indexA == 1)
+        #expect(on.segments[1].indexB == 0)
+        #expect(Array(on.result.entrancesA.prefix(2)) == [0, 1])
+    }
+
+    @Test func sacSwapOffersNearlyFaintedMonAsShield() {
+        // Decision-level check of the sac boundary rule: out of shields, the active
+        // Water is beating a nearly-dead opponent that has banked energy for a
+        // charged move worth half the active's remaining HP. The 10%-HP backup
+        // should be offered as the sac; with a shield still in the pool, or without
+        // low-HP sac material, there's no sac.
+        let active = makePoke("A-water", type: "water", atk: 155, def: 120, hp: 160)
+        active.startHp = 90
+        let sac = makePoke("A-sac", type: "normal", atk: 120, def: 100, hp: 140)
+        sac.startHp = 14
+        let third = makePoke("A-full", type: "normal", atk: 120, def: 100, hp: 140)
+        let team = [active, sac, third]
+
+        let opponent = makePoke("B-normal", type: "normal", atk: 150, def: 100, hp: 130)
+        opponent.startHp = 40
+        opponent.startEnergy = 40               // the 35-energy charged move is banked
+        let battle = ThreeVThreeBattle(teamA: team, teamB: [opponent])
+
+        #expect(battle.boundarySwitchTarget(team: team, fainted: [], active: 0,
+                                            opponent: opponent, teamShields: 0, opponentShields: 0) == 1)
+        // A real shield in the pool → no sac.
+        #expect(battle.boundarySwitchTarget(team: team, fainted: [], active: 0,
+                                            opponent: opponent, teamShields: 1, opponentShields: 0) == nil)
+        // No nearly-fainted backup → no sac.
+        sac.startHp = 0
+        #expect(battle.boundarySwitchTarget(team: team, fainted: [], active: 0,
+                                            opponent: opponent, teamShields: 0, opponentShields: 0) == nil)
+    }
+
     // MARK: - M8 shield search
 
     @Test func shieldOverrideForcesDecision() {

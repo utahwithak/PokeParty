@@ -159,7 +159,7 @@ struct TeamFinderView: View {
 
             Toggle("Simulate counterswaps", isOn: Bindable(model).simulateCounterswaps)
                 .disabled(model.isRunning)
-            Text("Adds voluntary switching to every battle: safe swaps on a bad lead, counterswaps onto a switch-locked opponent, and escapes from a bad matchup once the switch timer allows. More realistic records, slower tournaments.")
+            Text("Adds voluntary switching to every battle: safe swaps on a bad lead, counterswaps onto a switch-locked opponent, escapes from a bad matchup once the switch timer allows, catches of incoming super-effective moves on a resist, and sac swaps that spend a nearly-fainted mon as an extra shield. More realistic records, slower tournaments.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

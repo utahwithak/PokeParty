@@ -21,9 +21,10 @@
 //
 //  Per plan Q7, battles default to the engine's fast heuristics — greedy
 //  shields and best-matchup switching. `voluntarySwitching` optionally adds
-//  safe swaps, counterswaps and switch-timer escapes (M8.3); `optimalShields`
-//  optionally runs the game-theoretic shield search per segment. Both cost
-//  extra sims per battle — the shield search dramatically so.
+//  safe swaps, counterswaps, switch-timer escapes, catch swaps and sac swaps
+//  (M8.3); `optimalShields` optionally runs the game-theoretic shield search
+//  per segment. Both cost extra sims per battle — the shield search
+//  dramatically so.
 //
 //  Trios are enumerated streaming (never materialized all at once): a top-200
 //  pool has C(200,3) ≈ 1.3M combinations, kept only as a bounded best-`limit`

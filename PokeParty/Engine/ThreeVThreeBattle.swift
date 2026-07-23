@@ -12,8 +12,10 @@
 //   - Shields are a per-team pool (default 2) shared across a team's Pokémon.
 //   - Switching on faint picks the next in team order or the best matchup.
 //   - With `voluntarySwitching`: turn-0 safe swaps, counterswaps punishing a
-//     switch-locked opponent, and mid-segment escapes from a losing matchup the
-//     moment the switch timer allows (via `Battle.interruptCheck`).
+//     switch-locked opponent, mid-segment escapes from a losing matchup the
+//     moment the switch timer allows (via `Battle.interruptCheck`), catch swaps
+//     that answer an expected super-effective charged move with a resist, and
+//     sac swaps that spend a nearly-fainted mon as one more shield.
 //   - Each segment plays out as an optimal 1v1 via the existing `ActionLogic` AI.
 //
 
@@ -79,9 +81,11 @@ nonisolated struct ThreeVThreeBattle {
     /// the currently-revealed matchup only.
     var optimalShields: Bool
     /// Allow reactive, revealed-info-only voluntary switching at segment boundaries
-    /// (turn-0 safe-swap, counter-switch when the opponent reveals a new mon, and a
-    /// counterswap punishing an opponent locked by its own voluntary switch). The
-    /// switch timer prevents thrashing. Off by default (M8.3).
+    /// (turn-0 safe-swap, counter-switch when the opponent reveals a new mon, a
+    /// counterswap punishing an opponent locked by its own voluntary switch, catch
+    /// swaps onto a resist when the opponent has banked energy for a super-effective
+    /// charged move, and sac swaps that use a nearly-fainted mon as an extra shield).
+    /// The switch timer prevents thrashing. Off by default (M8.3).
     var voluntarySwitching: Bool
 
     private let battleTimeLimit = 240_000
@@ -99,6 +103,15 @@ nonisolated struct ThreeVThreeBattle {
     /// Tempo cost of switching: the side that stays gets this many free fast moves of
     /// energy while the other spends its turn switching.
     private static let switchTempoFastMoves = 3
+    /// A catch swap must bring in a backup that beats this rating — dodging one
+    /// super-effective move isn't worth 30s locked into a losing matchup.
+    private static let catchMinRating = 475
+    /// A backup at or below this fraction of its max HP counts as sac material
+    /// (worth spending as a pseudo-shield).
+    private static let sacMaxHpFraction = 0.25
+    /// A sac swap needs the expected charged move to threaten at least this fraction
+    /// of the active mon's remaining HP — smaller hits aren't worth a switch clock.
+    private static let sacDangerFraction = 0.5
 
     init(teamA: [BattlePokemon], teamB: [BattlePokemon],
          leadA: Int = 0, leadB: Int = 0, shieldsA: Int = 2, shieldsB: Int = 2,
@@ -152,9 +165,11 @@ nonisolated struct ThreeVThreeBattle {
 
         // Safety bound: at most (all Pokémon faint) + 1 faint-ended segments, plus —
         // with voluntary switching — one interrupt-ended segment per switch-timer
-        // window per side over the whole battle.
+        // window per side, plus the energy-triggered (catch/sac) interrupts. Each of
+        // those needs the opponent to re-bank a charged move's cost, so they're
+        // bounded by total energy income over the clock; the /1500 term covers it.
         let maxSegments = teamA.count + teamB.count + 1
-            + (voluntarySwitching ? 2 * (battleTimeLimit / Self.switchTimerMs) : 0)
+            + (voluntarySwitching ? 2 * (battleTimeLimit / Self.switchTimerMs) + battleTimeLimit / 1500 : 0)
         var segment = 0
 
         while segment < maxSegments {
@@ -166,10 +181,10 @@ nonisolated struct ThreeVThreeBattle {
             if voluntarySwitching {
                 let aCanSwitch = globalTime - lastSwitchA >= Self.switchTimerMs
                 let bCanSwitch = globalTime - lastSwitchB >= Self.switchTimerMs
-                let aTarget = aCanSwitch ? voluntarySwitchTarget(
+                let aTarget = aCanSwitch ? boundarySwitchTarget(
                     team: teamA, fainted: faintedA, active: activeA,
                     opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields) : nil
-                let bTarget = bCanSwitch ? voluntarySwitchTarget(
+                let bTarget = bCanSwitch ? boundarySwitchTarget(
                     team: teamB, fainted: faintedB, active: activeB,
                     opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields) : nil
                 if let aTarget { activeA = aTarget; lastSwitchA = globalTime; entrancesA.append(aTarget) }
@@ -221,8 +236,30 @@ nonisolated struct ThreeVThreeBattle {
                    rate(b, vs: a, myShields: teamBShields, oppShields: teamAShields, fresh: false) < 500 {
                     interruptAt = min(interruptAt, bUnlock)
                 }
-                if interruptAt < Int.max {
-                    battle.interruptCheck = { $0.time >= interruptAt }
+                // Catch/sac triggers: stop the segment when the opponent's banked
+                // energy first affords a charged move this side's bench could catch
+                // on a resist or absorb with a sac, once the switch timer allows.
+                // Armed only while currently false, so a boundary that just declined
+                // the offer can't immediately re-interrupt — it re-arms only after
+                // the opponent's energy dips (it threw the move).
+                var aEnergyAt = Int.max
+                if let t = energyInterruptThreshold(team: teamA, fainted: faintedA, active: activeA,
+                                                    opponent: b, teamShields: teamAShields),
+                   !(globalTime >= aUnlock && b.startEnergy >= t) {
+                    aEnergyAt = t
+                }
+                var bEnergyAt = Int.max
+                if let t = energyInterruptThreshold(team: teamB, fainted: faintedB, active: activeB,
+                                                    opponent: a, teamShields: teamBShields),
+                   !(globalTime >= bUnlock && a.startEnergy >= t) {
+                    bEnergyAt = t
+                }
+                if interruptAt < Int.max || aEnergyAt < Int.max || bEnergyAt < Int.max {
+                    battle.interruptCheck = {
+                        $0.time >= interruptAt
+                            || ($0.time >= aUnlock && $0.pokemon[1].energy >= aEnergyAt)
+                            || ($0.time >= bUnlock && $0.pokemon[0].energy >= bEnergyAt)
+                    }
                 }
             }
             var shieldSolution: ShieldSearch.Solution?
@@ -342,6 +379,115 @@ nonisolated struct ThreeVThreeBattle {
         return bestIndex
     }
 
+    /// Full voluntary-switch decision at a segment boundary, in priority order:
+    /// escape a losing matchup, catch an expected super-effective charged move on
+    /// a resist, or sac-shield a winning mon. Internal (not private) so tests can
+    /// drive boundary decisions directly.
+    func boundarySwitchTarget(
+        team: [BattlePokemon], fainted: Set<Int>, active: Int,
+        opponent: BattlePokemon, teamShields: Int, opponentShields: Int
+    ) -> Int? {
+        if let t = voluntarySwitchTarget(team: team, fainted: fainted, active: active,
+                                         opponent: opponent, teamShields: teamShields,
+                                         opponentShields: opponentShields) { return t }
+        if let t = catchSwitchTarget(team: team, fainted: fainted, active: active,
+                                     opponent: opponent, teamShields: teamShields,
+                                     opponentShields: opponentShields) { return t }
+        return sacSwitchTarget(team: team, fainted: fainted, active: active,
+                               opponent: opponent, teamShields: teamShields,
+                               opponentShields: opponentShields)
+    }
+
+    /// Catch swap: the revealed opponent has banked energy for a charged move that
+    /// is super-effective against our active, so swap into a backup that resists it
+    /// and survives the throw ("catching" the move). Energy counts are revealed
+    /// information — players track them by counting fast moves. Once the resist is
+    /// on the field the opponent may hold the move instead; deterring it is the
+    /// same win. Only a backup beating `catchMinRating` is worth the switch clock.
+    private func catchSwitchTarget(
+        team: [BattlePokemon], fainted: Set<Int>, active: Int,
+        opponent: BattlePokemon, teamShields: Int, opponentShields: Int
+    ) -> Int? {
+        guard let threat = expectedChargedMove(from: opponent, against: team[active]),
+              team[active].typeEffectiveness(forTypeIndex: threat.typeIndex) > 1 else { return nil }
+
+        var bestIndex: Int?
+        var bestRating = Self.catchMinRating
+        for i in 0..<team.count where !fainted.contains(i) && i != active {
+            let backup = team[i]
+            guard backup.typeEffectiveness(forTypeIndex: threat.typeIndex) < 1,
+                  Self.carriedHp(backup) > DamageCalculator.damage(opponent, backup, threat)
+            else { continue }
+            let r = rate(backup, vs: opponent, myShields: teamShields, oppShields: opponentShields, fresh: true)
+            if r > bestRating { bestRating = r; bestIndex = i }
+        }
+        return bestIndex
+    }
+
+    /// Sac swap: out of shields with the active mon winning but about to eat a heavy
+    /// charged move, throw a nearly-fainted backup in front of it as one more shield.
+    /// The faint replacement afterwards is free (no switch clock), so the protected
+    /// mon returns once the sac has soaked the throw — or the opponent burns time
+    /// fast-moving the sac down while holding it, which also buys the winner turns.
+    private func sacSwitchTarget(
+        team: [BattlePokemon], fainted: Set<Int>, active: Int,
+        opponent: BattlePokemon, teamShields: Int, opponentShields: Int
+    ) -> Int? {
+        guard teamShields == 0,
+              let threat = expectedChargedMove(from: opponent, against: team[active]),
+              Double(DamageCalculator.damage(opponent, team[active], threat))
+                >= Self.sacDangerFraction * Double(Self.carriedHp(team[active])),
+              rate(team[active], vs: opponent, myShields: teamShields,
+                   oppShields: opponentShields, fresh: false) >= 500
+        else { return nil }
+
+        var sacIndex: Int?
+        var sacFraction = Self.sacMaxHpFraction
+        for i in 0..<team.count where !fainted.contains(i) && i != active {
+            let fraction = Double(Self.carriedHp(team[i])) / Double(team[i].stats.hp)
+            if fraction <= sacFraction { sacFraction = fraction; sacIndex = i }
+        }
+        return sacIndex
+    }
+
+    /// The charged move the revealed opponent would most plausibly throw right now:
+    /// its most damaging move against `target` among those its carried energy affords.
+    private func expectedChargedMove(from opponent: BattlePokemon, against target: BattlePokemon) -> BattleMove? {
+        var best: BattleMove?
+        var bestDamage = 0
+        for move in opponent.chargedMoves where move.energy <= opponent.startEnergy {
+            let d = DamageCalculator.damage(opponent, target, move)
+            if d > bestDamage { bestDamage = d; best = move }
+        }
+        return best
+    }
+
+    /// The opponent-energy level that should interrupt this side's segment: the
+    /// cheapest revealed charged move its bench could catch (super-effective vs the
+    /// active, resisted by a living backup) or — out of shields with sac material
+    /// benched — absorb with a sac. Nil when the bench offers neither. Type math
+    /// only; the boundary decision does the sim-based validation.
+    private func energyInterruptThreshold(
+        team: [BattlePokemon], fainted: Set<Int>, active: Int,
+        opponent: BattlePokemon, teamShields: Int
+    ) -> Int? {
+        let backups = (0..<team.count).filter { !fainted.contains($0) && $0 != active }
+        guard !backups.isEmpty else { return nil }
+
+        var threshold = Int.max
+        for move in opponent.chargedMoves where move.energy < threshold {
+            if team[active].typeEffectiveness(forTypeIndex: move.typeIndex) > 1,
+               backups.contains(where: { team[$0].typeEffectiveness(forTypeIndex: move.typeIndex) < 1 }) {
+                threshold = move.energy
+            }
+        }
+        if teamShields == 0,
+           backups.contains(where: { Double(Self.carriedHp(team[$0])) / Double(team[$0].stats.hp) <= Self.sacMaxHpFraction }) {
+            for move in opponent.chargedMoves { threshold = min(threshold, move.energy) }
+        }
+        return threshold == Int.max ? nil : threshold
+    }
+
     /// Rating of `mon` vs `opponent` from a throwaway 1v1 on clones (no mutation).
     /// `fresh` = the mon enters at full HP/energy (a switch-in); otherwise it uses its
     /// carried state (the mon currently on the field).
@@ -367,6 +513,11 @@ nonisolated struct ThreeVThreeBattle {
     /// Whether the team has a living Pokémon besides the active one.
     private static func hasBackup(count: Int, fainted: Set<Int>, active: Int) -> Bool {
         (0..<count).contains { !fainted.contains($0) && $0 != active }
+    }
+
+    /// A mon's carried HP between segments (`startHp == 0` means it never fought → full).
+    private static func carriedHp(_ p: BattlePokemon) -> Int {
+        p.startHp > 0 ? min(p.startHp, p.stats.hp) : p.stats.hp
     }
 
     /// Chooses which Pokémon a team brings in next. For `.bestMatchup`, each alive

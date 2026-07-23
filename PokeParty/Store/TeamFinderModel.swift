@@ -55,8 +55,9 @@ final class TeamFinderModel {
     var fieldSize: Int = 500
 
     /// Simulate voluntary switching in tournament battles (turn-0 safe swaps,
-    /// counterswaps onto switch-locked opponents, and switch-timer escapes).
-    /// More realistic, but each battle costs extra throwaway 1v1 sims.
+    /// counterswaps onto switch-locked opponents, switch-timer escapes, catch
+    /// swaps onto a resist, and sac swaps that spend a nearly-fainted mon as an
+    /// extra shield). More realistic, but each battle costs extra throwaway 1v1 sims.
     var simulateCounterswaps = false
 
     /// Solve optimal shield timing (the game-theoretic search) for every 1v1
