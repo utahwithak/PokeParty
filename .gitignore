@@ -37,3 +37,26 @@ fastlane/test_output
 # Playgrounds
 timeline.xctimeline
 playground.xcworkspace
+
+# RL pipeline artifacts (regenerable — see rl/ CLI):
+#   datasets:  ./generate ../bench/data 150 data            (shields, ~7s)
+#              ./generate ../bench/data 150 data --switch-gen [--base-net] (switches, ~80s)
+#   binary:    rl/build.sh
+# Trained weights (rl/data/*_policy*.json) and meta files stay tracked.
+rl/data/*.jsonl
+rl/generate
+rl/generate.dSYM/
+rl/venv/
+rl/*.swiftmodule
+rl/*.swiftdoc
+rl/*.abi.json
+rl/*.swiftsourceinfo
+
+# bench build artifacts
+bench/bench
+bench/bench-debug
+bench/bench.dSYM/
+bench/*.swiftmodule
+bench/*.swiftdoc
+bench/*.abi.json
+bench/*.swiftsourceinfo

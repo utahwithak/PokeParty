@@ -41,6 +41,19 @@ nonisolated final class Battle {
     /// `simulate()` — ShieldSearch uses it to dedupe equivalent policies).
     private(set) var shieldOpportunities = [0, 0]
 
+    /// RL/data-collection hook: called at every shield opportunity, after the
+    /// decision is final, with (defenderIndex, opportunityIndex, incoming move,
+    /// decision). Note: the attacker's energy has already been debited for the
+    /// move when this fires (observers should add `move.energy` back to see the
+    /// pre-throw value).
+    var shieldDecisionObserver: ((Int, Int, BattleMove, Bool) -> Void)?
+
+    /// Learned shield policy hook (RL milestone 1): like `shieldOverride` but also
+    /// receives the incoming move so the policy can build its observation.
+    /// Consulted only when `shieldOverride` doesn't force the decision;
+    /// nil = fall through to the built-in heuristic.
+    var shieldPolicy: ((Int, Int, BattleMove) -> Bool?)?
+
     /// M8.3(b) mid-battle switch hook. Called after each turn while both Pokémon
     /// are alive; return true to stop the simulation at this point (the 3v3
     /// orchestrator then performs a voluntary switch and continues in a new
@@ -299,7 +312,11 @@ nonisolated final class Battle {
                 shieldOpportunities[defender.index] += 1
                 if let forced = shieldOverride?(defender.index, opportunity) {
                     useShield = forced
+                } else if let learned = shieldPolicy?(defender.index, opportunity, move) {
+                    useShield = learned
                 }
+
+                shieldDecisionObserver?(defender.index, opportunity, move, useShield)
 
                 if useShield {
                     damage = 1

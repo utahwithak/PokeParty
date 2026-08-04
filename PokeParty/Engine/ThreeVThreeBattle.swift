@@ -80,6 +80,20 @@ nonisolated struct ThreeVThreeBattle {
     /// the engine's greedy default. Information-legitimate — shields are decided for
     /// the currently-revealed matchup only.
     var optimalShields: Bool
+    /// Learned shield policy (RL milestone 1) used when `optimalShields` is off:
+    /// a middle tier between the greedy heuristic and the (slow) ShieldSearch.
+    /// Also drives the throwaway switch-decision sims so both layers agree.
+    var learnedShieldNet: ShieldPolicyNet?
+    /// Which sides `learnedShieldNet` shields for in the real segment battles
+    /// (0 = team A, 1 = team B). Both by default; evaluation harnesses restrict
+    /// it to one side so improvements can be attributed fairly.
+    var learnedShieldSides: Set<Int> = [0, 1]
+
+    /// RL milestone 2: external switch policy, consulted at every switch
+    /// decision point (boundary voluntary switch, counterswap, and faint
+    /// replacement) before the built-in heuristics. Return `.heuristic` to
+    /// fall through; invalid targets also fall through.
+    var switchDecisionHook: ((SwitchContext) -> SwitchDecision)?
     /// Allow reactive, revealed-info-only voluntary switching at segment boundaries
     /// (turn-0 safe-swap, counter-switch when the opponent reveals a new mon, a
     /// counterswap punishing an opponent locked by its own voluntary switch, catch
@@ -116,7 +130,7 @@ nonisolated struct ThreeVThreeBattle {
     init(teamA: [BattlePokemon], teamB: [BattlePokemon],
          leadA: Int = 0, leadB: Int = 0, shieldsA: Int = 2, shieldsB: Int = 2,
          switchPolicy: SwitchPolicy = .bestMatchup, optimalShields: Bool = true,
-         voluntarySwitching: Bool = false) {
+         voluntarySwitching: Bool = false, learnedShieldNet: ShieldPolicyNet? = nil) {
         self.teamA = teamA
         self.teamB = teamB
         self.leadA = leadA
@@ -126,6 +140,7 @@ nonisolated struct ThreeVThreeBattle {
         self.switchPolicy = switchPolicy
         self.optimalShields = optimalShields
         self.voluntarySwitching = voluntarySwitching
+        self.learnedShieldNet = learnedShieldNet
     }
 
     /// Runs the full team battle. Mutates the passed `BattlePokemon` objects, so
@@ -181,12 +196,22 @@ nonisolated struct ThreeVThreeBattle {
             if voluntarySwitching {
                 let aCanSwitch = globalTime - lastSwitchA >= Self.switchTimerMs
                 let bCanSwitch = globalTime - lastSwitchB >= Self.switchTimerMs
-                let aTarget = aCanSwitch ? boundarySwitchTarget(
-                    team: teamA, fainted: faintedA, active: activeA,
-                    opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields) : nil
-                let bTarget = bCanSwitch ? boundarySwitchTarget(
-                    team: teamB, fainted: faintedB, active: activeB,
-                    opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields) : nil
+                let aTarget = aCanSwitch ? resolvedSwitchTarget(
+                    side: 0, team: teamA, fainted: faintedA, active: activeA,
+                    opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields,
+                    time: globalTime, opponentLocked: false, mandatory: false) {
+                        boundarySwitchTarget(
+                            team: teamA, fainted: faintedA, active: activeA,
+                            opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields)
+                    } : nil
+                let bTarget = bCanSwitch ? resolvedSwitchTarget(
+                    side: 1, team: teamB, fainted: faintedB, active: activeB,
+                    opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields,
+                    time: globalTime, opponentLocked: false, mandatory: false) {
+                        boundarySwitchTarget(
+                            team: teamB, fainted: faintedB, active: activeB,
+                            opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields)
+                    } : nil
                 if let aTarget { activeA = aTarget; lastSwitchA = globalTime; entrancesA.append(aTarget) }
                 if let bTarget { activeB = bTarget; lastSwitchB = globalTime; entrancesB.append(bTarget) }
                 var aSwitched = aTarget != nil
@@ -196,13 +221,23 @@ nonisolated struct ThreeVThreeBattle {
                 // newly revealed mon and may punish with a dominant answer the locked
                 // mon can't escape. (Approximates deciding a turn or two in.)
                 if aSwitched != bSwitched {
-                    if aSwitched, bCanSwitch, let c = counterSwitchTarget(
-                        team: teamB, fainted: faintedB, active: activeB,
-                        opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields) {
+                    if aSwitched, bCanSwitch, let c = resolvedSwitchTarget(
+                        side: 1, team: teamB, fainted: faintedB, active: activeB,
+                        opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields,
+                        time: globalTime, opponentLocked: true, mandatory: false, heuristic: {
+                            counterSwitchTarget(
+                                team: teamB, fainted: faintedB, active: activeB,
+                                opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields)
+                        }) {
                         activeB = c; lastSwitchB = globalTime; entrancesB.append(c); bSwitched = true
-                    } else if bSwitched, aCanSwitch, let c = counterSwitchTarget(
-                        team: teamA, fainted: faintedA, active: activeA,
-                        opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields) {
+                    } else if bSwitched, aCanSwitch, let c = resolvedSwitchTarget(
+                        side: 0, team: teamA, fainted: faintedA, active: activeA,
+                        opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields,
+                        time: globalTime, opponentLocked: true, mandatory: false, heuristic: {
+                            counterSwitchTarget(
+                                team: teamA, fainted: faintedA, active: activeA,
+                                opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields)
+                        }) {
                         activeA = c; lastSwitchA = globalTime; entrancesA.append(c); aSwitched = true
                     }
                 }
@@ -269,6 +304,17 @@ nonisolated struct ThreeVThreeBattle {
                 battle.shieldOverride = { defenderIndex, opportunity in
                     defenderIndex == 0 ? sol.policyA.contains(opportunity) : sol.policyB.contains(opportunity)
                 }
+            } else if let net = learnedShieldNet {
+                if learnedShieldSides == [0, 1] {
+                    battle.useLearnedShieldPolicy(net)
+                } else {
+                    let sides = learnedShieldSides
+                    battle.shieldPolicy = { [unowned battle] d, o, move in
+                        guard sides.contains(d) else { return nil }   // heuristic side
+                        return net.decide(ShieldObservation.capture(
+                            battle: battle, defenderIndex: d, opportunity: o, move: move))
+                    }
+                }
             }
             battle.simulate()
             globalTime = battle.time
@@ -305,13 +351,23 @@ nonisolated struct ThreeVThreeBattle {
                 if let n = Self.nextAlive(count: teamA.count, fainted: faintedA) { activeA = n; entrancesA.append(n) }
                 if let n = Self.nextAlive(count: teamB.count, fainted: faintedB) { activeB = n; entrancesB.append(n) }
             } else if aFainted {
-                if let n = chooseNext(team: teamA, fainted: faintedA, teamShields: teamAShields,
-                                      opponent: teamB[activeB], opponentShields: teamBShields) {
+                if let n = resolvedSwitchTarget(
+                    side: 0, team: teamA, fainted: faintedA, active: activeA,
+                    opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields,
+                    time: globalTime, opponentLocked: false, mandatory: true, heuristic: {
+                        chooseNext(team: teamA, fainted: faintedA, teamShields: teamAShields,
+                                   opponent: teamB[activeB], opponentShields: teamBShields)
+                    }) {
                     activeA = n; entrancesA.append(n)
                 }
             } else if bFainted {
-                if let n = chooseNext(team: teamB, fainted: faintedB, teamShields: teamBShields,
-                                      opponent: teamA[activeA], opponentShields: teamAShields) {
+                if let n = resolvedSwitchTarget(
+                    side: 1, team: teamB, fainted: faintedB, active: activeB,
+                    opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields,
+                    time: globalTime, opponentLocked: false, mandatory: true, heuristic: {
+                        chooseNext(team: teamB, fainted: faintedB, teamShields: teamBShields,
+                                   opponent: teamA[activeA], opponentShields: teamAShields)
+                    }) {
                     activeB = n; entrancesB.append(n)
                 }
             }
@@ -330,6 +386,36 @@ nonisolated struct ThreeVThreeBattle {
     }
 
     // MARK: - Voluntary switching (information-aware, revealed-only)
+
+    /// Consults `switchDecisionHook` (when set and a real choice exists) before
+    /// the given built-in heuristic. Returns the team index to bring in, or nil
+    /// to keep the active mon.
+    private func resolvedSwitchTarget(
+        side: Int, team: [BattlePokemon], fainted: Set<Int>, active: Int,
+        opponent: BattlePokemon, teamShields: Int, opponentShields: Int,
+        time: Int, opponentLocked: Bool, mandatory: Bool,
+        heuristic: () -> Int?
+    ) -> Int? {
+        guard let hook = switchDecisionHook,
+              Self.hasBackup(count: team.count, fainted: fainted, active: active)
+        else { return heuristic() }
+        let ctx = SwitchContext(
+            side: side, team: team, fainted: fainted, active: active,
+            opponent: opponent, teamShields: teamShields,
+            opponentShields: opponentShields, time: time,
+            opponentLocked: opponentLocked, mandatory: mandatory)
+        switch hook(ctx) {
+        case .heuristic:
+            return heuristic()
+        case .stay:
+            // Staying isn't an option when replacing a faint.
+            return mandatory ? heuristic() : nil
+        case .switchTo(let i):
+            guard team.indices.contains(i), i != active, !fainted.contains(i)
+            else { return heuristic() }
+            return i
+        }
+    }
 
     /// Whether to voluntarily switch the active mon, and to whom, given only the
     /// currently-revealed opponent. Returns a backup index that beats the opponent by
@@ -499,6 +585,7 @@ nonisolated struct ThreeVThreeBattle {
         let o = opponent.clone()
         o.startingShields = oppShields
         let battle = Battle(m, o)
+        if let net = learnedShieldNet, !optimalShields { battle.useLearnedShieldPolicy(net) }
         battle.simulate()
         return battle.battleRating(forIndex: 0)
     }
@@ -538,6 +625,7 @@ nonisolated struct ThreeVThreeBattle {
             let opp = opponent.clone()                 // carries the opponent's current state
             opp.startingShields = opponentShields
             let battle = Battle(cand, opp)
+            if let net = learnedShieldNet, !optimalShields { battle.useLearnedShieldPolicy(net) }
             battle.simulate()
             let rating = battle.battleRating(forIndex: 0)   // candidate's perspective
             if rating > bestRating { bestRating = rating; bestIndex = i }

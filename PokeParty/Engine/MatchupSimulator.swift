@@ -61,16 +61,19 @@ nonisolated enum MatchupSimulator {
     }
 
     /// Runs a 1v1 between two prepared sides and returns each side's rating.
+    /// `shieldNet` swaps the greedy shield heuristic for the learned policy.
     static func rate(
         _ a: Combatant, statsA: BattlePokemon.Stats,
         _ b: Combatant, statsB: BattlePokemon.Stats,
         movesById: [String: Move],
-        shieldsA: Int, shieldsB: Int
+        shieldsA: Int, shieldsB: Int,
+        shieldNet: ShieldPolicyNet? = nil
     ) -> (a: Int, b: Int)? {
         guard let pa = makeBattlePokemon(a, stats: statsA, movesById: movesById, shields: shieldsA),
               let pb = makeBattlePokemon(b, stats: statsB, movesById: movesById, shields: shieldsB)
         else { return nil }
         let battle = Battle(pa, pb)
+        if let shieldNet { battle.useLearnedShieldPolicy(shieldNet) }
         battle.simulate()
         return (battle.battleRating(forIndex: 0), battle.battleRating(forIndex: 1))
     }

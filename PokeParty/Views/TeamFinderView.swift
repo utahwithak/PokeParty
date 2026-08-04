@@ -168,6 +168,18 @@ struct TeamFinderView: View {
             Text("Solves the best shield play for every 1v1 segment instead of the fast greedy heuristic. Much slower — best kept for small fields.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Toggle("Learned shield AI", isOn: Bindable(model).learnedShields)
+                .disabled(model.isRunning || model.optimalShields)
+            Text("Shields with a small neural network trained to imitate the optimal shield search — close to optimal timing at nearly greedy speed. Ignored when optimal shield timing is on.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Toggle("Learned switch AI", isOn: Bindable(model).learnedSwitches)
+                .disabled(model.isRunning)
+            Text("Chooses switches with a neural network trained on rollout search — it replays each choice to the end of the match and learns which one wins. Beats the built-in switching rules in about 63% of paired games.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

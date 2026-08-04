@@ -63,6 +63,18 @@ final class TeamFinderModel {
     /// Solve optimal shield timing (the game-theoretic search) for every 1v1
     /// segment instead of the greedy default. Far more expensive per battle.
     var optimalShields = false
+
+    /// Use the learned shield policy (RL milestone 1) instead of the greedy
+    /// heuristic — near-optimal shielding at almost no extra cost. Ignored
+    /// when `optimalShields` is on. Default ON: measured to change ~⅓ of game
+    /// outcomes and reorder team rankings (Spearman 0.53 vs heuristic play)
+    /// at 1.0x battle cost, so heuristic-play rankings are simply less accurate.
+    var learnedShields = true
+
+    /// Use the learned switch policy (RL milestone 2) for boundary switches,
+    /// counterswaps, and faint replacements instead of the hand-tuned rules.
+    /// Default ON — same rationale as `learnedShields`.
+    var learnedSwitches = true
     static let fieldSizeRange = 100.0...10000.0
     static let fieldSizeStep = 100.0
 
@@ -124,6 +136,8 @@ final class TeamFinderModel {
         let fieldSize = fieldSize
         let simulateCounterswaps = simulateCounterswaps
         let optimalShields = optimalShields
+        let learnedShields = learnedShields
+        let learnedSwitches = learnedSwitches
         let movesById = store.movesById
         let pokemonById = store.pokemonById
 
@@ -195,6 +209,8 @@ final class TeamFinderModel {
                 pool: pool, movesById: movesById, fieldSize: fieldSize,
                 voluntarySwitching: simulateCounterswaps,
                 optimalShields: optimalShields,
+                learnedShields: learnedShields,
+                learnedSwitches: learnedSwitches,
                 seededField: seededField,
                 onSeedingProgress: { fraction in
                     Task { @MainActor in self.progress = max(self.progress, fraction) }

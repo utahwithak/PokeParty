@@ -74,6 +74,14 @@ nonisolated enum TeamFinder {
         let winRate: Double
         /// Mean team battle rating (0–1000, 500 = even) across games played.
         let averageRating: Double
+        /// Expected score vs the Nash-equilibrium meta of the top field slice
+        /// (0…1; ≈0.5 for equilibrium teams). Nil until the tournament
+        /// completes, or for teams outside the analyzed slice.
+        var metaScore: Double? = nil
+        /// This team's share of the equilibrium meta mixture (0…1). Teams with
+        /// meaningful weight are the "meta core" — unexploitable under strong
+        /// play. Nil like `metaScore`.
+        var equilibriumWeight: Double? = nil
 
         var id: String {
             members.map { m in
@@ -119,6 +127,8 @@ nonisolated enum TeamFinder {
         maxResults: Int = 100,
         voluntarySwitching: Bool = false,
         optimalShields: Bool = false,
+        learnedShields: Bool = false,
+        learnedSwitches: Bool = false,
         seededField: [[Int]]? = nil,
         onSeedingProgress: (@Sendable (Double) -> Void)? = nil,
         onStandings: (@Sendable (Standings) -> Void)? = nil
@@ -127,13 +137,20 @@ nonisolated enum TeamFinder {
                               totalBattles: 0, round: 0, totalRounds: 0, isComplete: false)
         guard pool.count >= 3 else { return empty }
 
+        // Learned shield tier (used where the greedy heuristic would run;
+        // ShieldSearch still wins when `optimalShields` is on).
+        let shieldNet = learnedShields ? ShieldPolicyNet.bundled : nil
+        // Learned switch policy (drives boundary switches, counterswaps, and
+        // faint replacements in every 3v3).
+        let switchNet = learnedSwitches ? SwitchPolicyNet.bundled : nil
+
         let field: [[Int]]
         if let seededField {
             field = Array(seededField.prefix(fieldSize))
             onSeedingProgress?(1)
         } else {
             // Seed: pairwise 1v1 matrix → the coverage-ranked field.
-            let matrix = await ratingMatrix(pool: pool, movesById: movesById) { fraction in
+            let matrix = await ratingMatrix(pool: pool, movesById: movesById, shieldNet: shieldNet) { fraction in
                 onSeedingProgress?(fraction * 0.85)
             }
             if Task.isCancelled { return empty }
@@ -172,6 +189,10 @@ nonisolated enum TeamFinder {
                 return a < b
             }
         }
+        // Filled by the metagame analysis after the round robin completes
+        // (field index → value); consumed by `rankedTeams`.
+        var metaScoreByField: [Int: Double] = [:]
+        var equilibriumWeightByField: [Int: Double] = [:]
         func rankedTeams(_ order: [Int]) -> [RankedTeam] {
             order.prefix(maxResults).map { index in
                 let r = records[index]
@@ -183,7 +204,9 @@ nonisolated enum TeamFinder {
                             types: c.types, shadow: c.shadow)
                     },
                     wins: r.wins, losses: r.losses, ties: r.ties,
-                    winRate: winRate(r), averageRating: averageRating(r))
+                    winRate: winRate(r), averageRating: averageRating(r),
+                    metaScore: metaScoreByField[index],
+                    equilibriumWeight: equilibriumWeightByField[index])
             }
         }
         // Every round fights the same number of battles (the bye seat sits out
@@ -247,11 +270,16 @@ nonisolated enum TeamFinder {
                             guard let a = makeTeam(field[pair.a].map { pool[$0] }, movesById: movesById),
                                   let b = makeTeam(field[pair.b].map { pool[$0] }, movesById: movesById)
                             else { continue }
-                            let result = ThreeVThreeBattle(
+                            var battle = ThreeVThreeBattle(
                                 teamA: a, teamB: b,
                                 switchPolicy: .bestMatchup,
                                 optimalShields: optimalShields,
-                                voluntarySwitching: voluntarySwitching).run()
+                                voluntarySwitching: voluntarySwitching,
+                                learnedShieldNet: shieldNet)
+                            if let switchNet {
+                                battle.switchDecisionHook = { switchNet.decide($0) }
+                            }
+                            let result = battle.run()
                             outcomes.append((pair.a, pair.b, result.winner, result.ratingA))
                         }
                         return outcomes
@@ -280,6 +308,56 @@ nonisolated enum TeamFinder {
             if Task.isCancelled { break }
             completedRounds += roundsThisBatch
             onStandings?(snapshot())
+        }
+
+        // MARK: Metagame analysis (Nash equilibrium of the top slice)
+        // Raw round-robin win rate rewards farming weak teams. Once the
+        // tournament completes, re-fight the top slice pairwise (cheap: ~2k
+        // battles) and solve that win matrix as a zero-sum team-selection
+        // game — each top team gets its expected score vs the equilibrium
+        // meta and its share of the equilibrium mixture.
+        if !Task.isCancelled && completedRounds == totalRounds {
+            let top = Array(ranked().prefix(min(64, n)))
+            let k = top.count
+            if k > 2 {
+                var pairs: [(Int, Int)] = []
+                for i in 0..<k { for j in (i + 1)..<k { pairs.append((i, j)) } }
+                var w = [[Double]](repeating: [Double](repeating: 0.5, count: k), count: k)
+                await withTaskGroup(of: (Int, Int, Double)?.self) { group in
+                    for (i, j) in pairs {
+                        group.addTask {
+                            guard !Task.isCancelled,
+                                  let a = makeTeam(field[top[i]].map { pool[$0] }, movesById: movesById),
+                                  let b = makeTeam(field[top[j]].map { pool[$0] }, movesById: movesById)
+                            else { return nil }
+                            var battle = ThreeVThreeBattle(
+                                teamA: a, teamB: b,
+                                switchPolicy: .bestMatchup,
+                                optimalShields: optimalShields,
+                                voluntarySwitching: voluntarySwitching,
+                                learnedShieldNet: shieldNet)
+                            if let switchNet {
+                                battle.switchDecisionHook = { switchNet.decide($0) }
+                            }
+                            switch battle.run().winner {
+                            case .teamA: return (i, j, 1.0)
+                            case .teamB: return (i, j, 0.0)
+                            case .tie: return (i, j, 0.5)
+                            }
+                        }
+                    }
+                    for await result in group {
+                        if let (i, j, v) = result { w[i][j] = v; w[j][i] = 1 - v }
+                    }
+                }
+                if !Task.isCancelled {
+                    let solution = MetaGame.solve(winMatrix: w)
+                    for (slot, fieldIndex) in top.enumerated() {
+                        metaScoreByField[fieldIndex] = solution.metaScores[slot]
+                        equilibriumWeightByField[fieldIndex] = solution.weights[slot]
+                    }
+                }
+            }
         }
 
         return snapshot()
@@ -319,6 +397,7 @@ nonisolated enum TeamFinder {
     /// costs ~20k fast 1v1s. Heuristic input only — never shown to the user.
     private static func ratingMatrix(
         pool: [Candidate], movesById: [String: Move],
+        shieldNet: ShieldPolicyNet? = nil,
         progress: (@Sendable (Double) -> Void)? = nil
     ) async -> [[Int]] {
         let n = pool.count
@@ -335,7 +414,8 @@ nonisolated enum TeamFinder {
                               let r = MatchupSimulator.rate(
                                 pool[i].combatant, statsA: pool[i].stats,
                                 pool[j].combatant, statsB: pool[j].stats,
-                                movesById: movesById, shieldsA: 1, shieldsB: 1)
+                                movesById: movesById, shieldsA: 1, shieldsB: 1,
+                                shieldNet: shieldNet)
                         else { return nil }
                         return (i, j, r.a, r.b)
                     }

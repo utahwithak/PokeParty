@@ -127,6 +127,21 @@ private struct LeaderboardRow: View {
                     .contentTransition(.numericText())
                 RatingBar(rating: Int(team.averageRating.rounded()))
                     .frame(maxWidth: 160)
+                if let metaScore = team.metaScore {
+                    Text("vs meta \(metaScore, format: .percent.precision(.fractionLength(0)))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(metaScore >= 0.5 ? .primary : .secondary)
+                        .help("Expected score against the Nash-equilibrium meta of the top teams — no credit for farming weak teams.")
+                }
+                if (team.equilibriumWeight ?? 0) >= 0.02 {
+                    Text("META CORE")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.tint.opacity(0.15), in: Capsule())
+                        .foregroundStyle(.tint)
+                        .help("Part of the equilibrium meta: no top team exploits this one under strong play.")
+                }
             }
         }
     }

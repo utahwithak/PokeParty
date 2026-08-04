@@ -1,0 +1,32 @@
+{
+  "featureNames" : [
+    "s0_alive",
+    "s0_hp_frac",
+    "s0_energy",
+    "s0_rating",
+    "s0_dmg_out",
+    "s0_dmg_in",
+    "s1_alive",
+    "s1_hp_frac",
+    "s1_energy",
+    "s1_rating",
+    "s1_dmg_out",
+    "s1_dmg_in",
+    "s2_alive",
+    "s2_hp_frac",
+    "s2_energy",
+    "s2_rating",
+    "s2_dmg_out",
+    "s2_dmg_in",
+    "team_shields",
+    "opp_shields",
+    "opp_hp_frac",
+    "opp_energy",
+    "alive_frac",
+    "time_frac",
+    "opp_locked",
+    "mandatory"
+  ],
+  "sampleCount" : 82497,
+  "teams" : 120
+}

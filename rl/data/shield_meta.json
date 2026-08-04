@@ -1,0 +1,56 @@
+{
+  "featureNames" : [
+    "def_hp_frac",
+    "def_post_move_hp_frac",
+    "def_shields",
+    "def_energy",
+    "def_buff_atk",
+    "def_buff_def",
+    "att_hp_frac",
+    "att_shields",
+    "att_energy_after",
+    "att_buff_atk",
+    "att_buff_def",
+    "move_energy",
+    "move_dmg_over_hp",
+    "move_dmg_over_max_hp",
+    "move_self_debuffing",
+    "move_debuffs_defender",
+    "att_refill_turns",
+    "att_cycle_dmg_over_hp",
+    "att_followup_dmg_over_hp",
+    "att_fast_dpt_over_max_hp",
+    "def_fast_dpt_over_att_hp",
+    "def_best_charged_over_att_hp",
+    "time_frac",
+    "opportunity"
+  ],
+  "poolSize" : 150,
+  "sampleCount" : 182980,
+  "shieldConfigs" : [
+    [
+      2,
+      2
+    ],
+    [
+      1,
+      1
+    ],
+    [
+      2,
+      1
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      1,
+      0
+    ],
+    [
+      0,
+      1
+    ]
+  ]
+}
