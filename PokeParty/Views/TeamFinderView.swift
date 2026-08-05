@@ -58,10 +58,16 @@ struct TeamFinderView: View {
                     Text("Every trio from the pool is first graded with the Team Builder's static analysis; only the teams graded A in Coverage, Bulk, Safety and Consistency enter the tournament, where a full 3v3 round robin settles their order.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else if model.method == .aiOptimizer {
+                    Text("Hill-climbs the (Pokémon × moveset) space: alternate charged moves and fast moves with significant simulated usage are explored alongside the recommended sets. Each restart begins from a different lead and swaps one team slot at a time until no improvement remains. Results appear as climbers converge.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
-            if model.method != .gradeCheck {
+            if model.method == .aiOptimizer {
+                optimizerSection
+            } else if model.method != .gradeCheck {
                 tournamentFieldSection
             }
 
@@ -70,12 +76,25 @@ struct TeamFinderView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         if model.phase == .loadingRankings {
                             ProgressView("Loading rankings…")
+                        } else if model.method == .aiOptimizer {
+                            if let results = model.optimizerResults, results.completedClimbers > 0 {
+                                ProgressView(
+                                    value: Double(results.completedClimbers),
+                                    total: Double(max(results.totalClimbers, 1))
+                                ) {
+                                    Text("\(results.completedClimbers) of \(results.totalClimbers) climbers converged")
+                                }
+                            } else if let results = model.optimizerResults {
+                                ProgressView("Climbing… 0 of \(results.totalClimbers) done")
+                            } else {
+                                ProgressView("Building meta field…")
+                            }
                         } else if let standings = model.standings {
                             ProgressView(
                                 value: Double(standings.battlesFought),
                                 total: Double(max(standings.totalBattles, 1))
                             ) {
-                                Text("Round \(standings.round) of \(standings.totalRounds) — \(standings.battlesFought.formatted()) of \(standings.totalBattles.formatted()) battles")
+                                Text("Round \(standings.round + 1) of \(standings.totalRounds + 1) — \(standings.battlesFought.formatted()) of \(standings.totalBattles.formatted()) battles")
                             }
                         } else {
                             ProgressView(value: model.progress) {
@@ -123,6 +142,7 @@ struct TeamFinderView: View {
         case .tournament: return "Seeding tournament…"
         case .gradeCheck: return "Grading teams…"
         case .combined: return "Finding AAAA teams…"
+        case .aiOptimizer: return "Building meta field…"
         }
     }
 
@@ -131,6 +151,34 @@ struct TeamFinderView: View {
         case .tournament: return "Run Tournament"
         case .gradeCheck: return "Find AAAA Teams"
         case .combined: return "Run AAAA Tournament"
+        case .aiOptimizer: return "Run AI Optimizer"
+        }
+    }
+
+    private var optimizerSection: some View {
+        Section("Optimizer") {
+            VStack(alignment: .leading, spacing: 4) {
+                Slider(
+                    value: Binding(
+                        get: { Double(model.restarts) },
+                        set: { model.restarts = Int($0) }),
+                    in: TeamFinderModel.restartRange,
+                    step: TeamFinderModel.restartStep
+                ) {
+                    Text("Restarts")
+                }
+                .disabled(model.isRunning)
+                Text("\(model.restarts) hill-climbs from diverse starting teams")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Toggle("Simulate counterswaps", isOn: Bindable(model).simulateCounterswaps)
+                .disabled(model.isRunning)
+            Toggle("Learned shield AI", isOn: Bindable(model).learnedShields)
+                .disabled(model.isRunning || model.optimalShields)
+            Toggle("Learned switch AI", isOn: Bindable(model).learnedSwitches)
+                .disabled(model.isRunning)
         }
     }
 
@@ -231,6 +279,13 @@ struct TeamFinderResultsView: View {
                     format: model.resultsFormat,
                     poolSize: model.resultsPoolSize,
                     openInBuilder: { openInTeamBuilder($0.members.map(\.member)) })
+            } else if let results = model.optimizerResults {
+                OptimizerResultsView(
+                    results: results,
+                    format: model.resultsFormat,
+                    poolSize: model.resultsPoolSize,
+                    movesById: store.movesById,
+                    openInBuilder: { openInTeamBuilder($0.members.map(\.member)) })
             } else if let standings = model.standings {
                 TeamFinderSimulationView(
                     standings: standings,
@@ -252,6 +307,8 @@ struct TeamFinderResultsView: View {
         switch model.phase {
         case .searching where model.method == .gradeCheck:
             "Grading every candidate trio with the Team Builder's static analysis…"
+        case .searching where model.method == .aiOptimizer:
+            "Building the meta field and starting hill-climbs…"
         case .searching: "Seeding the tournament — ranking every candidate trio by meta coverage…"
         case .loadingRankings: "Loading rankings…"
         default: "Pick a format and run the Party Finder to watch teams battle for the top of the leaderboard."

@@ -45,7 +45,7 @@ struct TeamFinderSimulationView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(standings.isComplete
                      ? "Tournament complete"
-                     : "Round \(standings.round) of \(standings.totalRounds)")
+                     : "Round \(standings.round + 1) of \(standings.totalRounds + 1)")
                     .font(.headline)
                     .contentTransition(.numericText())
                 Spacer()
@@ -170,6 +170,183 @@ private struct TeamMemberCell: View {
             TypeBadgeRow(types: member.types)
         }
         .frame(minWidth: 110, alignment: .leading)
+    }
+}
+
+// MARK: - AI Optimizer results
+
+/// The optimizer's live results: teams ranked by expected meta score, updating
+/// as each hill-climbing restart converges.
+struct OptimizerResultsView: View {
+    let results: TeamOptimizer.Results
+    let format: RankingFormat?
+    let poolSize: Int
+    let movesById: [String: Move]
+    let openInBuilder: (TeamOptimizer.OptimizedTeam) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+                .padding()
+            Divider()
+            if results.teams.isEmpty {
+                ContentUnavailableView(
+                    "Searching…",
+                    systemImage: "wand.and.stars",
+                    description: Text("Teams appear as climbers converge."))
+                    .frame(maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(results.teams.enumerated()), id: \.element.id) { index, team in
+                            OptimizerTeamRow(rank: index + 1, team: team, movesById: movesById) {
+                                openInBuilder(team)
+                            }
+                            .transition(.asymmetric(
+                                insertion: .opacity,
+                                removal: .opacity.combined(with: .move(edge: .trailing))))
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .animation(.spring(duration: 0.6), value: results.teams.map(\.id))
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(results.isComplete
+                     ? "Optimization complete"
+                     : "\(results.completedClimbers) of \(results.totalClimbers) climbers converged")
+                    .font(.headline)
+                    .contentTransition(.numericText())
+                Spacer()
+                Text("\(results.teams.count) team\(results.teams.count == 1 ? "" : "s")")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+            }
+            if !results.isComplete {
+                if results.completedClimbers == 0 {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                } else {
+                    ProgressView(
+                        value: Double(results.completedClimbers),
+                        total: Double(max(results.totalClimbers, 1)))
+                        .progressViewStyle(.linear)
+                }
+            }
+            Text(caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var caption: String {
+        let league = format.map { "\($0.title) — " } ?? ""
+        let base = "top \(poolSize) ranked Pokémon including alternate movesets"
+        if results.isComplete {
+            return "\(league)best teams from \(results.totalClimbers) hill-climbs over the \(base), ranked by expected score vs the meta field. The first member is the lead."
+        }
+        return "\(league)hill-climbing the \(base); teams appear as each restart converges. The first member is the lead."
+    }
+}
+
+private struct OptimizerTeamRow: View {
+    let rank: Int
+    let team: TeamOptimizer.OptimizedTeam
+    let movesById: [String: Move]
+    let openInBuilder: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text("#\(rank)")
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .leading)
+                .contentTransition(.numericText())
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    ForEach(Array(team.members.enumerated()), id: \.offset) { index, member in
+                        OptimizerMemberCell(member: member, isLead: index == 0,
+                                            movesById: movesById)
+                    }
+                }
+                scoreRow
+            }
+
+            Spacer()
+
+            Button("Open in Team Builder", action: openInBuilder)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    private var scoreRow: some View {
+        HStack(spacing: 8) {
+            Text(team.metaScore, format: .percent.precision(.fractionLength(0)))
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .contentTransition(.numericText())
+                .help("Expected score vs the meta field (weighted win rate).")
+            Text("\(team.wins)W · \(team.losses)L\(team.ties > 0 ? " · \(team.ties)T" : "") vs meta")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
+        }
+    }
+}
+
+private struct OptimizerMemberCell: View {
+    let member: TeamOptimizer.OptimizedTeam.Member
+    let isLead: Bool
+    let movesById: [String: Move]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text(member.speciesName)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                if member.shadow { ShadowBadge() }
+                if isLead {
+                    Text("LEAD")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            TypeBadgeRow(types: member.types)
+            HStack(spacing: 4) {
+                Text(movesetText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if member.isAlternateMoveset {
+                    Text("ALT")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tint)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(.tint.opacity(0.15), in: Capsule())
+                        .help("Alternate moveset — differs from the recommended build.")
+                }
+            }
+        }
+        .frame(minWidth: 120, alignment: .leading)
+    }
+
+    private var movesetText: String {
+        let fast = movesById[member.member.fastMoveId]?.name ?? member.member.fastMoveId
+        let charged = member.member.chargedMoveIds
+            .map { movesById[$0]?.name ?? $0 }
+            .joined(separator: " · ")
+        return "\(fast) / \(charged)"
     }
 }
 

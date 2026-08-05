@@ -30,6 +30,7 @@ final class TeamFinderModel {
         case tournament
         case gradeCheck
         case combined
+        case aiOptimizer
 
         var id: Self { self }
         var title: String {
@@ -37,6 +38,7 @@ final class TeamFinderModel {
             case .tournament: return "Tournament (3v3 battles)"
             case .gradeCheck: return "AAAA grade check (static analysis)"
             case .combined: return "AAAA tournament (grades, then battles)"
+            case .aiOptimizer: return "AI Optimizer (hill climbing)"
             }
         }
     }
@@ -53,6 +55,12 @@ final class TeamFinderModel {
     /// How many coverage-seeded teams enter the round robin (slider-driven;
     /// the tournament fights fieldSize·(fieldSize−1)/2 battles).
     var fieldSize: Int = 500
+
+    /// Number of hill-climbing restarts for the AI Optimizer (each begins from
+    /// a different lead Pokémon and explores all single-swap neighbors).
+    var restarts: Int = 20
+    static let restartRange = 5.0...50.0
+    static let restartStep = 5.0
 
     /// Simulate voluntary switching in tournament battles (turn-0 safe swaps,
     /// counterswaps onto switch-locked opponents, switch-timer escapes, catch
@@ -92,6 +100,9 @@ final class TeamFinderModel {
     private(set) var results: [TeamFinder.RankedTeam] = []
     /// AAAA teams from a grade-check run (nil unless that method last ran).
     private(set) var gradedTeams: [GradeFinder.GradedTeam]?
+    /// Live optimizer results (nil until first climber converges). Populated
+    /// progressively and stays set after the run completes or is cancelled.
+    private(set) var optimizerResults: TeamOptimizer.Results?
     /// The format and pool size the current run was started with.
     private(set) var resultsFormat: RankingFormat?
     private(set) var resultsPoolSize = 0
@@ -109,7 +120,9 @@ final class TeamFinderModel {
     func cancel() {
         searchTask?.cancel()
         searchTask = nil
-        if isRunning { phase = (standings == nil && gradedTeams == nil) ? .idle : .done }
+        if isRunning {
+            phase = (standings == nil && gradedTeams == nil && optimizerResults == nil) ? .idle : .done
+        }
     }
 
     /// Shows a previously saved tournament in the leaderboard.
@@ -142,12 +155,14 @@ final class TeamFinderModel {
         let pokemonById = store.pokemonById
 
         let method = method
+        let restarts = restarts
 
         phase = .loadingRankings
         progress = 0
         results = []
         standings = nil
         gradedTeams = nil
+        optimizerResults = nil
         resultsFormat = nil
 
         searchTask = Task {
@@ -180,6 +195,32 @@ final class TeamFinderModel {
                     })
                 if Task.isCancelled { return }
                 withAnimation(.spring(duration: 0.6)) { gradedTeams = teams }
+                phase = .done
+                return
+            }
+
+            if method == .aiOptimizer {
+                let final = await TeamOptimizer.findTeams(
+                    entries: entries,
+                    poolSize: poolSize,
+                    cpCap: format.cp,
+                    pokemonById: pokemonById,
+                    movesById: movesById,
+                    restarts: restarts,
+                    learnedShields: learnedShields,
+                    learnedSwitches: learnedSwitches,
+                    voluntarySwitching: simulateCounterswaps,
+                    optimalShields: optimalShields,
+                    onProgress: { fraction in
+                        Task { @MainActor in self.progress = max(self.progress, fraction) }
+                    },
+                    onResults: { snapshot in
+                        Task { @MainActor in
+                            withAnimation(.spring(duration: 0.6)) { self.optimizerResults = snapshot }
+                        }
+                    })
+                if Task.isCancelled { return }
+                withAnimation(.spring(duration: 0.6)) { optimizerResults = final }
                 phase = .done
                 return
             }
