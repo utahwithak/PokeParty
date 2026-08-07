@@ -69,8 +69,8 @@ nonisolated struct ThreeVThreeBattle {
         case bestMatchup
     }
 
-    let teamA: [BattlePokemon]
-    let teamB: [BattlePokemon]
+    var teamA: [BattlePokemon]
+    var teamB: [BattlePokemon]
     var leadA: Int
     var leadB: Int
     var shieldsA: Int
@@ -143,24 +143,27 @@ nonisolated struct ThreeVThreeBattle {
         self.learnedShieldNet = learnedShieldNet
     }
 
-    /// Runs the full team battle. Mutates the passed `BattlePokemon` objects, so
-    /// pass freshly-built teams (see `makeTeam`).
-    func run() -> TeamBattleResult { simulateCore(record: false).result }
+    func run() -> TeamBattleResult {
+        var copy = self
+        return copy.simulateCore(record: false).result
+    }
 
-    /// Runs and records each 1v1 segment for the timeline viewer (M7.4/M7.5).
     func runRecorded() -> TeamBattleLog {
-        let out = simulateCore(record: true)
+        var copy = self
+        let out = copy.simulateCore(record: true)
         return TeamBattleLog(segments: out.segments, result: out.result)
     }
 
-    private func simulateCore(record: Bool) -> (result: TeamBattleResult, segments: [TeamBattleLog.Segment]) {
+    private mutating func simulateCore(record: Bool) -> (result: TeamBattleResult, segments: [TeamBattleLog.Segment]) {
         var segments: [TeamBattleLog.Segment] = []
         // Every Pokémon starts fresh; the loop updates start* to carry state.
-        for p in teamA + teamB {
-            p.startHp = 0
-            p.startEnergy = 0
-            p.startStatBuffs = [0, 0]
-            p.startDisguiseConsumed = false
+        for i in teamA.indices {
+            teamA[i].startHp = 0; teamA[i].startEnergy = 0
+            teamA[i].startStatBuffs = [0, 0]; teamA[i].startDisguiseConsumed = false
+        }
+        for i in teamB.indices {
+            teamB[i].startHp = 0; teamB[i].startEnergy = 0
+            teamB[i].startStatBuffs = [0, 0]; teamB[i].startDisguiseConsumed = false
         }
 
         var teamAShields = shieldsA
@@ -243,17 +246,18 @@ nonisolated struct ThreeVThreeBattle {
                 }
                 // Tempo cost: if exactly one side switched, the other gets free energy.
                 if aSwitched != bSwitched {
-                    let stayer = aSwitched ? teamB[activeB] : teamA[activeA]
-                    stayer.startEnergy = min(100, stayer.startEnergy + stayer.fastMove.energyGain * Self.switchTempoFastMoves)
+                    if aSwitched {
+                        teamB[activeB].startEnergy = min(100, teamB[activeB].startEnergy + teamB[activeB].fastMove.energyGain * Self.switchTempoFastMoves)
+                    } else {
+                        teamA[activeA].startEnergy = min(100, teamA[activeA].startEnergy + teamA[activeA].fastMove.energyGain * Self.switchTempoFastMoves)
+                    }
                 }
             }
 
-            let a = teamA[activeA]
-            let b = teamB[activeB]
-            a.startingShields = teamAShields
-            b.startingShields = teamBShields
+            teamA[activeA].startingShields = teamAShields
+            teamB[activeB].startingShields = teamBShields
 
-            let battle = Battle(a, b, startTime: globalTime, record: record)
+            let battle = Battle(teamA[activeA], teamB[activeB], startTime: globalTime, record: record)
             // Mid-segment escape (M8.3b): a side that enters this segment stuck in a
             // losing matchup because its switch timer is still running gets the
             // segment stopped the moment the timer expires, so the boundary logic
@@ -263,12 +267,12 @@ nonisolated struct ThreeVThreeBattle {
                 var interruptAt = Int.max
                 let aUnlock = lastSwitchA + Self.switchTimerMs
                 if aUnlock > globalTime, Self.hasBackup(count: teamA.count, fainted: faintedA, active: activeA),
-                   rate(a, vs: b, myShields: teamAShields, oppShields: teamBShields, fresh: false) < 500 {
+                   rate(teamA[activeA], vs: teamB[activeB], myShields: teamAShields, oppShields: teamBShields, fresh: false) < 500 {
                     interruptAt = min(interruptAt, aUnlock)
                 }
                 let bUnlock = lastSwitchB + Self.switchTimerMs
                 if bUnlock > globalTime, Self.hasBackup(count: teamB.count, fainted: faintedB, active: activeB),
-                   rate(b, vs: a, myShields: teamBShields, oppShields: teamAShields, fresh: false) < 500 {
+                   rate(teamB[activeB], vs: teamA[activeA], myShields: teamBShields, oppShields: teamAShields, fresh: false) < 500 {
                     interruptAt = min(interruptAt, bUnlock)
                 }
                 // Catch/sac triggers: stop the segment when the opponent's banked
@@ -279,14 +283,14 @@ nonisolated struct ThreeVThreeBattle {
                 // the opponent's energy dips (it threw the move).
                 var aEnergyAt = Int.max
                 if let t = energyInterruptThreshold(team: teamA, fainted: faintedA, active: activeA,
-                                                    opponent: b, teamShields: teamAShields),
-                   !(globalTime >= aUnlock && b.startEnergy >= t) {
+                                                    opponent: teamB[activeB], teamShields: teamAShields),
+                   !(globalTime >= aUnlock && teamB[activeB].startEnergy >= t) {
                     aEnergyAt = t
                 }
                 var bEnergyAt = Int.max
                 if let t = energyInterruptThreshold(team: teamB, fainted: faintedB, active: activeB,
-                                                    opponent: a, teamShields: teamBShields),
-                   !(globalTime >= bUnlock && a.startEnergy >= t) {
+                                                    opponent: teamA[activeA], teamShields: teamBShields),
+                   !(globalTime >= bUnlock && teamA[activeA].startEnergy >= t) {
                     bEnergyAt = t
                 }
                 if interruptAt < Int.max || aEnergyAt < Int.max || bEnergyAt < Int.max {
@@ -299,7 +303,7 @@ nonisolated struct ThreeVThreeBattle {
             }
             var shieldSolution: ShieldSearch.Solution?
             if optimalShields {
-                let sol = ShieldSearch.optimalSolution(a, b)
+                let sol = ShieldSearch.optimalSolution(teamA[activeA], teamB[activeB])
                 shieldSolution = sol
                 battle.shieldOverride = { defenderIndex, opportunity in
                     defenderIndex == 0 ? sol.policyA.contains(opportunity) : sol.policyB.contains(opportunity)
@@ -323,16 +327,23 @@ nonisolated struct ThreeVThreeBattle {
                                       log: battle.makeLog(), shieldScenario: shieldSolution))
             }
 
-            // Carry each combatant's state forward (the survivor stays in).
-            a.startHp = max(0, a.hp); a.startEnergy = a.energy; a.startStatBuffs = a.statBuffs
-            b.startHp = max(0, b.hp); b.startEnergy = b.energy; b.startStatBuffs = b.statBuffs
-            a.startDisguiseConsumed = a.hasDisguise && !a.disguiseActive
-            b.startDisguiseConsumed = b.hasDisguise && !b.disguiseActive
-            teamAShields = a.shields
-            teamBShields = b.shields
+            // Carry each combatant's state forward from the battle's internal copies.
+            let postA = battle.pokemon[0], postB = battle.pokemon[1]
+            teamA[activeA].hp = postA.hp
+            teamA[activeA].startHp = max(0, postA.hp)
+            teamA[activeA].startEnergy = postA.energy
+            teamA[activeA].startStatBuffs = postA.statBuffs
+            teamA[activeA].startDisguiseConsumed = postA.hasDisguise && !postA.disguiseActive
+            teamAShields = postA.shields
+            teamB[activeB].hp = postB.hp
+            teamB[activeB].startHp = max(0, postB.hp)
+            teamB[activeB].startEnergy = postB.energy
+            teamB[activeB].startStatBuffs = postB.statBuffs
+            teamB[activeB].startDisguiseConsumed = postB.hasDisguise && !postB.disguiseActive
+            teamBShields = postB.shields
 
-            let aFainted = a.hp <= 0
-            let bFainted = b.hp <= 0
+            let aFainted = postA.hp <= 0
+            let bFainted = postB.hp <= 0
 
             // Neither fainted → either a mid-segment interrupt (back to the boundary
             // so the freed side can voluntarily switch) or the shared clock ran out.
@@ -579,10 +590,10 @@ nonisolated struct ThreeVThreeBattle {
     /// carried state (the mon currently on the field).
     private func rate(_ mon: BattlePokemon, vs opponent: BattlePokemon,
                       myShields: Int, oppShields: Int, fresh: Bool) -> Int {
-        let m = mon.clone()
+        var m = mon
         if fresh { m.startHp = 0; m.startEnergy = 0; m.startStatBuffs = [0, 0] }
         m.startingShields = myShields
-        let o = opponent.clone()
+        var o = opponent
         o.startingShields = oppShields
         let battle = Battle(m, o)
         if let net = learnedShieldNet, !optimalShields { battle.useLearnedShieldPolicy(net) }
@@ -619,10 +630,10 @@ nonisolated struct ThreeVThreeBattle {
         var bestIndex = first
         var bestRating = Int.min
         for i in alive {
-            let cand = team[i].clone()
+            var cand = team[i]
             cand.startHp = 0; cand.startEnergy = 0
             cand.startingShields = teamShields; cand.startStatBuffs = [0, 0]
-            let opp = opponent.clone()                 // carries the opponent's current state
+            var opp = opponent                         // carries the opponent's current state
             opp.startingShields = opponentShields
             let battle = Battle(cand, opp)
             if let net = learnedShieldNet, !optimalShields { battle.useLearnedShieldPolicy(net) }
@@ -735,10 +746,11 @@ nonisolated struct ThreeVThreeBattle {
         voluntarySwitching: Bool = false,
         baitShieldsA: Bool = true, baitShieldsB: Bool = true
     ) -> TeamBattleLog? {
-        guard let a = makeTeam(teamA, stats: statsA, movesById: movesById),
-              let b = makeTeam(teamB, stats: statsB, movesById: movesById) else { return nil }
-        for p in a { p.baitShields = baitShieldsA ? 1 : 0 }
-        for p in b { p.baitShields = baitShieldsB ? 1 : 0 }
+        guard let tempA = makeTeam(teamA, stats: statsA, movesById: movesById),
+              let tempB = makeTeam(teamB, stats: statsB, movesById: movesById) else { return nil }
+        var a = tempA, b = tempB
+        for i in a.indices { a[i].baitShields = baitShieldsA ? 1 : 0 }
+        for i in b.indices { b[i].baitShields = baitShieldsB ? 1 : 0 }
         return ThreeVThreeBattle(
             teamA: a, teamB: b,
             leadA: leadA, leadB: leadB,

@@ -91,7 +91,7 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
         #expect(best.entrancesB[1] == 2)   // Water counter chosen over Normal
 
         let ordered = ThreeVThreeBattle(
-            teamA: a.map { $0.clone() }, teamB: b.map { $0.clone() },
+            teamA: a, teamB: b,
             switchPolicy: .teamOrder).run()
         #expect(ordered.entrancesB.count >= 2)
         #expect(ordered.entrancesB[1] == 1)   // team order brings in the Normal
@@ -194,7 +194,7 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
         battle.simulate()
 
         #expect(battle.interrupted)
-        #expect(a.hp > 0 && b.hp > 0)
+        #expect(battle.pokemon[0].hp > 0 && battle.pokemon[1].hp > 0)
         #expect(battle.time >= 10_000)
     }
 
@@ -278,14 +278,14 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
         // charged move worth half the active's remaining HP. The 10%-HP backup
         // should be offered as the sac; with a shield still in the pool, or without
         // low-HP sac material, there's no sac.
-        let active = makePoke("A-water", type: "water", atk: 155, def: 120, hp: 160)
+        var active = makePoke("A-water", type: "water", atk: 155, def: 120, hp: 160)
         active.startHp = 90
-        let sac = makePoke("A-sac", type: "normal", atk: 120, def: 100, hp: 140)
+        var sac = makePoke("A-sac", type: "normal", atk: 120, def: 100, hp: 140)
         sac.startHp = 14
         let third = makePoke("A-full", type: "normal", atk: 120, def: 100, hp: 140)
-        let team = [active, sac, third]
+        var team = [active, sac, third]
 
-        let opponent = makePoke("B-normal", type: "normal", atk: 150, def: 100, hp: 130)
+        var opponent = makePoke("B-normal", type: "normal", atk: 150, def: 100, hp: 130)
         opponent.startHp = 40
         opponent.startEnergy = 40               // the 35-energy charged move is banked
         let battle = ThreeVThreeBattle(teamA: team, teamB: [opponent])
@@ -296,7 +296,7 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
         #expect(battle.boundarySwitchTarget(team: team, fainted: [], active: 0,
                                             opponent: opponent, teamShields: 1, opponentShields: 0) == nil)
         // No nearly-fainted backup → no sac.
-        sac.startHp = 0
+        team[1].startHp = 0
         #expect(battle.boundarySwitchTarget(team: team, fainted: [], active: 0,
                                             opponent: opponent, teamShields: 0, opponentShields: 0) == nil)
     }
@@ -306,12 +306,12 @@ private func team(_ prefix: String, atk: Double, def: Double, hp: Int) -> [Battl
     @Test func shieldOverrideForcesDecision() {
         func run(shieldB: Bool) -> (hp: Int, shields: Int) {
             let a = makePoke("A", type: "water", atk: 160, def: 110, hp: 150)
-            let b = makePoke("B", type: "grass", atk: 110, def: 120, hp: 170)
+            var b = makePoke("B", type: "grass", atk: 110, def: 120, hp: 170)
             b.startingShields = 2
             let battle = Battle(a, b)
             battle.shieldOverride = { defenderIndex, _ in defenderIndex == 1 ? shieldB : nil }
             battle.simulate()
-            return (b.hp, b.shields)
+            return (battle.pokemon[1].hp, battle.pokemon[1].shields)
         }
         let never = run(shieldB: false)
         let always = run(shieldB: true)

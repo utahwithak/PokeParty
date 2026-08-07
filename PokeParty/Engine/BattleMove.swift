@@ -8,9 +8,10 @@
 
 import Foundation
 
-/// Reference type: the engine mutates `damage`, `dpe`, `stab`, and
-/// `buffApplyMeter` during simulation, matching PvPoke's mutable move objects.
-nonisolated final class BattleMove {
+/// Value type — the engine mutates `damage`, `dpe`, `stab`, and
+/// `buffApplyMeter` during simulation (written back through the owning
+/// BattlePokemon's stored arrays, eliminating ARC overhead).
+nonisolated struct BattleMove {
     let moveId: String
     let name: String
     let type: String
@@ -81,16 +82,4 @@ nonisolated final class BattleMove {
             buffApplyMeter = chance == 0.5 ? 0 : chance
         }
     }
-
-    /// Copies every field (used to clone a Pokémon into a throwaway battle).
-    private init(copy m: BattleMove) {
-        moveId = m.moveId; name = m.name; type = m.type; typeIndex = m.typeIndex; power = m.power
-        energy = m.energy; energyGain = m.energyGain; cooldown = m.cooldown; turns = m.turns
-        buffs = m.buffs; buffTarget = m.buffTarget; buffApplyChance = m.buffApplyChance
-        selfDebuffing = m.selfDebuffing; selfBuffing = m.selfBuffing
-        selfAttackDebuffing = m.selfAttackDebuffing; selfDefenseDebuffing = m.selfDefenseDebuffing
-        stab = m.stab; damage = m.damage; dpe = m.dpe; buffApplyMeter = m.buffApplyMeter
-    }
-
-    func clone() -> BattleMove { BattleMove(copy: self) }
 }

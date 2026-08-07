@@ -90,6 +90,7 @@ nonisolated enum TeamOptimizer {
         learnedSwitches: Bool = true,
         voluntarySwitching: Bool = false,
         optimalShields: Bool = false,
+        prefilterTopK: Int = 30,
         onProgress: (@Sendable (Double) -> Void)? = nil,
         onResults: (@Sendable (Results) -> Void)? = nil
     ) async -> Results {
@@ -112,6 +113,13 @@ nonisolated enum TeamOptimizer {
         if Task.isCancelled { return empty }
         onProgress?(0.1)
 
+        let prefilterData = prefilterTopK > 0
+            ? await buildPrefilterData(
+                pool: pool, metaField: metaField, movesById: movesById,
+                shieldNet: shieldNet, topK: prefilterTopK)
+            : nil
+        if Task.isCancelled { return empty }
+
         let starts = generateStarts(pool: pool, count: restarts)
         let total = starts.count
 
@@ -129,7 +137,8 @@ nonisolated enum TeamOptimizer {
                     return await climb(
                         start: start, pool: pool, metaField: metaField,
                         movesById: movesById, shieldNet: shieldNet, switchNet: switchNet,
-                        voluntarySwitching: voluntarySwitching, optimalShields: optimalShields)
+                        voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
+                        prefilter: prefilterData)
                 }
             }
             for await result in group {
@@ -227,6 +236,34 @@ nonisolated enum TeamOptimizer {
         let weight: Double
     }
 
+    // MARK: - Pre-filter support
+
+    /// Pre-computed 1v1 ratings for every (pool candidate × unique meta mon) pair.
+    /// Drives the per-step swap pre-filter: expensive 3v3 evals are reserved for
+    /// the topK candidates ranked by this fast coverage estimate.
+    private struct PrefilterData: Sendable {
+        let poolScores: [[Int]]   // [poolIdx][metaMonIdx] = 1v1 rating 0…1000
+        let teamLookup: [[Int]]   // [metaTeamIdx] = indices into poolScores columns
+        let weights: [Double]     // [metaTeamIdx]
+        let topK: Int
+
+        /// Estimates the meta score of a candidate team: for each meta mon,
+        /// take the team's best 1v1 counter, then average across teams.
+        func estimate(_ team: [Int]) -> Double {
+            var total = 0.0
+            for (t, monIndices) in teamLookup.enumerated() {
+                var coverage = 0.0
+                for monIdx in monIndices {
+                    let best = team.reduce(0) { max($0, poolScores[$1][monIdx]) }
+                    coverage += Double(best)
+                }
+                coverage /= Double(monIndices.count * 1000)
+                total += weights[t] * coverage
+            }
+            return total
+        }
+    }
+
     /// Builds representative opponent teams: the top `metaSize` unique species
     /// (recommended movesets), each paired with its two best coverage partners
     /// via the 1v1 rating matrix. All teams are weighted equally.
@@ -299,6 +336,68 @@ nonisolated enum TeamOptimizer {
         return teams.map { MetaTeam(members: $0.members, weight: w) }
     }
 
+    /// Builds the pre-filter matrix: 1v1 ratings for all (pool candidate × unique
+    /// meta mon) pairs, computed in parallel. Called once before hill-climbing starts.
+    private static func buildPrefilterData(
+        pool: [Candidate],
+        metaField: [MetaTeam],
+        movesById: [String: Move],
+        shieldNet: ShieldPolicyNet?,
+        topK: Int
+    ) async -> PrefilterData {
+        // Deduplicate meta mons that appear across multiple teams.
+        var metaMonsList: [Candidate] = []
+        var metaMonKeyToIdx: [String: Int] = [:]
+        var teamLookup: [[Int]] = []
+
+        for meta in metaField {
+            var indices: [Int] = []
+            for member in meta.members {
+                let key = "\(member.member.speciesId)|\(member.member.fastMoveId)|\(member.member.chargedMoveIds.sorted().joined(separator: ","))"
+                if let idx = metaMonKeyToIdx[key] {
+                    indices.append(idx)
+                } else {
+                    let idx = metaMonsList.count
+                    metaMonKeyToIdx[key] = idx
+                    metaMonsList.append(member)
+                    indices.append(idx)
+                }
+            }
+            teamLookup.append(indices)
+        }
+
+        let N = pool.count, M = metaMonsList.count
+        var poolScores = Array(repeating: Array(repeating: 500, count: M), count: N)
+
+        await withTaskGroup(of: (Int, Int, Int)?.self) { group in
+            for i in 0..<N {
+                for j in 0..<M {
+                    let pi = pool[i], mj = metaMonsList[j]
+                    group.addTask {
+                        guard !Task.isCancelled,
+                              let r = MatchupSimulator.rate(
+                                pi.combatant, statsA: pi.stats,
+                                mj.combatant, statsB: mj.stats,
+                                movesById: movesById, shieldsA: 1, shieldsB: 1,
+                                shieldNet: shieldNet)
+                        else { return nil }
+                        return (i, j, r.a)
+                    }
+                }
+            }
+            for await r in group where r != nil {
+                let (i, j, score) = r!
+                poolScores[i][j] = score
+            }
+        }
+
+        return PrefilterData(
+            poolScores: poolScores,
+            teamLookup: teamLookup,
+            weights: metaField.map(\.weight),
+            topK: topK)
+    }
+
     // MARK: - Diverse starting teams
 
     /// Generates up to `count` starting trios by cycling through unique lead
@@ -354,13 +453,20 @@ nonisolated enum TeamOptimizer {
         shieldNet: ShieldPolicyNet?,
         switchNet: SwitchPolicyNet?,
         voluntarySwitching: Bool,
-        optimalShields: Bool
+        optimalShields: Bool,
+        prefilter: PrefilterData?
     ) async -> OptimizedTeam {
         var current = start
         var currentScore = evalSync(
             team: current, pool: pool, metaField: metaField, movesById: movesById,
             shieldNet: shieldNet, switchNet: switchNet,
             voluntarySwitching: voluntarySwitching, optimalShields: optimalShields)
+
+        // When pre-filtering: evaluate only the topK most-promising swaps per step,
+        // then validate with a full sweep once the filtered climb stalls. If the
+        // full sweep finds an improvement the filter missed, accept and resume
+        // filtered climbing; repeat until the full sweep confirms a true local optimum.
+        var useFilter = prefilter != nil
 
         while !Task.isCancelled {
             // All valid single-swap neighbors (different species or different moveset).
@@ -377,6 +483,16 @@ nonisolated enum TeamOptimizer {
             }
             guard !swaps.isEmpty else { break }
 
+            // Pre-filter: rank by 1v1 estimate and keep only the topK most-promising.
+            // Disabled during validation sweeps (useFilter == false).
+            let candidates: [[Int]]
+            if useFilter, let pf = prefilter, swaps.count > pf.topK {
+                candidates = swaps.sorted { pf.estimate($0) > pf.estimate($1) }
+                                 .prefix(pf.topK).map { $0 }
+            } else {
+                candidates = swaps
+            }
+
             // Evaluate in parallel chunks; keep the best improvement found.
             let chunkSize = 16
             var bestScore = currentScore
@@ -384,8 +500,8 @@ nonisolated enum TeamOptimizer {
 
             await withTaskGroup(of: (score: Double, team: [Int])?.self) { group in
                 var s = 0
-                while s < swaps.count {
-                    let chunk = Array(swaps[s..<min(s + chunkSize, swaps.count)])
+                while s < candidates.count {
+                    let chunk = Array(candidates[s..<min(s + chunkSize, candidates.count)])
                     s += chunkSize
                     group.addTask {
                         if Task.isCancelled { return nil }
@@ -410,9 +526,21 @@ nonisolated enum TeamOptimizer {
                 }
             }
 
-            guard let best = bestSwap else { break }
-            current = best
-            currentScore = bestScore
+            if let best = bestSwap {
+                // Improvement found: accept. Keep useFilter unchanged — don't reset
+                // it to true after a full-sweep step, or every step ping-pongs between
+                // a useless filtered attempt and an expensive full sweep.
+                current = best
+                currentScore = bestScore
+            } else if useFilter {
+                // Filtered step found nothing — switch to full sweep permanently.
+                // Quality guarantee: we now run the same algorithm as the unfiltered
+                // baseline until convergence.
+                useFilter = false
+            } else {
+                // Full sweep found no improvement — true local optimum.
+                break
+            }
         }
 
         // Win/loss/tie breakdown vs meta field for display.

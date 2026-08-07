@@ -64,13 +64,13 @@ nonisolated enum SwitchObservation {
 
     /// Stable feature order (shared with rl/train_switch.py via metadata).
     /// Slot 0 is the active mon; slots 1–2 the canonical backups (zeroed when
-    /// absent). Ratings come from throwaway 1v1 sims against the opponent's
-    /// carried state — the same measure the built-in heuristics use.
+    /// absent). Damage estimates are the largest charged hit each way, normalised
+    /// by the target's max HP — a sim-free proxy for matchup quality.
     static let featureNames: [String] = {
         var names: [String] = []
         for s in 0..<3 {
             names += ["s\(s)_alive", "s\(s)_hp_frac", "s\(s)_energy",
-                      "s\(s)_rating", "s\(s)_dmg_out", "s\(s)_dmg_in"]
+                      "s\(s)_dmg_out", "s\(s)_dmg_in"]
         }
         names += ["team_shields", "opp_shields", "opp_hp_frac", "opp_energy",
                   "alive_frac", "time_frac", "opp_locked", "mandatory"]
@@ -89,7 +89,7 @@ nonisolated enum SwitchObservation {
             if s < b.count {
                 appendSlot(&x, ctx.team[b[s]], ctx, alive: true)
             } else {
-                x.append(contentsOf: [0, 0, 0, 0, 0, 0])
+                x.append(contentsOf: [0, 0, 0, 0, 0])
             }
         }
 
@@ -108,7 +108,7 @@ nonisolated enum SwitchObservation {
     private static func appendSlot(_ x: inout [Double], _ mon: BattlePokemon,
                                    _ ctx: SwitchContext, alive: Bool) {
         guard alive else {
-            x.append(contentsOf: [0, 0, 0, 0, 0, 0])
+            x.append(contentsOf: [0, 0, 0, 0, 0])
             return
         }
         let maxHp = Double(mon.stats.hp)
@@ -127,21 +127,8 @@ nonisolated enum SwitchObservation {
         x.append(1)
         x.append(Double(carriedHp(mon)) / maxHp)
         x.append(Double(mon.startEnergy) / 100)
-        x.append(rating(mon, ctx) / 1000)
         x.append(min(dmgOut / oppMaxHp, 2) / 2)
         x.append(min(dmgIn / Double(carriedHp(mon)), 2) / 2)
-    }
-
-    /// Throwaway 1v1 from both mons' carried states (unlike the boundary
-    /// heuristics, a damaged backup is NOT evaluated as if fresh).
-    private static func rating(_ mon: BattlePokemon, _ ctx: SwitchContext) -> Double {
-        let m = mon.clone()
-        m.startingShields = ctx.teamShields
-        let o = ctx.opponent.clone()
-        o.startingShields = ctx.opponentShields
-        let battle = Battle(m, o)
-        battle.simulate()
-        return Double(battle.battleRating(forIndex: 0))
     }
 
     /// Carried HP between segments (`startHp == 0` = never entered = full).

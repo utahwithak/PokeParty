@@ -62,16 +62,14 @@ nonisolated final class Battle {
     private(set) var interrupted = false
 
     init(_ a: BattlePokemon, _ b: BattlePokemon, startTime: Int = 0, record: Bool = false) {
+        var a = a
+        var b = b
         a.index = 0
         b.index = 1
-        a.setOpponent(b)
-        b.setOpponent(a)
         pokemon = [a, b]
         self.startTime = startTime
         self.record = record
     }
-
-    private func opponent(of i: Int) -> BattlePokemon { pokemon[i == 0 ? 1 : 0] }
 
     // MARK: - Run
 
@@ -88,7 +86,8 @@ nonisolated final class Battle {
 
     private func start() {
         interrupted = false
-        for p in pokemon { p.reset() }
+        pokemon[0].reset(opponent: pokemon[1])
+        pokemon[1].reset(opponent: pokemon[0])
         usePriority = pokemon[0].stats.atk != pokemon[1].stats.atk
         time = startTime
         turns = 1
@@ -133,20 +132,19 @@ nonisolated final class Battle {
 
         if turns > lastProcessedTurn { turnActions = [] }
 
-        for p in pokemon {
-            p.cooldown = max(0, p.cooldown - deltaTime)
-            if turns > lastProcessedTurn { p.hasActed = false }
+        for i in pokemon.indices {
+            pokemon[i].cooldown = max(0, pokemon[i].cooldown - deltaTime)
+            if turns > lastProcessedTurn { pokemon[i].hasActed = false }
         }
 
         var cooldownsToSet = [pokemon[0].cooldown, pokemon[1].cooldown]
 
         if turns > lastProcessedTurn {
             for i in 0..<2 {
-                let poke = pokemon[i]
-                let opp = opponent(of: i)
-                guard let action = getTurnAction(poke, opp) else { continue }
-                if poke.hp > 0 && opp.hp > 0 {
-                    if action.type == .fast { cooldownsToSet[i] += poke.fastMove.cooldown }
+                guard let action = getTurnAction(i) else { continue }
+                let di = i == 0 ? 1 : 0
+                if pokemon[i].hp > 0 && pokemon[di].hp > 0 {
+                    if action.type == .fast { cooldownsToSet[i] += pokemon[i].fastMove.cooldown }
                     queuedActions.append(action)
                 }
             }
@@ -186,21 +184,21 @@ nonisolated final class Battle {
         turnActions.sort { $0.priority > $1.priority }
 
         for action in turnActions {
-            let poke = pokemon[action.actor]
-            let opp = opponent(of: action.actor)
+            let ai = action.actor
+            let di = ai == 0 ? 1 : 0
             switch action.type {
             case .fast:
-                action.valid = opp.hp >= 1 && !(poke.hp < 1 && poke.faintSource == .charged)
+                action.valid = pokemon[di].hp >= 1 && !(pokemon[ai].hp < 1 && pokemon[ai].faintSource == .charged)
             case .charged:
-                let move = poke.chargedMoves[action.value]
-                action.valid = poke.energy >= move.energy
-                if usePriority && poke.hp <= 0 && poke.faintSource == .charged { action.valid = false }
+                let move = pokemon[ai].chargedMoves[action.value]
+                action.valid = pokemon[ai].energy >= move.energy
+                if usePriority && pokemon[ai].hp <= 0 && pokemon[ai].faintSource == .charged { action.valid = false }
                 // Prevent a charged move on the same turn a lethal fast move lands.
                 var lethalFastMove = false
                 var opponentChargedMoveThisTurn = false
                 for other in turnActions where other.actor != action.actor {
                     if other.type == .fast {
-                        if (opp.cooldown == 0 && poke.hp <= pokemon[other.actor].fastMove.damage) || poke.hp < 1 {
+                        if (pokemon[di].cooldown == 0 && pokemon[ai].hp <= pokemon[di].fastMove.damage) || pokemon[ai].hp < 1 {
                             lethalFastMove = true
                         }
                     } else if other.type == .charged {
@@ -211,7 +209,7 @@ nonisolated final class Battle {
             case .wait:
                 action.valid = true
             }
-            processAction(action, poke: poke, opponent: opp)
+            processAction(action)
         }
 
         previousTurnActions = turnActions
@@ -229,37 +227,44 @@ nonisolated final class Battle {
         turns += 1
 
         // After a charged move, both Pokémon's fast-move cooldowns reset.
-        for p in pokemon where roundChargedMoveUsed > 0 { p.cooldown = 0 }
+        if roundChargedMoveUsed > 0 {
+            pokemon[0].cooldown = 0
+            pokemon[1].cooldown = 0
+        }
     }
 
     // MARK: - Action selection
 
-    private func getTurnAction(_ poke: BattlePokemon, _ opponent: BattlePokemon) -> TimelineAction? {
-        guard poke.cooldown == 0 && !poke.hasActed else { return nil }
-        poke.hasActed = true
+    private func getTurnAction(_ i: Int) -> TimelineAction? {
+        guard pokemon[i].cooldown == 0 && !pokemon[i].hasActed else { return nil }
+        pokemon[i].hasActed = true
 
-        var action = ActionLogic.decideAction(self, poke, opponent)
+        let di = i == 0 ? 1 : 0
+        var action = ActionLogic.decideAction(self, pokemon[i], pokemon[di])
         if action == nil {
-            action = TimelineAction(type: .fast, actor: poke.index, turn: turns, value: 0, priority: poke.priority)
+            action = TimelineAction(type: .fast, actor: i, turn: turns, value: 0, priority: pokemon[i].priority)
         }
         if let action, action.type == .charged {
             action.priority += 10
-            if poke.stats.atk > opponent.stats.atk { action.priority += 1 }
+            if pokemon[i].stats.atk > pokemon[di].stats.atk { action.priority += 1 }
         }
         return action
     }
 
-    private func processAction(_ action: TimelineAction, poke: BattlePokemon, opponent: BattlePokemon) {
+    private func processAction(_ action: TimelineAction) {
         guard action.valid && !action.processed else { return }
         action.processed = true
 
+        let ai = action.actor
+        let di = ai == 0 ? 1 : 0
+
         switch action.type {
         case .fast:
-            useMove(poke, opponent, poke.fastMove)
+            useMove(ai: ai, di: di, move: pokemon[ai].fastMove, chargedIdx: nil)
         case .charged:
-            let move = poke.chargedMoves[action.value]
-            if poke.energy >= move.energy {
-                useMove(poke, opponent, move)
+            let move = pokemon[ai].chargedMoves[action.value]
+            if pokemon[ai].energy >= move.energy {
+                useMove(ai: ai, di: di, move: move, chargedIdx: action.value)
                 roundChargedMoveUsed += 1
             }
         case .wait:
@@ -269,18 +274,23 @@ nonisolated final class Battle {
 
     // MARK: - Apply a move
 
-    private func useMove(_ attacker: BattlePokemon, _ defender: BattlePokemon, _ move: BattleMove) {
-        var damage = DamageCalculator.damage(attacker, defender, move)
-        move.damage = damage
+    private func useMove(ai: Int, di: Int, move: BattleMove, chargedIdx: Int?) {
+        var damage = DamageCalculator.damage(pokemon[ai], pokemon[di], move)
+        // Write the computed damage back to the move's scratch field.
+        if let chargedIdx {
+            pokemon[ai].chargedMoves[chargedIdx].damage = damage
+        } else {
+            pokemon[ai].fastMove.damage = damage
+        }
         var defenderUsedShield = false
 
         if move.energy > 0 {
-            attacker.energy -= move.energy
+            pokemon[ai].energy -= move.energy
             if usePriority && roundChargedMoveUsed > 0 && !roundShieldUsed { time += chargedMinigameTime }
 
-            if defender.shields > 0 {
+            if pokemon[di].shields > 0 {
                 var useShield = true
-                let shieldDecision = ActionLogic.wouldShield(self, attacker, defender, move)
+                let shieldDecision = ActionLogic.wouldShield(self, pokemon[ai], pokemon[di], move)
 
                 // Don't shield early self-buffing / opponent-debuffing moves.
                 if move.buffs != nil, move.selfBuffing {
@@ -291,16 +301,16 @@ nonisolated final class Battle {
                 }
 
                 // Don't over-shield against a defender with a self-defense-debuffing move.
-                if let dBest = defender.bestChargedMove, dBest.selfDefenseDebuffing {
-                    if attacker.shields > 0 {
+                if let dBest = pokemon[di].bestChargedMove, dBest.selfDefenseDebuffing {
+                    if pokemon[ai].shields > 0 {
                         useShield = shieldDecision.value
-                    } else if attacker.bestChargedMove != nil {
-                        let fastToNextCharged = Int(ceil(Double(dBest.energy - defender.energy) / Double(defender.fastMove.energyGain)))
-                        let turnsToNextCharged = fastToNextCharged * defender.fastMove.turns
-                        let cycleDamage = fastToNextCharged * defender.fastMove.damage + dBest.damage
-                        var attackerTurnsToNextCharged = Int(ceil(Double(attacker.activeChargedMoves[0].energy - attacker.energy) / Double(attacker.fastMove.energyGain))) * attacker.fastMove.turns
-                        if attacker.stats.atk > defender.stats.atk { attackerTurnsToNextCharged -= 1 }
-                        if turnsToNextCharged >= attackerTurnsToNextCharged && attacker.hp <= cycleDamage {
+                    } else if pokemon[ai].bestChargedMove != nil {
+                        let fastToNextCharged = Int(ceil(Double(dBest.energy - pokemon[di].energy) / Double(pokemon[di].fastMove.energyGain)))
+                        let turnsToNextCharged = fastToNextCharged * pokemon[di].fastMove.turns
+                        let cycleDamage = fastToNextCharged * pokemon[di].fastMove.damage + dBest.damage
+                        var attackerTurnsToNextCharged = Int(ceil(Double(pokemon[ai].activeChargedMoves[0].energy - pokemon[ai].energy) / Double(pokemon[ai].fastMove.energyGain))) * pokemon[ai].fastMove.turns
+                        if pokemon[ai].stats.atk > pokemon[di].stats.atk { attackerTurnsToNextCharged -= 1 }
+                        if turnsToNextCharged >= attackerTurnsToNextCharged && pokemon[di].hp <= cycleDamage {
                             useShield = shieldDecision.value
                         }
                     }
@@ -308,19 +318,19 @@ nonisolated final class Battle {
 
                 // M8: let an external search force the decision for this shield
                 // opportunity, overriding the heuristic above.
-                let opportunity = shieldOpportunities[defender.index]
-                shieldOpportunities[defender.index] += 1
-                if let forced = shieldOverride?(defender.index, opportunity) {
+                let opportunity = shieldOpportunities[di]
+                shieldOpportunities[di] += 1
+                if let forced = shieldOverride?(di, opportunity) {
                     useShield = forced
-                } else if let learned = shieldPolicy?(defender.index, opportunity, move) {
+                } else if let learned = shieldPolicy?(di, opportunity, move) {
                     useShield = learned
                 }
 
-                shieldDecisionObserver?(defender.index, opportunity, move, useShield)
+                shieldDecisionObserver?(di, opportunity, move, useShield)
 
                 if useShield {
                     damage = 1
-                    defender.shields -= 1
+                    pokemon[di].shields -= 1
                     roundShieldUsed = true
                     defenderUsedShield = true
                     if roundChargedMoveUsed == 0 { time += chargedMinigameTime }
@@ -330,30 +340,30 @@ nonisolated final class Battle {
             // Mimikyu's Disguise blocks the first charged move (a free, one-time
             // shield), but busting it drops Mimikyu's Defense one stage for the
             // rest of the match (PvPoke's "Busted" form; carries across switches).
-            if !defenderUsedShield && defender.disguiseActive {
+            if !defenderUsedShield && pokemon[di].disguiseActive {
                 damage = 1
-                defender.disguiseActive = false
-                defender.statBuffs[1] = max(defender.statBuffs[1] - 1, -4)
+                pokemon[di].disguiseActive = false
+                pokemon[di].statBuffs[1] = max(pokemon[di].statBuffs[1] - 1, -4)
                 roundShieldUsed = true
                 if roundChargedMoveUsed == 0 { time += chargedMinigameTime }
             }
         } else {
-            attacker.energy = min(100, attacker.energy + move.energyGain)
+            pokemon[ai].energy = min(100, pokemon[ai].energy + move.energyGain)
         }
 
-        defender.hp = max(0, defender.hp - damage)
-        if defender.hp <= 0 { defender.faintSource = move.energy > 0 ? .charged : .fast }
+        pokemon[di].hp = max(0, pokemon[di].hp - damage)
+        if pokemon[di].hp <= 0 { pokemon[di].faintSource = move.energy > 0 ? .charged : .fast }
 
-        applyBuffs(move, attacker: attacker, defender: defender, shielded: defenderUsedShield)
+        applyBuffs(move, ai: ai, di: di, shielded: defenderUsedShield, chargedIdx: chargedIdx)
 
         if record {
             recordFrame(BattleEvent(
-                actor: attacker.index,
+                actor: ai,
                 kind: move.energy > 0 ? .charged : .fast,
                 moveId: move.moveId, damage: damage, shielded: defenderUsedShield))
-            if defender.hp <= 0 {
+            if pokemon[di].hp <= 0 {
                 recordFrame(BattleEvent(
-                    actor: defender.index, kind: .faint,
+                    actor: di, kind: .faint,
                     moveId: nil, damage: nil, shielded: false))
             }
         }
@@ -361,26 +371,33 @@ nonisolated final class Battle {
 
     /// Deterministic buff application (guaranteed buffs always apply; probabilistic
     /// buffs accumulate via a meter, matching PvPoke's `buffChanceModifier == -1` mode).
-    private func applyBuffs(_ move: BattleMove, attacker: BattlePokemon, defender: BattlePokemon, shielded: Bool) {
+    private func applyBuffs(_ move: BattleMove, ai: Int, di: Int, shielded: Bool, chargedIdx: Int?) {
         guard let buffs = move.buffs else { return }
 
         var apply = false
         if move.buffApplyChance >= 1 {
             apply = true
         } else if move.buffApplyChance > 0 {
-            let startCount = floor(move.buffApplyMeter)
-            move.buffApplyMeter += move.buffApplyChance
-            if floor(move.buffApplyMeter) > startCount { apply = true }
+            // Write buffApplyMeter back through the owning array so it persists.
+            if let chargedIdx {
+                let startCount = floor(pokemon[ai].chargedMoves[chargedIdx].buffApplyMeter)
+                pokemon[ai].chargedMoves[chargedIdx].buffApplyMeter += move.buffApplyChance
+                if floor(pokemon[ai].chargedMoves[chargedIdx].buffApplyMeter) > startCount { apply = true }
+            } else {
+                let startCount = floor(pokemon[ai].fastMove.buffApplyMeter)
+                pokemon[ai].fastMove.buffApplyMeter += move.buffApplyChance
+                if floor(pokemon[ai].fastMove.buffApplyMeter) > startCount { apply = true }
+            }
         }
         guard apply else { return }
 
         switch move.buffTarget {
         case "self":
-            attacker.applyStatBuffs(buffs)
+            pokemon[ai].applyStatBuffs(buffs)
         case "opponent":
-            if !shielded { defender.applyStatBuffs(buffs) } // shielding negates opponent debuffs
+            if !shielded { pokemon[di].applyStatBuffs(buffs) } // shielding negates opponent debuffs
         case "both":
-            attacker.applyStatBuffs(buffs)
+            pokemon[ai].applyStatBuffs(buffs)
         default:
             break
         }
@@ -391,7 +408,7 @@ nonisolated final class Battle {
     /// PvPoke's battle rating for `pokemon[index]` (0–1000, 500 = even).
     func battleRating(forIndex index: Int) -> Int {
         let me = pokemon[index]
-        let opp = opponent(of: index)
+        let opp = pokemon[index == 0 ? 1 : 0]
         let healthRating = Double(me.hp) / Double(me.stats.hp)
         let damageRating = Double(opp.stats.hp - opp.hp) / Double(opp.stats.hp)
         return Int(((healthRating + damageRating) * 500).rounded(.down))

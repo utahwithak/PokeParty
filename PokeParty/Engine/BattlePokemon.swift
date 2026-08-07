@@ -8,7 +8,7 @@
 
 import Foundation
 
-nonisolated final class BattlePokemon {
+nonisolated struct BattlePokemon {
     let speciesId: String
     let speciesName: String
     let types: [String]
@@ -24,13 +24,14 @@ nonisolated final class BattlePokemon {
     struct Stats: Hashable, Sendable { var atk: Double; var def: Double; var hp: Int }
     let stats: Stats
 
-    // Moves
-    let fastMove: BattleMove
+    // Moves — var so the engine can update scratch fields (damage, stab, dpe,
+    // buffApplyMeter) in-place without allocating new objects.
+    var fastMove: BattleMove
     /// All selected charged moves, in moveset order (the canonical index list).
-    let chargedMoves: [BattleMove]
-    /// Charged moves sorted/reordered for AI use.
+    var chargedMoves: [BattleMove]
+    /// Charged moves sorted/reordered for AI use (value copies of chargedMoves).
     private(set) var activeChargedMoves: [BattleMove] = []
-    private(set) var fastestChargedMove: BattleMove!
+    private(set) var fastestChargedMove: BattleMove?
     private(set) var bestChargedMove: BattleMove?
 
     // Mutable battle state
@@ -63,7 +64,6 @@ nonisolated final class BattlePokemon {
     let shadowAtkMult: Double
     let shadowDefMult: Double
 
-    private weak var opponent: BattlePokemon?
     /// Effectiveness of each attacking type against this Pokémon, indexed by
     /// `TypeChart.allTypes` position.
     private var typeEffectivenessCache: [Double] = []
@@ -87,7 +87,7 @@ nonisolated final class BattlePokemon {
 
     // MARK: - Type effectiveness (as defender)
 
-    private func precomputeTypeEffectiveness() {
+    private mutating func precomputeTypeEffectiveness() {
         let n = TypeChart.allTypes.count
         var cache = [Double](repeating: 1, count: n)
         for a in 0..<n {
@@ -124,7 +124,7 @@ nonisolated final class BattlePokemon {
         return (index == 0 ? stats.atk : stats.def) * multiplier
     }
 
-    func applyStatBuffs(_ buffs: [Int]) {
+    mutating func applyStatBuffs(_ buffs: [Int]) {
         for i in 0..<min(buffs.count, statBuffs.count) {
             statBuffs[i] = min(max(statBuffs[i] + buffs[i], -4), 4)
         }
@@ -141,33 +141,16 @@ nonisolated final class BattlePokemon {
         chargedMoves.first { $0.buffApplyChance >= 0.5 && $0.selfBuffing && !$0.selfDebuffing }
     }
 
+    /// Returns the index in `chargedMoves` that matches `move` by moveId.
     func chargedMoveIndex(_ move: BattleMove) -> Int {
-        chargedMoves.firstIndex { $0 === move } ?? 0
+        chargedMoves.firstIndex(where: { $0.moveId == move.moveId }) ?? 0
     }
 
     // MARK: - Reset & move initialization
 
-    func setOpponent(_ opponent: BattlePokemon) { self.opponent = opponent }
-
-    /// A fresh copy with the same config and start-state knobs, safe to mutate in a
-    /// throwaway battle without touching the original (used for switch-decision sims).
-    func clone() -> BattlePokemon {
-        let c = BattlePokemon(
-            speciesId: speciesId, speciesName: speciesName, types: types,
-            shadow: shadow, hasDisguise: hasDisguise, stats: stats,
-            fastMove: fastMove.clone(), chargedMoves: chargedMoves.map { $0.clone() })
-        c.startEnergy = startEnergy
-        c.startingShields = startingShields
-        c.startHp = startHp
-        c.startStatBuffs = startStatBuffs
-        c.startDisguiseConsumed = startDisguiseConsumed
-        c.baitShields = baitShields
-        c.optimizeMoveTiming = optimizeMoveTiming
-        c.farmEnergy = farmEnergy
-        return c
-    }
-
-    func reset() {
+    /// Resets battle state from the start* fields and initializes move scratch
+    /// values against `opponent`. Call before each 1v1 segment.
+    mutating func reset(opponent: BattlePokemon) {
         hp = startHp > 0 ? min(startHp, stats.hp) : stats.hp
         energy = startEnergy
         shields = startingShields
@@ -176,48 +159,54 @@ nonisolated final class BattlePokemon {
         hasActed = false
         faintSource = .none
         disguiseActive = hasDisguise && !startDisguiseConsumed
-        // Fast move included: a Battle may be re-simulated (ShieldSearch reuses
-        // one battle across its payoff matrix), so every meter must reset.
-        for m in chargedMoves where m.buffApplyChance > 0 && m.buffApplyChance < 1 {
-            m.buffApplyMeter = m.buffApplyChance == 0.5 ? 0 : m.buffApplyChance
+        // Reset probabilistic buff meters so ShieldSearch reruns are deterministic.
+        for i in chargedMoves.indices
+            where chargedMoves[i].buffApplyChance > 0 && chargedMoves[i].buffApplyChance < 1 {
+            chargedMoves[i].buffApplyMeter =
+                chargedMoves[i].buffApplyChance == 0.5 ? 0 : chargedMoves[i].buffApplyChance
         }
         if fastMove.buffApplyChance > 0 && fastMove.buffApplyChance < 1 {
             fastMove.buffApplyMeter = fastMove.buffApplyChance == 0.5 ? 0 : fastMove.buffApplyChance
         }
-        resetMoves()
+        resetMoves(opponent: opponent)
     }
 
-    private func initializeMove(_ move: BattleMove) {
-        move.stab = stab(for: move)
-        if let opponent {
-            move.damage = DamageCalculator.damage(self, opponent, move)
-        } else {
-            move.damage = Int((Double(move.power) * move.stab).rounded(.down))
-        }
-        guard move.energy > 0 else { return }
-        move.dpe = Double(move.damage) / Double(move.energy)
+    // Static so callers can pass an immutable snapshot of `self` as `attacker`,
+    // avoiding Swift's exclusivity conflict when writing back to self's move arrays.
+    private static func initializeMove(_ move: BattleMove, attacker: BattlePokemon, opponent: BattlePokemon) -> BattleMove {
+        var m = move
+        m.stab = attacker.stab(for: m)
+        m.damage = DamageCalculator.damage(attacker, opponent, m)
+        guard m.energy > 0 else { return m }
+        m.dpe = Double(m.damage) / Double(m.energy)
 
         // Factor a rough buff value into DPE for move-selection purposes.
-        if let buffs = move.buffs {
+        if let buffs = m.buffs {
             var buffEffect = 0.0
-            if move.buffTarget == "self", buffs.first ?? 0 > 0 {
-                buffEffect = Double(buffs[0]) * (80.0 / Double(move.energy))
-            } else if move.buffTarget == "opponent", buffs.count > 1, buffs[1] < 0 {
-                buffEffect = Double(abs(buffs[1])) * (80.0 / Double(move.energy))
+            if m.buffTarget == "self", buffs.first ?? 0 > 0 {
+                buffEffect = Double(buffs[0]) * (80.0 / Double(m.energy))
+            } else if m.buffTarget == "opponent", buffs.count > 1, buffs[1] < 0 {
+                buffEffect = Double(abs(buffs[1])) * (80.0 / Double(m.energy))
             }
             if buffEffect > 0 {
-                let multiplier = (Self.buffDivisor + buffEffect * move.buffApplyChance) / Self.buffDivisor
-                move.dpe *= multiplier
+                let multiplier = (buffDivisor + buffEffect * m.buffApplyChance) / buffDivisor
+                m.dpe *= multiplier
             }
         }
+        return m
     }
 
-    private func resetMoves() {
-        initializeMove(fastMove)
-        for m in chargedMoves { initializeMove(m) }
+    private mutating func resetMoves(opponent: BattlePokemon) {
+        // Snapshot self so initializeMove reads attacker state without conflicting
+        // with the writes back to fastMove and chargedMoves[i].
+        let attacker = self
+        fastMove = Self.initializeMove(fastMove, attacker: attacker, opponent: opponent)
+        for i in chargedMoves.indices {
+            chargedMoves[i] = Self.initializeMove(chargedMoves[i], attacker: attacker, opponent: opponent)
+        }
 
         activeChargedMoves = chargedMoves.sorted { $0.energy < $1.energy }
-        guard !activeChargedMoves.isEmpty else { bestChargedMove = nil; return }
+        guard !activeChargedMoves.isEmpty else { bestChargedMove = nil; fastestChargedMove = nil; return }
         fastestChargedMove = activeChargedMoves[0]
 
         if activeChargedMoves.count > 1 {
@@ -241,49 +230,49 @@ nonisolated final class BattlePokemon {
     }
 
     /// Port of Pokemon.js move-ordering heuristics (which move is the "bait").
-    private func reorderActiveChargedMoves() {
-        func swapFirstToBack() {
-            let m = activeChargedMoves.removeFirst()
-            activeChargedMoves.append(m)
-        }
+    private mutating func reorderActiveChargedMoves() {
         let a0 = activeChargedMoves[0]
         let a1 = activeChargedMoves[1]
 
         if a1.energy == a0.energy, !a1.selfDebuffing {
-            if a1.buffs != nil || a1.damage > a0.damage { swapFirstToBack(); return reorderTail() }
+            if a1.buffs != nil || a1.damage > a0.damage {
+                activeChargedMoves.append(activeChargedMoves.removeFirst())
+                reorderTail()
+                return
+            }
         }
         reorderTail()
     }
 
-    private func reorderTail() {
+    private mutating func reorderTail() {
         guard activeChargedMoves.count > 1 else { return }
         let a0 = activeChargedMoves[0]
         let a1 = activeChargedMoves[1]
 
         if a1.energy == a0.energy, a0.buffs != nil, a1.buffs != nil, !a1.selfDebuffing,
            a1.buffApplyChance > a0.buffApplyChance {
-            let m = activeChargedMoves.removeFirst(); activeChargedMoves.append(m)
+            activeChargedMoves.append(activeChargedMoves.removeFirst())
         }
 
         let b0 = activeChargedMoves[0], b1 = activeChargedMoves[1]
         if b1.energy - b0.energy <= 10, !b1.selfDebuffing,
            b1.selfBuffing, b0.dpe - b1.dpe < 0.3 {
-            let m = activeChargedMoves.removeFirst(); activeChargedMoves.append(m)
+            activeChargedMoves.append(activeChargedMoves.removeFirst())
         }
 
         let c0 = activeChargedMoves[0], c1 = activeChargedMoves[1]
         if c1.energy - c0.energy <= 10, c0.selfAttackDebuffing, !c1.selfDebuffing {
-            let m = activeChargedMoves.removeFirst(); activeChargedMoves.append(m)
+            activeChargedMoves.append(activeChargedMoves.removeFirst())
         }
 
         let d0 = activeChargedMoves[0], d1 = activeChargedMoves[1]
         if d1.energy - d0.energy <= 10, d0.selfDebuffing, d0.energy > 50, !d1.selfDebuffing {
-            let m = activeChargedMoves.removeFirst(); activeChargedMoves.append(m)
+            activeChargedMoves.append(activeChargedMoves.removeFirst())
         }
 
         let e0 = activeChargedMoves[0], e1 = activeChargedMoves[1]
         if e1.energy - e0.energy <= 5, e1.selfBuffing {
-            let m = activeChargedMoves.removeFirst(); activeChargedMoves.append(m)
+            activeChargedMoves.append(activeChargedMoves.removeFirst())
         }
     }
 }

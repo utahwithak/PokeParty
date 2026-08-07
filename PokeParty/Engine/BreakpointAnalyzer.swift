@@ -402,15 +402,13 @@ nonisolated enum BreakpointAnalyzer {
         opponent: Opponent,
         movesById: [String: Move]
     ) -> (dealt: (move: String, damage: Int), taken: (move: String, damage: Int))? {
-        guard let me = MatchupSimulator.makeBattlePokemon(subject, stats: stats,
+        guard var me = MatchupSimulator.makeBattlePokemon(subject, stats: stats,
                                                           movesById: movesById, shields: 1),
-              let opp = MatchupSimulator.makeBattlePokemon(opponent.combatant, stats: opponent.stats,
+              var opp = MatchupSimulator.makeBattlePokemon(opponent.combatant, stats: opponent.stats,
                                                            movesById: movesById, shields: 1)
         else { return nil }
-        me.setOpponent(opp)
-        opp.setOpponent(me)
-        me.reset()
-        opp.reset()
+        me.reset(opponent: opp)
+        opp.reset(opponent: me)
         return ((me.fastMove.name, me.fastMove.damage),
                 (opp.fastMove.name, opp.fastMove.damage))
     }

@@ -45,7 +45,7 @@ nonisolated enum MatchupSimulator {
         let chargedData = c.chargedMoveIds.compactMap { movesById[$0] }
         guard !chargedData.isEmpty else { return nil }
 
-        let bp = BattlePokemon(
+        var bp = BattlePokemon(
             speciesId: c.species.speciesId,
             speciesName: c.species.speciesName,
             types: c.species.types,

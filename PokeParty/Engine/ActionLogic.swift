@@ -37,7 +37,8 @@ nonisolated enum ActionLogic {
         let fastDamage = DamageCalculator.damage(poke, opponent, poke.fastMove)
 
         if poke.activeChargedMoves.isEmpty { return nil }
-        if poke.energy < poke.fastestChargedMove.energy || poke.farmEnergy { return nil }
+        guard let fastestChargedMove = poke.fastestChargedMove else { return nil }
+        if poke.energy < fastestChargedMove.energy || poke.farmEnergy { return nil }
 
         var chargedMoveReady: [Int] = []
         for m in poke.activeChargedMoves {
@@ -51,6 +52,7 @@ nonisolated enum ActionLogic {
         // MARK: Survival lookahead — how many turns until the opponent can KO us.
         var turnsToLive = infinity
         struct SurvState { var hp: Int; var opEnergy: Int; var turn: Int; var shields: Int }
+        let opponentFastest = opponent.fastestChargedMove
         var stack: [SurvState] = []
         if opponent.cooldown != 0 {
             stack.append(SurvState(hp: poke.hp - oppFastDamage, opEnergy: opponent.energy + opponent.fastMove.energyGain, turn: opponent.cooldown / 500, shields: poke.shields))
@@ -70,8 +72,8 @@ nonisolated enum ActionLogic {
             }
 
             if curr.shields != 0 {
-                if curr.opEnergy >= opponent.fastestChargedMove.energy {
-                    stack.append(SurvState(hp: curr.hp - 1, opEnergy: curr.opEnergy - opponent.fastestChargedMove.energy, turn: curr.turn + 1, shields: curr.shields - 1))
+                if let opFastest = opponentFastest, curr.opEnergy >= opFastest.energy {
+                    stack.append(SurvState(hp: curr.hp - 1, opEnergy: curr.opEnergy - opFastest.energy, turn: curr.turn + 1, shields: curr.shields - 1))
                 }
             } else {
                 var koed = false
@@ -150,9 +152,9 @@ nonisolated enum ActionLogic {
 
         // MARK: Pop an opponent's Disguise (Mimikyu) ASAP with the cheapest move.
         if opponent.disguiseActive && opponent.shields == 0 {
-            if poke.energy >= poke.fastestChargedMove.energy && !poke.fastestChargedMove.selfDebuffing {
+            if poke.energy >= fastestChargedMove.energy && !fastestChargedMove.selfDebuffing {
                 return TimelineAction(type: .charged, actor: poke.index, turn: turns,
-                                      value: poke.chargedMoveIndex(poke.fastestChargedMove), priority: poke.priority)
+                                      value: poke.chargedMoveIndex(fastestChargedMove), priority: poke.priority)
             }
         }
 
@@ -180,8 +182,8 @@ nonisolated enum ActionLogic {
 
                 if opponent.shields == 0 {
                     for m in poke.activeChargedMoves {
-                        m.damage = DamageCalculator.damage(poke, opponent, m)
-                        if poke.energy >= m.energy && m.damage >= opponent.hp { optimizeTiming = false; break }
+                        let dmg = DamageCalculator.damage(poke, opponent, m)
+                        if poke.energy >= m.energy && dmg >= opponent.hp { optimizeTiming = false; break }
                     }
                 }
 
@@ -189,8 +191,8 @@ nonisolated enum ActionLogic {
                     let fastMovesFromCharged = Int(ceil(Double(m.energy - opponent.energy) / Double(opponent.fastMove.energyGain)))
                     let fastMovesInFastMove = poke.fastMove.cooldown / opponent.fastMove.cooldown
                     let turnsFromMove = fastMovesFromCharged * opponent.fastMove.turns + 1
-                    m.damage = DamageCalculator.damage(opponent, poke, m)
-                    var moveDamage = m.damage + opponent.fastMove.damage * fastMovesInFastMove
+                    let mDamage = DamageCalculator.damage(opponent, poke, m)
+                    var moveDamage = mDamage + opponent.fastMove.damage * fastMovesInFastMove
                     if poke.shields > 0 { moveDamage = 1 + opponent.fastMove.damage * fastMovesInFastMove }
                     if turnsFromMove <= poke.fastMove.turns && moveDamage >= poke.hp { optimizeTiming = false; break }
                 }
@@ -207,7 +209,7 @@ nonisolated enum ActionLogic {
         let bestMove = poke.bestChargedMove ?? poke.activeChargedMoves[0]
         let bestCycleDamage = bestChargedDamage + fastDamage * Int(ceil(Double(bestMove.energy) / Double(poke.fastMove.energyGain)))
         var minimumCycleThreshold = 2.0
-        if bestMove.selfDebuffing && bestMove.energy > poke.fastestChargedMove.energy && bestMove.dpe / poke.fastestChargedMove.dpe < 2 {
+        if bestMove.selfDebuffing && bestMove.energy > fastestChargedMove.energy && bestMove.dpe / fastestChargedMove.dpe < 2 {
             minimumCycleThreshold = 1.1
         }
         if Double(opponent.hp) / Double(bestCycleDamage) > minimumCycleThreshold {
@@ -345,11 +347,10 @@ nonisolated enum ActionLogic {
 
             for (n, move) in poke.activeChargedMoves.enumerated() {
                 // Damage with this state's attack buffs applied.
-                let savedBuffs = poke.statBuffs
-                poke.applyStatBuffs([curr.buffs, 0])
-                let moveDamage = DamageCalculator.damage(poke, opponent, move)
-                let fastSimulatedDamage = DamageCalculator.damage(poke, opponent, poke.fastMove)
-                poke.statBuffs = savedBuffs
+                var tempPoke = poke
+                tempPoke.applyStatBuffs([curr.buffs, 0])
+                let moveDamage = DamageCalculator.damage(tempPoke, opponent, move)
+                let fastSimulatedDamage = DamageCalculator.damage(tempPoke, opponent, poke.fastMove)
 
                 // Farm-down terminal state (only fast moves to finish).
                 let movesToFarmDown = Int(ceil(Double(curr.oppHealth) / Double(fastSimulatedDamage)))
@@ -450,6 +451,9 @@ nonisolated enum ActionLogic {
     // MARK: - Shielding decision
 
     static func wouldShield(_ battle: Battle, _ attacker: BattlePokemon, _ defender: BattlePokemon, _ move: BattleMove) -> ShieldDecision {
+        var attacker = attacker
+        var defender = defender
+        var move = move
         var useShield = false
         var shieldWeight = 1
         let noShieldWeight = 2

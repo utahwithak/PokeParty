@@ -146,7 +146,7 @@ nonisolated enum ShieldSearch {
     /// Pokémon's *current* carried state (used per 3v3 segment). Evaluates on clones
     /// and does not mutate the originals; uses each mon's `startingShields` as its pool.
     static func optimalSolution(_ a: BattlePokemon, _ b: BattlePokemon) -> Solution {
-        solve(a: a.clone(), b: b.clone(),
+        solve(a: a, b: b,
               polA: policies(shields: a.startingShields),
               polB: policies(shields: b.startingShields))
     }
