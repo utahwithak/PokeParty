@@ -11,6 +11,9 @@ import SwiftUI
 struct PokemonDetailView: View {
     let entry: RankingEntry
     let store: RankingsStore
+    var bench: BenchStore
+    /// Called after a bench entry is created so the caller can navigate to it.
+    var onAddToBench: ((BenchEntry.ID) -> Void)? = nil
 
     @State private var yourShields = 1
     @State private var opponentShields = 1
@@ -34,9 +37,12 @@ struct PokemonDetailView: View {
     /// The opponent whose battle timeline is being viewed (drives the sheet).
     @State private var timelineOpponent: RankingEntry.Matchup?
 
-    init(entry: RankingEntry, store: RankingsStore) {
+    init(entry: RankingEntry, store: RankingsStore, bench: BenchStore,
+         onAddToBench: ((BenchEntry.ID) -> Void)? = nil) {
         self.entry = entry
         self.store = store
+        self.bench = bench
+        self.onAddToBench = onAddToBench
         _fastMoveId = State(initialValue: entry.moveset.first ?? "")
         _charged1Id = State(initialValue: entry.moveset.count > 1 ? entry.moveset[1] : "")
         _charged2Id = State(initialValue: entry.moveset.count > 2 ? entry.moveset[2] : "")
@@ -88,6 +94,30 @@ struct PokemonDetailView: View {
         }
         .navigationTitle(entry.speciesName)
         .inlineNavigationTitle()
+        .toolbar {
+            ToolbarItem {
+                Menu {
+                    ForEach(League.allCases) { league in
+                        let added = bench.contains(speciesId: entry.speciesId, league: league)
+                        Button {
+                            let added = bench.addFromRankings(
+                                speciesId: entry.speciesId, store: store, league: league)
+                            Task { @MainActor in onAddToBench?(added.id) }
+                        } label: {
+                            if added {
+                                Label(league.title + " League", systemImage: "checkmark")
+                            } else {
+                                Text(league.title + " League")
+                            }
+                        }
+                        .disabled(added)
+                    }
+                } label: {
+                    Label("Add to Bench", systemImage: "tray.and.arrow.down")
+                }
+                .help("Add \(entry.speciesName) to your bench for a specific league")
+            }
+        }
         // Shields and moveset change the outcome, so cached results become stale.
         .onChange(of: yourShields) { simulated = nil }
         .onChange(of: opponentShields) { simulated = nil }
@@ -99,48 +129,16 @@ struct PokemonDetailView: View {
         }
     }
 
-    /// The battle timeline for one matchup, re-run with recording on.
+    /// All 9 shield scenarios for one matchup.
     @ViewBuilder
     private func timelineSheet(for matchup: RankingEntry.Matchup) -> some View {
-        NavigationStack {
-            Group {
-                if let replay = store.battleReplay(
-                    for: entry, fastMoveId: fastMoveId, chargedMoveIds: chargedMoveIds,
-                    opponentId: matchup.opponent,
-                    yourShields: yourShields, opponentShields: opponentShields) {
-                    ScrollView {
-                        BattleTimelineView(
-                            log: replay.log,
-                            sideA: BattleParticipant(name: entry.speciesName,
-                                                     types: pokemon?.displayTypes ?? [],
-                                                     shadow: pokemon?.isShadow ?? false),
-                            sideB: opponentParticipant(matchup.opponent),
-                            move: { store.move(id: $0) },
-                            scenario: replay.scenario)
-                        .padding(20)
-                    }
-                } else {
-                    ContentUnavailableView("Couldn't build battle", systemImage: "exclamationmark.triangle")
-                }
-            }
-            .navigationTitle("\(entry.speciesName) vs \(store.name(forSpeciesId: matchup.opponent))")
-            .inlineNavigationTitle()
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { timelineOpponent = nil }
-                }
-            }
-        }
-        .frame(minWidth: 560, minHeight: 520)
-    }
-
-    private func opponentParticipant(_ id: String) -> BattleParticipant {
-        let p = store.pokemonById[id]
-            ?? (id.hasSuffix("_shadow") ? store.pokemonById[String(id.dropLast("_shadow".count))] : nil)
-        return BattleParticipant(
-            name: store.name(forSpeciesId: id),
-            types: p?.displayTypes ?? [],
-            shadow: (p?.isShadow ?? false) || id.hasSuffix("_shadow"))
+        MatchupDetailSheetView(
+            entry: entry,
+            fastMoveId: fastMoveId,
+            chargedMoveIds: chargedMoveIds,
+            matchup: matchup,
+            store: store
+        ) { timelineOpponent = nil }
     }
 
     // MARK: - Live simulation controls
@@ -524,5 +522,45 @@ private struct MoveStat: View {
         .padding(.vertical, 3)
         .background(color, in: Capsule())
         .help(help)
+    }
+}
+
+// MARK: - Full 9-scenario matchup sheet
+
+/// Reuses `MatchupDetailView` (grid + stacked timelines + scrubber) for the
+/// counter/win-row sheet, pre-populating both sides from the tapped matchup.
+private struct MatchupDetailSheetView: View {
+    let entry: RankingEntry
+    let fastMoveId: String
+    let chargedMoveIds: [String]
+    let matchup: RankingEntry.Matchup
+    let store: RankingsStore
+    let onDismiss: () -> Void
+
+    @State private var model = MatchupModel()
+
+    var body: some View {
+        NavigationStack {
+            MatchupDetailView(store: store, model: model)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done", action: onDismiss)
+                    }
+                }
+        }
+        .frame(minWidth: 580, minHeight: 640)
+        .onAppear {
+            guard !model.hasBothSides else { return }
+            let shadow = store.pokemonById[entry.speciesId]?.isShadow ?? false
+            let memberA = TeamMember(
+                speciesId: entry.speciesId,
+                fastMoveId: fastMoveId,
+                chargedMoveIds: chargedMoveIds,
+                shadow: shadow)
+            model.set(memberA, side: .a)
+            if let memberB = model.makeMember(speciesId: matchup.opponent, store: store) {
+                model.set(memberB, side: .b)
+            }
+        }
     }
 }

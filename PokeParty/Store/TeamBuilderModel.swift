@@ -139,10 +139,18 @@ final class TeamBuilderModel {
             let combatant = MatchupSimulator.Combatant(
                 species: species, shadow: member.shadow,
                 fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
-            // Prefer the IV-optimal stats already in the ranking data; only fall
-            // back to the (expensive) IV optimizer when the mon isn't ranked.
-            let stats = Self.rankedStats(speciesId: member.speciesId, store: store)
-                ?? MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap)
+            // If the member has specific IVs (from the player's bench), compute
+            // stats for those exact IVs at the best level under the cap.
+            // Otherwise prefer the IV-optimal stats from ranking data, falling
+            // back to the full optimizer for unranked mons.
+            let levelCap: Double = member.isBestBuddy ? 51 : 50
+            let stats: BattlePokemon.Stats?
+            if let ivs = member.ivs {
+                stats = Self.statsForIVs(species: species, ivs: ivs, cpCap: cpCap, levelCap: levelCap)
+            } else {
+                stats = Self.rankedStats(speciesId: member.speciesId, store: store)
+                    ?? MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap, levelCap: levelCap)
+            }
             guard let stats else { continue }
             team.append(combatant)
             teamStats.append(stats)
@@ -224,7 +232,8 @@ final class TeamBuilderModel {
         }
     }
 
-    /// Builds combatants + IV-optimal stats for a set of members.
+    /// Builds combatants + stats for a set of members. Members with specific IVs
+    /// (from the player's bench) use those IVs; others use optimal / ranked stats.
     private static func buildTeam(
         _ members: [TeamMember], store: RankingsStore
     ) -> (combatants: [MatchupSimulator.Combatant], stats: [BattlePokemon.Stats])? {
@@ -235,13 +244,31 @@ final class TeamBuilderModel {
             guard let species = store.pokemonById[member.speciesId] else { continue }
             let c = MatchupSimulator.Combatant(species: species, shadow: member.shadow,
                                                fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
-            let s = rankedStats(speciesId: member.speciesId, store: store)
-                ?? MatchupSimulator.optimalStats(for: c, cpCap: cap)
+            let levelCap: Double = member.isBestBuddy ? 51 : 50
+            let s: BattlePokemon.Stats?
+            if let ivs = member.ivs {
+                s = statsForIVs(species: species, ivs: ivs, cpCap: cap, levelCap: levelCap)
+            } else {
+                s = rankedStats(speciesId: member.speciesId, store: store)
+                    ?? MatchupSimulator.optimalStats(for: c, cpCap: cap, levelCap: levelCap)
+            }
             guard let s else { continue }
             combatants.append(c)
             stats.append(s)
         }
         return combatants.isEmpty ? nil : (combatants, stats)
+    }
+
+    /// Computes battle stats for a specific IV spread at the best level under the CP cap.
+    private static func statsForIVs(
+        species: Pokemon, ivs: IVs, cpCap: Int, levelCap: Double = 50
+    ) -> BattlePokemon.Stats? {
+        guard let r = IVCalculator.stats(
+            baseAtk: species.baseStats.atk,
+            baseDef: species.baseStats.def,
+            baseHp: species.baseStats.hp,
+            ivs: ivs, cpCap: cpCap, levelCap: levelCap) else { return nil }
+        return BattlePokemon.Stats(atk: r.atk, def: r.def, hp: r.hp)
     }
 
     /// The IV-optimal stats for a species from the loaded ranking data, if present.

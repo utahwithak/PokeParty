@@ -128,9 +128,9 @@ private struct LeaderboardRow: View {
                 RatingBar(rating: Int(team.averageRating.rounded()))
                     .frame(maxWidth: 160)
                 if let metaScore = team.metaScore {
-                    Text("vs meta \(metaScore, format: .percent.precision(.fractionLength(0)))")
+                    Text("vs meta \(metaScore, format: .percent.precision(.fractionLength(1)))")
                         .font(.caption.monospacedDigit())
-                        .foregroundStyle(metaScore >= 0.5 ? .primary : .secondary)
+                        .foregroundStyle(metaScore >= 0.5 ? Theme.win : Theme.loss)
                         .help("Expected score against the Nash-equilibrium meta of the top teams — no credit for farming weak teams.")
                 }
                 if (team.equilibriumWeight ?? 0) >= 0.02 {

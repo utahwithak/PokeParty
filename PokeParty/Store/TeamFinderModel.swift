@@ -153,7 +153,6 @@ final class TeamFinderModel {
         let learnedSwitches = learnedSwitches
         let movesById = store.movesById
         let pokemonById = store.pokemonById
-
         let method = method
         let restarts = restarts
 
@@ -284,7 +283,7 @@ final class TeamFinderModel {
     /// The top `poolSize` ranked Pokémon as battle-ready candidates, using the
     /// recommended moveset and IV-optimal stats already in the ranking data
     /// (the IV optimizer only runs for the rare unranked-stats entry).
-    private static func buildPool(
+    static func buildPool(
         entries: [RankingEntry], poolSize: Int, cpCap: Int,
         pokemonById: [String: Pokemon]
     ) -> [TeamFinder.Candidate] {
@@ -320,6 +319,51 @@ final class TeamFinderModel {
                 switchesScore: entry.switchesScore))
         }
         return pool
+    }
+
+    /// Builds a `Candidate` pool from the player's bench entries for a given CP cap.
+    /// IVs are used when present (with Best Buddy level cap if flagged); otherwise
+    /// optimal stats are computed from the IV optimizer.
+    static func buildBenchPool(
+        entries: [BenchEntry], cpCap: Int, pokemonById: [String: Pokemon]
+    ) -> [TeamFinder.Candidate] {
+        entries.compactMap { entry in
+            guard let r = resolve(speciesId: entry.speciesId, pokemonById: pokemonById) else { return nil }
+            let combatant = MatchupSimulator.Combatant(
+                species: r.species, shadow: entry.shadow,
+                fastMoveId: entry.fastMoveId,
+                chargedMoveIds: entry.chargedMoveIds)
+            let levelCap: Double = entry.isBestBuddy ? 51 : 50
+            let stats: BattlePokemon.Stats
+            if let ivs = entry.ivs,
+               let s = IVCalculator.stats(
+                   baseAtk: r.species.baseStats.atk,
+                   baseDef: r.species.baseStats.def,
+                   baseHp: r.species.baseStats.hp,
+                   ivs: ivs, cpCap: cpCap, levelCap: levelCap) {
+                stats = BattlePokemon.Stats(atk: s.atk, def: s.def, hp: s.hp)
+            } else if let s = MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap, levelCap: levelCap) {
+                stats = s
+            } else {
+                return nil
+            }
+            let member = TeamMember(
+                speciesId: r.species.speciesId,
+                fastMoveId: entry.fastMoveId,
+                chargedMoveIds: entry.chargedMoveIds,
+                shadow: entry.shadow,
+                ivs: entry.ivs,
+                isBestBuddy: entry.isBestBuddy)
+            return TeamFinder.Candidate(
+                member: member,
+                speciesName: r.species.speciesName,
+                types: r.species.types.filter { $0 != "none" },
+                shadow: entry.shadow,
+                familyId: r.species.family?.id,
+                dex: r.species.dex,
+                combatant: combatant,
+                stats: stats)
+        }
     }
 
     /// Resolves a ranking-entry species id to its species + shadow flag.

@@ -10,7 +10,7 @@
 import Foundation
 
 /// A set of individual values (0–15 each).
-nonisolated struct IVs: Hashable {
+nonisolated struct IVs: Hashable, Codable {
     var atk: Int
     var def: Int
     var hp: Int
@@ -177,6 +177,54 @@ nonisolated enum IVCalculator {
             }
         }
         return best
+    }
+
+    /// The highest CP achievable for a specific IV combination under `cpCap`.
+    /// Returns nil if the Pokémon exceeds the cap at every level.
+    static func maxCP(
+        baseAtk: Int, baseDef: Int, baseHp: Int,
+        ivs: IVs, cpCap: Int, levelCap: Double = defaultLevelCap
+    ) -> Int? {
+        let maxJ = Int((levelCap - 1) * 2)
+        guard maxJ >= 0, maxJ < cpms.count else { return nil }
+        var lo = 0, hi = maxJ, bestJ = -1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if cp(baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, ivs: ivs, cpm: cpms[mid]) <= cpCap {
+                bestJ = mid; lo = mid + 1
+            } else { hi = mid - 1 }
+        }
+        guard bestJ >= 0 else { return nil }
+        return cp(baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, ivs: ivs, cpm: cpms[bestJ])
+    }
+
+    /// The effective battle stats for a specific IV combination at the highest
+    /// legal level under `cpCap`. Returns nil if the Pokémon exceeds the cap at
+    /// every level (e.g. a high-IV Mewtwo in Great League).
+    static func stats(
+        baseAtk: Int, baseDef: Int, baseHp: Int,
+        ivs: IVs, cpCap: Int, levelCap: Double = defaultLevelCap
+    ) -> (atk: Double, def: Double, hp: Int)? {
+        let maxJ = Int((levelCap - 1) * 2)
+        guard maxJ >= 0, maxJ < cpms.count else { return nil }
+
+        var lo = 0, hi = maxJ, bestJ = -1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if cp(baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, ivs: ivs, cpm: cpms[mid]) <= cpCap {
+                bestJ = mid; lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        guard bestJ >= 0 else { return nil }
+
+        let m = cpms[bestJ]
+        return (
+            atk: m * Double(baseAtk + ivs.atk),
+            def: m * Double(baseDef + ivs.def),
+            hp: max(Int((m * Double(baseHp + ivs.hp)).rounded(.down)), 10)
+        )
     }
 
     // MARK: - Ranking

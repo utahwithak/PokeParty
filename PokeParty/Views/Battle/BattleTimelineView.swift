@@ -15,6 +15,8 @@ struct BattleParticipant: Hashable {
     let name: String
     let types: [String]
     var shadow: Bool = false
+    /// IDs of this side's charged moves; drives the energy-circle display.
+    var chargedMoveIds: [String] = []
 }
 
 struct BattleTimelineView: View {
@@ -127,15 +129,22 @@ struct BattleTimelineView: View {
             }
             TypeBadgeRow(types: p.types)
 
-            residualBar("HP", value: frame.hp[side], max: maxHp(side), color: .green,
+            residualBar("HP", value: frame.hp[side], max: maxHp(side),
+                        color: hpBarColor(value: frame.hp[side], max: maxHp(side)),
                         text: "\(frame.hp[side])")
-            residualBar("Energy", value: frame.energy[side], max: 100, color: .yellow,
-                        text: "\(frame.energy[side])")
+            chargeMovesRow(p, side: side, energy: frame.energy[side])
             shieldRow(frame.shields[side])
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func hpBarColor(value: Int, max: Int) -> Color {
+        let f = max > 0 ? Double(value) / Double(max) : 0
+        if f > 0.5 { return .green }
+        if f > 0.25 { return .orange }
+        return .red
     }
 
     private func residualBar(_ label: String, value: Int, max: Int, color: Color, text: String) -> some View {
@@ -169,10 +178,88 @@ struct BattleTimelineView: View {
         }
     }
 
+    private func chargeMovesRow(_ p: BattleParticipant, side: Int, energy: Int) -> some View {
+        HStack(spacing: 6) {
+            Text("Charged").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            Spacer()
+            HStack(spacing: 10) {
+                if p.chargedMoveIds.isEmpty {
+                    // Fallback: plain energy bar when move IDs aren't provided.
+                    Capsule().fill(Color.primary.opacity(0.08))
+                        .overlay(alignment: .leading) {
+                            Capsule().fill(Color.yellow)
+                                .scaleEffect(x: Double(energy) / 100.0, y: 1, anchor: .leading)
+                        }
+                        .frame(height: 8)
+                } else {
+                    ForEach(p.chargedMoveIds.prefix(2), id: \.self) { id in
+                        chargeCircle(moveId: id, energy: energy, side: side)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func chargeCircle(moveId: String, energy: Int, side: Int) -> some View {
+        if let m = move(moveId), m.energy > 0 {
+            let charges = energy / m.energy
+            // Partial progress toward the NEXT charge (0…1).
+            let partial = Double(energy % m.energy) / Double(m.energy)
+            let typeColor = PokemonType.color(for: m.type)
+            let abbrev = chargeAbbrev(m.name)
+            let hasReady = charges >= 1
+            // Base circle opacity grows slightly with each stacked charge.
+            let baseOpacity = 0.38 + Double(min(charges - 1, 2)) * 0.10
+
+            VStack(spacing: 2) {
+                ZStack(alignment: .bottom) {
+                    // Faint dim background.
+                    Circle().fill(typeColor.opacity(0.10))
+
+                    if hasReady {
+                        // Light full circle = at least one charge ready.
+                        Circle().fill(typeColor.opacity(baseOpacity))
+                        // Darker partial fill rising from the bottom = building toward
+                        // the next charge. Hidden until partial > 0.
+                        if partial > 0 {
+                            Rectangle()
+                                .fill(typeColor.opacity(0.72))
+                                .frame(height: 30 * partial)
+                                .animation(.easeOut(duration: 0.12), value: energy)
+                        }
+                    } else {
+                        // No charge yet — just the building fill.
+                        Rectangle()
+                            .fill(typeColor.opacity(0.55))
+                            .frame(height: 30 * partial)
+                            .animation(.easeOut(duration: 0.12), value: energy)
+                    }
+
+                    Text(abbrev)
+                        .font(.system(size: 7, weight: .bold, design: .rounded))
+                        .foregroundStyle(hasReady ? .white : (partial > 0.55 ? .white : typeColor))
+                        .padding(.bottom, 2)
+                }
+                .frame(width: 30, height: 30)
+                .clipShape(Circle())
+                Text("\(energy)/\(m.energy)")
+                    .font(.system(size: 7).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func chargeAbbrev(_ name: String) -> String {
+        let words = name.split(separator: " ")
+        if words.count > 1 { return words.prefix(2).map { String($0.prefix(1)) }.joined() }
+        return String(name.prefix(3))
+    }
+
     // MARK: - Key-frame strip (one lane per Pokémon, columns = turns)
 
-    private let colWidth: CGFloat = 13
-    private let laneHeight: CGFloat = 30
+    private let colWidth: CGFloat = 8
+    private let laneHeight: CGFloat = 22
     private func laneColor(_ side: Int) -> Color { side == 0 ? .blue : .orange }
 
     private var keyframeStrip: some View {
@@ -244,9 +331,9 @@ struct BattleTimelineView: View {
         let color = laneColor(side)
         switch kind {
         case .charged:
-            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 9, height: 24)
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 6, height: 17)
         case .fast:
-            RoundedRectangle(cornerRadius: 2).fill(color.opacity(0.65)).frame(width: 5, height: 11)
+            RoundedRectangle(cornerRadius: 1).fill(color.opacity(0.65)).frame(width: 3, height: 8)
         case .faint:
             Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(Theme.loss)
         case .switchIn:
@@ -340,7 +427,11 @@ struct BattleTimelineView: View {
     let scenario = ShieldSearch.Solution(
         ratingA: 812, policyA: [1], policyB: [0],
         scenarioWins: 9, scenarioLosses: 2, scenarioTies: 0,
-        scenarioCount: 11, bestCaseA: 900, worstCaseA: 420)
+        scenarioCount: 11, bestCaseA: 900, worstCaseA: 420,
+        scenarios: [
+            .init(policyA: [1], policyB: [0], ratingA: 812),
+            .init(policyA: [0], policyB: [0], ratingA: 490),
+        ])
     return ScrollView {
         BattleTimelineView(
             log: log,

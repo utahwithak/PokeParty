@@ -23,8 +23,8 @@ final class MatchupModel {
     private(set) var memberB: TeamMember?
 
     /// The shield scenario currently shown (shields available to each side).
-    var shieldsA = 1
-    var shieldsB = 1
+    var shieldsA = 1 { didSet { if oldValue != shieldsA { clearSubScenario() } } }
+    var shieldsB = 1 { didSet { if oldValue != shieldsB { clearSubScenario() } } }
 
     /// One solved battle per shield scenario, indexed [shieldsA][shieldsB].
     struct Results: Sendable {
@@ -36,18 +36,58 @@ final class MatchupModel {
     private(set) var isSimulating = false
     private var simTask: Task<Void, Never>?
 
+    // Sub-scenario state: a non-optimal timing choice replayed on demand.
+    private(set) var selectedSubScenario: ShieldSearch.ScenarioItem?
+    private(set) var selectedSubLog: BattleLog?
+    private var replayTask: Task<Void, Never>?
+
+    // Retained so sub-scenario replays can skip re-preparing.
+    private typealias PreparedSide = (combatant: MatchupSimulator.Combatant, stats: BattlePokemon.Stats)
+    private var preparedA: PreparedSide?
+    private var preparedB: PreparedSide?
+
     var hasBothSides: Bool { memberA != nil && memberB != nil }
 
     func member(for side: Side) -> TeamMember? {
         side == .a ? memberA : memberB
     }
 
-    /// The solution + recorded log for the currently selected shield scenario.
+    /// The solution + recorded log for the currently shown battle.
+    /// Uses the sub-scenario log when one is selected.
     var current: (solution: ShieldSearch.Solution, log: BattleLog)? {
         guard let results,
               results.solutions.indices.contains(shieldsA),
               results.solutions[shieldsA].indices.contains(shieldsB) else { return nil }
-        return (results.solutions[shieldsA][shieldsB], results.logs[shieldsA][shieldsB])
+        let sol = results.solutions[shieldsA][shieldsB]
+        let log = selectedSubLog ?? results.logs[shieldsA][shieldsB]
+        return (sol, log)
+    }
+
+    // MARK: - Sub-scenario replay
+
+    func selectSubScenario(_ item: ShieldSearch.ScenarioItem, using store: RankingsStore) {
+        guard let a = preparedA, let b = preparedB else { return }
+        replayTask?.cancel()
+        let movesById = store.movesById
+        let sA = shieldsA, sB = shieldsB
+        let pA = item.policyA, pB = item.policyB
+        selectedSubScenario = item
+        selectedSubLog = nil
+        replayTask = Task {
+            let log = await Task.detached {
+                ShieldSearch.play(a.combatant, statsA: a.stats, b.combatant, statsB: b.stats,
+                                  movesById: movesById, shieldsA: sA, shieldsB: sB,
+                                  policyA: pA, policyB: pB, record: true)?.log
+            }.value
+            guard !Task.isCancelled else { return }
+            self.selectedSubLog = log
+        }
+    }
+
+    func clearSubScenario() {
+        replayTask?.cancel()
+        selectedSubScenario = nil
+        selectedSubLog = nil
     }
 
     // MARK: - Editing
@@ -95,8 +135,13 @@ final class MatchupModel {
 
     private func invalidate() {
         simTask?.cancel()
+        replayTask?.cancel()
         results = nil
         isSimulating = false
+        selectedSubScenario = nil
+        selectedSubLog = nil
+        preparedA = nil
+        preparedB = nil
     }
 
     // MARK: - Building members from the data
@@ -133,6 +178,10 @@ final class MatchupModel {
         let movesById = store.movesById
         isSimulating = true
         results = nil
+        selectedSubScenario = nil
+        selectedSubLog = nil
+        preparedA = sideA
+        preparedB = sideB
         simTask = Task {
             let result = await Task.detached {
                 Self.solveAllScenarios(a: sideA, b: sideB, movesById: movesById)

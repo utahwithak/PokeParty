@@ -9,7 +9,7 @@ import SwiftUI
 
 /// A Pokémon GO PvP league. The CP cap is also the value PvPoke uses in its
 /// ranking file names (e.g. `rankings-1500.json` for Great League).
-enum League: Int, CaseIterable, Identifiable {
+enum League: Int, CaseIterable, Identifiable, Codable {
     case great = 1500
     case ultra = 2500
     case master = 10000
@@ -77,4 +77,24 @@ struct RankingFormat: Decodable, Hashable, Identifiable {
     static let ultra = RankingFormat(title: "Ultra League", cup: "all", cp: 2500, hideRankings: false, showFormat: true)
     static let master = RankingFormat(title: "Master League", cup: "all", cp: 10000, hideRankings: false, showFormat: true)
     static let coreLeagues: [RankingFormat] = [.great, .ultra, .master]
+}
+
+extension League {
+    /// Maps any CP cap to the nearest core league (cups at 1500 → GL, etc.).
+    init(cpCap: Int) {
+        switch cpCap {
+        case ..<2500: self = .great
+        case 2500: self = .ultra
+        default: self = .master
+        }
+    }
+
+    /// The core-league `RankingFormat` for this league.
+    var format: RankingFormat {
+        switch self {
+        case .great: return .great
+        case .ultra: return .ultra
+        case .master: return .master
+        }
+    }
 }

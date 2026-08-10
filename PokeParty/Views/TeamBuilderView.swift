@@ -12,7 +12,13 @@ import SwiftUI
 struct TeamBuilderView: View {
     var store: RankingsStore
     @Bindable var model: TeamBuilderModel
+    var bench: BenchStore
     @State private var searchText = ""
+
+    /// Bench entries not already on the team.
+    private var benchResults: [BenchEntry] {
+        bench.entries.filter { !model.contains(speciesId: $0.speciesId) }
+    }
 
     /// Released Pokémon matching the search, excluding those already on the team.
     private var searchResults: [Pokemon] {
@@ -26,6 +32,45 @@ struct TeamBuilderView: View {
 
     var body: some View {
         List {
+            if !benchResults.isEmpty && searchText.isEmpty {
+                Section("From Your Bench") {
+                    ForEach(benchResults) { entry in
+                        Button {
+                            store.format = entry.league.format
+                            model.add(entry.asTeamMember())
+                        } label: {
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 4) {
+                                        Text(benchDisplayName(entry))
+                                            .font(.body.weight(.medium))
+                                        if entry.shadow { ShadowBadge() }
+                                    }
+                                    HStack(spacing: 6) {
+                                        Text(entry.league.title)
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(entry.league.tint)
+                                        if let ivs = entry.ivs {
+                                            Text("· IVs \(ivs.atk)/\(ivs.def)/\(ivs.hp)")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        } else {
+                                            Text("· Optimal IVs")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                Spacer()
+                                if let sp = store.pokemonById[entry.speciesId] {
+                                    TypeBadgeRow(types: sp.displayTypes)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isFull)
+                    }
+                }
+            }
             Section {
                 ForEach(searchResults) { pokemon in
                     Button {
@@ -45,7 +90,7 @@ struct TeamBuilderView: View {
                     .disabled(model.isFull)
                 }
             } header: {
-                Text(model.isFull ? "Team full — remove one to add another" : "Add Pokémon")
+                Text(model.isFull ? "Team full — remove one to add another" : "All Pokémon")
             }
         }
         .navigationTitle("Team Builder")
@@ -56,5 +101,10 @@ struct TeamBuilderView: View {
                 ContentUnavailableView.search(text: searchText)
             }
         }
+    }
+
+    private func benchDisplayName(_ entry: BenchEntry) -> String {
+        if !entry.nickname.isEmpty { return entry.nickname }
+        return store.pokemonById[entry.speciesId]?.speciesName ?? entry.speciesId
     }
 }

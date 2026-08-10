@@ -263,6 +263,233 @@ nonisolated enum GradeFinder {
         return local
     }
 
+    // MARK: - Bench team finder
+
+    /// Grades every distinct bench trio against the full meta field and returns
+    /// the best `maxResults` ordered the same way as `findTopGradedTeams`.
+    ///
+    /// The key difference from the meta-pool grade check: coverage is measured
+    /// by how well the bench trio handles the META's top threats, not bench-vs-bench.
+    /// Uses a rectangular `metaCount × benchCount` rating matrix:
+    ///   `rawMB[t * b + bi]` = meta[t]'s 1v1 rating vs bench[bi].
+    static func findBenchTeams(
+        bench: [TeamFinder.Candidate],
+        meta: [TeamFinder.Candidate],
+        cpCap: Int,
+        movesById: [String: Move],
+        metaRelevantCount: Int = 40,
+        maxResults: Int = 100,
+        onProgress: (@Sendable (Double) -> Void)? = nil
+    ) async -> [GradedTeam] {
+        let b = bench.count
+        let m = meta.count
+        guard b >= 3, m > 0, maxResults > 0 else { return [] }
+
+        // --- Rectangular meta×bench rating matrix ---
+        let rawMB = await benchVsMetaMatrix(meta: meta, bench: bench, movesById: movesById) { fraction in
+            onProgress?(fraction * 0.7)
+        }
+        if Task.isCancelled { return [] }
+
+        var softMB = [Double](repeating: 0, count: m * b)
+        for t in 0..<m {
+            let metaRelevant = t < metaRelevantCount
+            for bi in 0..<b {
+                softMB[t * b + bi] = TeamAnalyzer.softScore(Double(rawMB[t * b + bi]), metaRelevant: metaRelevant)
+            }
+        }
+
+        let bulkValues: [Double] = bench.map { c in
+            c.stats.def * (c.shadow ? DamageMultiplier.shadowDef : 1) * Double(c.stats.hp)
+        }
+        let consistencyValues: [Double] = bench.map {
+            Consistency.score(fastMoveId: $0.combatant.fastMoveId,
+                              chargedMoveIds: $0.combatant.chargedMoveIds,
+                              types: $0.combatant.species.types,
+                              movesById: movesById)
+        }
+        let safetyValues: [Double] = bench.map { $0.switchesScore ?? 60 }
+        let benchFamKey: [String?] = bench.map(\.familyId)
+        let benchSpeciesIds: [String] = bench.map(\.member.speciesId)
+        let metaFamKey: [String?] = meta.map(\.familyId)
+        let metaSpeciesIds: [String] = meta.map(\.member.speciesId)
+        let bulkGoal = TeamAnalyzer.bulkGoal(cpCap: cpCap)
+
+        var compatible = [Bool](repeating: false, count: b * b)
+        for bi in 0..<b {
+            for bj in (bi + 1)..<b where TeamFinder.distinct(bench[bi], bench[bj]) {
+                compatible[bi * b + bj] = true
+                compatible[bj * b + bi] = true
+            }
+        }
+
+        var all: [GradedTeam] = []
+        var completedLeads = 0
+        await withTaskGroup(of: [GradedTeam].self) { [rawMB, softMB, compatible] group in
+            for lead in 0..<b {
+                group.addTask {
+                    gradeBenchTrios(
+                        lead: lead, b: b, metaCount: m, bench: bench,
+                        rawMB: rawMB, softMB: softMB, compatible: compatible,
+                        bulkValues: bulkValues, consistencyValues: consistencyValues,
+                        safetyValues: safetyValues,
+                        benchFamKey: benchFamKey, benchSpeciesIds: benchSpeciesIds,
+                        metaFamKey: metaFamKey, metaSpeciesIds: metaSpeciesIds,
+                        bulkGoal: bulkGoal, maxResults: maxResults)
+                }
+            }
+            for await part in group {
+                completedLeads += 1
+                onProgress?(0.7 + 0.3 * Double(completedLeads) / Double(b))
+                all.append(contentsOf: part)
+            }
+        }
+
+        all.sort(by: orderedBefore)
+        return Array(all.prefix(maxResults))
+    }
+
+    /// `rawMB[t * b + bi]` = meta[t]'s 1v1 rating vs bench[bi] (meta's perspective).
+    private static func benchVsMetaMatrix(
+        meta: [TeamFinder.Candidate], bench: [TeamFinder.Candidate],
+        movesById: [String: Move],
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async -> [Int] {
+        let m = meta.count
+        let b = bench.count
+        var matrix = [Int](repeating: 500, count: m * b)
+        let totalPairs = m * b
+        guard totalPairs > 0 else { return matrix }
+
+        var completedPairs = 0
+        await withTaskGroup(of: (t: Int, bi: Int, rating: Int)?.self) { group in
+            for t in 0..<m {
+                for bi in 0..<b {
+                    group.addTask {
+                        guard !Task.isCancelled,
+                              let r = MatchupSimulator.rate(
+                                meta[t].combatant, statsA: meta[t].stats,
+                                bench[bi].combatant, statsB: bench[bi].stats,
+                                movesById: movesById, shieldsA: 1, shieldsB: 1)
+                        else { return nil }
+                        return (t, bi, r.a)
+                    }
+                }
+            }
+            for await pair in group {
+                completedPairs += 1
+                if completedPairs % 256 == 0 || completedPairs == totalPairs {
+                    progress?(Double(completedPairs) / Double(totalPairs))
+                }
+                if let pair {
+                    matrix[pair.t * b + pair.bi] = pair.rating
+                }
+            }
+        }
+        return matrix
+    }
+
+    /// Grades all bench trios led by bench index `lead` against the meta field.
+    private static func gradeBenchTrios(
+        lead: Int, b: Int, metaCount: Int, bench: [TeamFinder.Candidate],
+        rawMB: [Int], softMB: [Double], compatible: [Bool],
+        bulkValues: [Double], consistencyValues: [Double], safetyValues: [Double],
+        benchFamKey: [String?], benchSpeciesIds: [String],
+        metaFamKey: [String?], metaSpeciesIds: [String],
+        bulkGoal: Double, maxResults: Int
+    ) -> [GradedTeam] {
+        var local: [GradedTeam] = []
+        var cutoff = -Double.infinity
+        func trimLocal() {
+            local.sort(by: orderedBefore)
+            local.removeLast(local.count - maxResults)
+            cutoff = local[maxResults - 1].minGradeFraction
+        }
+
+        var selScore = [Double](repeating: 0, count: 6)
+        var selRaw = [Int](repeating: 0, count: 6)
+        var selFam = [String?](repeating: nil, count: 6)
+
+        let bi = lead
+        for bj in (bi + 1)..<b where compatible[bi * b + bj] {
+            if Task.isCancelled { return [] }
+            for bk in (bj + 1)..<b where compatible[bi * b + bk] && compatible[bj * b + bk] {
+                let bulkValue = (bulkValues[bi] + bulkValues[bj] + bulkValues[bk]) / 3
+                let consistencyValue = (consistencyValues[bi] + consistencyValues[bj] + consistencyValues[bk]) / 3
+                let safetyValue = (safetyValues[bi] + safetyValues[bj] + safetyValues[bk]) / 3
+                let cheapMin = min(bulkValue / bulkGoal,
+                                   consistencyValue / consistencyGoal,
+                                   safetyValue / safetyGoal)
+                if cheapMin <= cutoff { continue }
+
+                var selCount = 0
+                var minIndex = 0
+                for t in 0..<metaCount {
+                    let s = softMB[t * b + bi] + softMB[t * b + bj] + softMB[t * b + bk]
+                    if selCount == 6 && s <= selScore[minIndex] { continue }
+                    let sid = metaSpeciesIds[t]
+                    if sid == benchSpeciesIds[bi] || sid == benchSpeciesIds[bj] || sid == benchSpeciesIds[bk] { continue }
+                    let avgRaw = (rawMB[t * b + bi] + rawMB[t * b + bj] + rawMB[t * b + bk]) / 3
+
+                    if let fam = metaFamKey[t],
+                       let existing = (0..<selCount).first(where: { selFam[$0] == fam }) {
+                        if s > selScore[existing] {
+                            selScore[existing] = s
+                            selRaw[existing] = avgRaw
+                        }
+                    } else if selCount < 6 {
+                        selScore[selCount] = s
+                        selRaw[selCount] = avgRaw
+                        selFam[selCount] = metaFamKey[t]
+                        selCount += 1
+                    } else {
+                        selScore[minIndex] = s
+                        selRaw[minIndex] = avgRaw
+                        selFam[minIndex] = metaFamKey[t]
+                    }
+                    if selCount == 6 {
+                        minIndex = 0
+                        for si in 1..<6 where selScore[si] < selScore[minIndex] { minIndex = si }
+                    }
+                }
+
+                let threatScore: Int
+                if selCount == 0 {
+                    threatScore = 500
+                } else {
+                    var sum = 0
+                    for si in 0..<selCount { sum += selRaw[si] }
+                    threatScore = Int((Double(sum) / Double(selCount)).rounded())
+                }
+                let coverageValue = 1200 - Double(threatScore)
+                let minFraction = min(cheapMin, coverageValue / coverageGoal)
+                if minFraction <= cutoff { continue }
+
+                local.append(GradedTeam(
+                    members: [bi, bj, bk].map { idx in
+                        let c = bench[idx]
+                        return TeamFinder.RankedTeam.Member(
+                            member: c.member, speciesName: c.speciesName,
+                            types: c.types, shadow: c.shadow)
+                    },
+                    poolIndices: [bi, bj, bk],
+                    coverage: LetterGrade.grade(value: coverageValue, goal: coverageGoal),
+                    bulk: LetterGrade.grade(value: bulkValue, goal: bulkGoal),
+                    safety: LetterGrade.grade(value: safetyValue, goal: safetyGoal),
+                    consistency: LetterGrade.grade(value: consistencyValue, goal: consistencyGoal),
+                    threatScore: threatScore,
+                    coverageValue: coverageValue,
+                    bulkValue: bulkValue,
+                    safetyValue: safetyValue,
+                    consistencyValue: consistencyValue,
+                    minGradeFraction: minFraction))
+                if local.count >= maxResults * 2 { trimLocal() }
+            }
+        }
+        if local.count > maxResults { trimLocal() }
+        return local
+    }
+
     /// One fast 1v1 per unordered pair at 1 shield each fills both directions.
     private static func ratingMatrix(
         pool: [TeamFinder.Candidate], movesById: [String: Move],

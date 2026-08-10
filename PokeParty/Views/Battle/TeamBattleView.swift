@@ -13,6 +13,7 @@ struct TeamBattleView: View {
     var store: RankingsStore
     @Bindable var model: TeamBuilderModel
     var savedTeams: SavedTeamsStore
+    var bench: BenchStore
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
 
@@ -115,6 +116,34 @@ struct TeamBattleView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Add opponent (\(model.opponentMembers.count)/\(TeamBuilderModel.maxMembers))")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+
+            // Bench Pokémon not already on the opponent team
+            let benchAvailable = bench.entries.filter {
+                !model.opponentContains(speciesId: $0.speciesId)
+            }
+            if !benchAvailable.isEmpty && search.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("From your bench")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    ForEach(benchAvailable) { entry in
+                        Button {
+                            model.addOpponent(entry.asTeamMember())
+                        } label: {
+                            HStack(spacing: 8) {
+                                let name = store.pokemonById[entry.speciesId]?.speciesName ?? entry.speciesId
+                                Text(entry.nickname.isEmpty ? name : entry.nickname)
+                                    .font(.subheadline.weight(.medium))
+                                Spacer()
+                                TypeBadgeRow(types: store.pokemonById[entry.speciesId]?.displayTypes ?? [])
+                            }
+                            .padding(6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
             TextField("Search Pokémon", text: $search)
                 .textFieldStyle(.roundedBorder)
             VStack(spacing: 4) {
@@ -230,6 +259,7 @@ struct TeamBattleView: View {
         return BattleParticipant(
             name: p?.speciesName ?? member.speciesId,
             types: p?.displayTypes ?? [],
-            shadow: member.shadow)
+            shadow: member.shadow,
+            chargedMoveIds: member.chargedMoveIds)
     }
 }

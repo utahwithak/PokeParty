@@ -16,6 +16,9 @@ struct TeamAnalysisSections: View {
     /// Called when a suggested teammate is tapped (nil disables tapping, e.g. when
     /// the team is already full).
     var onAddSuggestion: ((String) -> Void)?
+    /// When provided, suggestions that appear in the bench for `league` are highlighted.
+    var bench: BenchStore? = nil
+    var league: League? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -137,6 +140,11 @@ struct TeamAnalysisSections: View {
 
     // MARK: - Suggestions
 
+    private func isInBench(_ speciesId: String) -> Bool {
+        guard let bench, let league else { return false }
+        return bench.contains(speciesId: speciesId, league: league)
+    }
+
     private var suggestionsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Suggested Teammates")
@@ -149,6 +157,7 @@ struct TeamAnalysisSections: View {
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
                 ForEach(analysis.suggestions) { suggestion in
+                    let inBench = isInBench(suggestion.speciesId)
                     Button {
                         onAddSuggestion?(suggestion.speciesId)
                     } label: {
@@ -159,6 +168,12 @@ struct TeamAnalysisSections: View {
                                         .font(.subheadline.weight(.medium))
                                         .lineLimit(1)
                                     if suggestion.shadow { ShadowBadge() }
+                                    if inBench {
+                                        Image(systemName: "tray.fill")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tint)
+                                            .help("In your bench")
+                                    }
                                 }
                                 TypeBadgeRow(types: suggestion.types)
                             }
@@ -170,7 +185,9 @@ struct TeamAnalysisSections: View {
                         }
                         .padding(8)
                         .frame(maxWidth: .infinity)
-                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                        .background(
+                            inBench ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.05),
+                            in: RoundedRectangle(cornerRadius: 8))
                         .contentShape(RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)

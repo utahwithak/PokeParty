@@ -50,8 +50,12 @@ nonisolated enum SwitchObservation {
 
     /// Valid canonical actions for this context (stay excluded when mandatory).
     static func legalActions(_ ctx: SwitchContext) -> [Int] {
+        var result = [Int]()
+        result.reserveCapacity(3)
+        if !ctx.mandatory { result.append(0) }
         let b = backups(ctx)
-        return (ctx.mandatory ? [] : [0]) + b.indices.map { $0 + 1 }
+        for i in b.indices { result.append(i + 1) }
+        return result
     }
 
     /// Maps a canonical action to a `SwitchDecision`.
@@ -80,37 +84,36 @@ nonisolated enum SwitchObservation {
     static var featureCount: Int { featureNames.count }
 
     static func capture(_ ctx: SwitchContext) -> [Double] {
-        var x: [Double] = []
-        x.reserveCapacity(featureCount)
+        // Pre-allocate full zeroed buffer — avoids append/resize overhead and
+        // eliminates the [0,0,0,0,0] temporary arrays for absent slots.
+        var x = [Double](repeating: 0, count: featureCount)
+        var i = 0
 
-        appendSlot(&x, ctx.team[ctx.active], ctx, alive: !ctx.fainted.contains(ctx.active))
+        fillSlot(&x, into: &i, ctx.team[ctx.active], ctx, alive: !ctx.fainted.contains(ctx.active))
         let b = backups(ctx)
         for s in 0..<2 {
             if s < b.count {
-                appendSlot(&x, ctx.team[b[s]], ctx, alive: true)
+                fillSlot(&x, into: &i, ctx.team[b[s]], ctx, alive: true)
             } else {
-                x.append(contentsOf: [0, 0, 0, 0, 0])
+                i += 5  // zeros already in place
             }
         }
 
         let aliveCount = ctx.team.count - ctx.fainted.count
-        x.append(Double(ctx.teamShields) / 2)
-        x.append(Double(ctx.opponentShields) / 2)
-        x.append(Double(carriedHp(ctx.opponent)) / Double(ctx.opponent.stats.hp))
-        x.append(Double(ctx.opponent.startEnergy) / 100)
-        x.append(Double(aliveCount) / 3)
-        x.append(min(Double(ctx.time) / 240_000, 1))
-        x.append(ctx.opponentLocked ? 1 : 0)
-        x.append(ctx.mandatory ? 1 : 0)
+        x[i] = Double(ctx.teamShields) / 2;                                     i += 1
+        x[i] = Double(ctx.opponentShields) / 2;                                 i += 1
+        x[i] = Double(carriedHp(ctx.opponent)) / Double(ctx.opponent.stats.hp); i += 1
+        x[i] = Double(ctx.opponent.startEnergy) / 100;                          i += 1
+        x[i] = Double(aliveCount) / 3;                                          i += 1
+        x[i] = min(Double(ctx.time) / 240_000, 1);                              i += 1
+        x[i] = ctx.opponentLocked ? 1 : 0;                                      i += 1
+        x[i] = ctx.mandatory ? 1 : 0
         return x
     }
 
-    private static func appendSlot(_ x: inout [Double], _ mon: BattlePokemon,
-                                   _ ctx: SwitchContext, alive: Bool) {
-        guard alive else {
-            x.append(contentsOf: [0, 0, 0, 0, 0])
-            return
-        }
+    private static func fillSlot(_ x: inout [Double], into i: inout Int,
+                                  _ mon: BattlePokemon, _ ctx: SwitchContext, alive: Bool) {
+        guard alive else { i += 5; return }  // zeros already in place
         let maxHp = Double(mon.stats.hp)
         let oppMaxHp = Double(ctx.opponent.stats.hp)
 
@@ -124,11 +127,11 @@ nonisolated enum SwitchObservation {
             dmgIn = max(dmgIn, Double(DamageCalculator.damage(ctx.opponent, mon, m)))
         }
 
-        x.append(1)
-        x.append(Double(carriedHp(mon)) / maxHp)
-        x.append(Double(mon.startEnergy) / 100)
-        x.append(min(dmgOut / oppMaxHp, 2) / 2)
-        x.append(min(dmgIn / Double(carriedHp(mon)), 2) / 2)
+        x[i] = 1;                                                i += 1
+        x[i] = Double(carriedHp(mon)) / maxHp;                  i += 1
+        x[i] = Double(mon.startEnergy) / 100;                   i += 1
+        x[i] = min(dmgOut / oppMaxHp, 2) / 2;                   i += 1
+        x[i] = min(dmgIn / Double(carriedHp(mon)), 2) / 2;      i += 1
     }
 
     /// Carried HP between segments (`startHp == 0` = never entered = full).

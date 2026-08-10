@@ -15,6 +15,7 @@ enum SidebarSelection: Hashable {
     case partyFinder
     case matchup
     case breakpoints
+    case bench
 }
 
 /// Sidebar listing tools, the core PvP leagues, and active cups (e.g. Summer Cup).
@@ -25,6 +26,8 @@ struct LeagueSidebar: View {
     var body: some View {
         List(selection: $selection) {
             Section("Tools") {
+                Label("My Bench", systemImage: "tray.fill")
+                    .tag(SidebarSelection.bench)
                 Label("Rank Checker", systemImage: "checklist")
                     .tag(SidebarSelection.rankChecker)
                 Label("Team Builder", systemImage: "person.3.sequence.fill")

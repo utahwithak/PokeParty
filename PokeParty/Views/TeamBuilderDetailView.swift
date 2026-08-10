@@ -15,6 +15,7 @@ struct TeamBuilderDetailView: View {
     @Bindable var store: RankingsStore
     @Bindable var model: TeamBuilderModel
     var savedTeams: SavedTeamsStore
+    var bench: BenchStore
     @State private var showingBattle = false
     @State private var showingSavePrompt = false
     @State private var saveName = ""
@@ -38,7 +39,7 @@ struct TeamBuilderDetailView: View {
         // the new meta has arrived.
         .onChange(of: store.entries) { analyzeIfNeeded() }
         .sheet(isPresented: $showingBattle) {
-            TeamBattleView(store: store, model: model, savedTeams: savedTeams)
+            TeamBattleView(store: store, model: model, savedTeams: savedTeams, bench: bench)
         }
         .alert("Save Team", isPresented: $showingSavePrompt) {
             TextField("Team name", text: $saveName)
@@ -160,7 +161,9 @@ struct TeamBuilderDetailView: View {
         if let analysis = model.analysis {
             TeamAnalysisSections(
                 analysis: analysis,
-                onAddSuggestion: model.isFull ? nil : { addSuggestion($0) })
+                onAddSuggestion: model.isFull ? nil : { addSuggestion($0) },
+                bench: bench,
+                league: League(cpCap: store.format.cp))
         } else if model.phase == .analyzing {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)

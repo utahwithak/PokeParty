@@ -15,8 +15,10 @@ struct ContentView: View {
     @State private var matchup = MatchupModel()
     @State private var breakpoints = BreakpointModel()
     @State private var savedTeams = SavedTeamsStore()
+    @State private var bench = BenchStore()
     @State private var selection: SidebarSelection = .format(.great)
     @State private var selectedEntryID: RankingEntry.ID?
+    @State private var selectedBenchID: BenchEntry.ID?
 
     var body: some View {
         NavigationSplitView {
@@ -48,13 +50,20 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerInputView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamBuilderView(store: store, model: teamBuilder)
+            TeamBuilderView(store: store, model: teamBuilder, bench: bench)
         case .partyFinder:
             TeamFinderView(store: store, model: teamFinder)
         case .matchup:
             MatchupSimulatorView(store: store, model: matchup)
         case .breakpoints:
             BreakpointInputView(store: store, model: breakpoints)
+        case .bench:
+            BenchView(bench: bench, store: store, selectedID: $selectedBenchID,
+                      openTeamInBuilder: { league, members in
+                          store.format = league.format
+                          teamBuilder.setTeam(members)
+                          selection = .teamBuilder
+                      })
         }
     }
 
@@ -63,8 +72,12 @@ struct ContentView: View {
         switch selection {
         case .format:
             if let id = selectedEntryID, let entry = store.entry(id: id) {
-                PokemonDetailView(entry: entry, store: store)
-                    .id(entry.id)
+                PokemonDetailView(entry: entry, store: store, bench: bench,
+                                  onAddToBench: { benchID in
+                    selectedBenchID = benchID
+                    selection = .bench
+                })
+                .id(entry.id)
             } else {
                 ContentUnavailableView(
                     "Select a Pokémon",
@@ -75,7 +88,7 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerResultsView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams)
+            TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench)
         case .partyFinder:
             TeamFinderResultsView(store: store, model: teamFinder,
                                   teamBuilder: teamBuilder, selection: $selection)
@@ -83,6 +96,17 @@ struct ContentView: View {
             MatchupDetailView(store: store, model: matchup)
         case .breakpoints:
             BreakpointResultsView(store: store, model: breakpoints)
+        case .bench:
+            if let id = selectedBenchID, let entry = bench.entry(id: id) {
+                BenchDetailView(bench: bench, store: store, entryID: entry.id)
+                    .id(id)
+            } else {
+                ContentUnavailableView(
+                    "Select a Pokémon",
+                    systemImage: "tray",
+                    description: Text("Choose a Pokémon from your bench to edit its IVs and moves.")
+                )
+            }
         }
     }
 }

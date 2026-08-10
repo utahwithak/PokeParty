@@ -15,6 +15,13 @@ import Foundation
 
 nonisolated enum ShieldSearch {
 
+    /// One distinct (A-policy, B-policy) outcome within a fixed shield-count matchup.
+    struct ScenarioItem: Sendable, Hashable {
+        let policyA: Set<Int>
+        let policyB: Set<Int>
+        let ratingA: Int
+    }
+
     struct Solution: Sendable, Hashable {
         /// Game value: A's rating under optimal play (maximin / best response).
         let ratingA: Int
@@ -29,6 +36,9 @@ nonisolated enum ShieldSearch {
         let scenarioCount: Int     // total distinct scenarios
         let bestCaseA: Int         // A's best achievable rating
         let worstCaseA: Int        // A's worst achievable rating
+
+        /// Every distinct (A-policy, B-policy) outcome, best-for-A first.
+        let scenarios: [ScenarioItem]
 
         var winRate: Double { scenarioCount > 0 ? Double(scenarioWins) / Double(scenarioCount) : 0 }
     }
@@ -101,12 +111,15 @@ nonisolated enum ShieldSearch {
         let cols = polB.indices.map { j in polA.indices.map { matrix[$0][j] } }
         let colIdx = distinctIndices(cols)
         var wins = 0, losses = 0, ties = 0
+        var items: [ScenarioItem] = []
         for r in rowIdx {
             for c in colIdx {
                 let v = matrix[r][c]
                 if v > 500 { wins += 1 } else if v < 500 { losses += 1 } else { ties += 1 }
+                items.append(ScenarioItem(policyA: polA[r], policyB: polB[c], ratingA: v))
             }
         }
+        items.sort { $0.ratingA > $1.ratingA }
         let flat = matrix.flatMap { $0 }
 
         return Solution(
@@ -114,7 +127,8 @@ nonisolated enum ShieldSearch {
             policyA: polA[bestRow], policyB: polB[bestCol],
             scenarioWins: wins, scenarioLosses: losses, scenarioTies: ties,
             scenarioCount: rowIdx.count * colIdx.count,
-            bestCaseA: flat.max() ?? 500, worstCaseA: flat.min() ?? 500)
+            bestCaseA: flat.max() ?? 500, worstCaseA: flat.min() ?? 500,
+            scenarios: items)
     }
 
     /// Indices of the first occurrence of each distinct vector (dedupe helper).
