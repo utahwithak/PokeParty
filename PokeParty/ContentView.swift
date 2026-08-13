@@ -29,10 +29,17 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 280, ideal: 340)
         } detail: {
             detail
+                #if os(macOS)
                 .frame(minWidth: 584)
+                #endif
         }
         .navigationSplitViewStyle(.balanced)
+        #if os(macOS)
+        // Keeps the 3-pane layout usable on macOS; on iOS these columns
+        // collapse to a single full-width screen, so a forced minimum here
+        // would push most row content off the left edge of the phone screen.
         .frame(minWidth: 1040, minHeight: 600)
+        #endif
         .task { await store.load() }
         .onChange(of: selection) { _, new in
             if case .format(let format) = new {
@@ -50,9 +57,9 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerInputView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamBuilderView(store: store, model: teamBuilder, bench: bench)
+            TeamBuilderView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench)
         case .partyFinder:
-            TeamFinderView(store: store, model: teamFinder)
+            TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, selection: $selection)
         case .matchup:
             MatchupSimulatorView(store: store, model: matchup)
         case .breakpoints:

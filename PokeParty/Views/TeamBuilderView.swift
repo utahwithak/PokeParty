@@ -12,6 +12,7 @@ import SwiftUI
 struct TeamBuilderView: View {
     var store: RankingsStore
     @Bindable var model: TeamBuilderModel
+    var savedTeams: SavedTeamsStore
     var bench: BenchStore
     @State private var searchText = ""
 
@@ -101,6 +102,20 @@ struct TeamBuilderView: View {
                 ContentUnavailableView.search(text: searchText)
             }
         }
+        #if os(iOS)
+        // See MatchupSimulatorView: on iOS the detail column (here,
+        // TeamBuilderDetailView) has no other way to become reachable.
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    TeamBuilderDetailView(store: store, model: model, savedTeams: savedTeams, bench: bench)
+                } label: {
+                    Label("View Team", systemImage: "person.3.sequence.fill")
+                }
+                .disabled(!model.hasMembers)
+            }
+        }
+        #endif
     }
 
     private func benchDisplayName(_ entry: BenchEntry) -> String {

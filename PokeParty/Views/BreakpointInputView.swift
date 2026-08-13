@@ -56,5 +56,19 @@ struct BreakpointInputView: View {
                 await model.select(speciesId: "groudon", store: store)
             }
         }
+        #if os(iOS)
+        // See MatchupSimulatorView: on iOS the detail column (here,
+        // BreakpointResultsView) has no other way to become reachable.
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    BreakpointResultsView(store: store, model: model)
+                } label: {
+                    Label("View Breakpoints", systemImage: "stairs")
+                }
+                .disabled(model.member == nil)
+            }
+        }
+        #endif
     }
 }

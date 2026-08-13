@@ -7,6 +7,11 @@
 //  reviews/edits a copy of that data in a separate "staged" panel before
 //  adding it to the bench, without interrupting the live loop.
 //
+//  Built on ScreenScanner, which captures the iPhone Mirroring window and
+//  is macOS-only, so this whole file is unavailable on iOS.
+//
+
+#if os(macOS)
 
 import Foundation
 import SwiftUI
@@ -258,3 +263,5 @@ final class ScannerModel {
             .joined(separator: " ")
     }
 }
+
+#endif

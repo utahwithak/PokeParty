@@ -8,6 +8,11 @@
 //  species, adjusting IVs, and correcting CP if needed — without interrupting
 //  the live loop, so they can keep adding Pokémon back-to-back.
 //
+//  Backed by ScannerModel/ScreenScanner, which capture the iPhone Mirroring
+//  window and are macOS-only, so this whole file is unavailable on iOS.
+//
+
+#if os(macOS)
 
 import SwiftUI
 
@@ -404,3 +409,5 @@ private struct IVEditField: View {
         }
     }
 }
+
+#endif

@@ -24,7 +24,14 @@ struct LeagueSidebar: View {
     @Binding var selection: SidebarSelection
 
     var body: some View {
-        List(selection: $selection) {
+        // The plain, non-optional `List(selection:)` overload ("a single row
+        // that cannot be deselected") is macOS-only; bridge through an
+        // Optional binding for the cross-platform overload, ignoring
+        // deselection (nil) so the always-selected behavior is preserved.
+        List(selection: Binding(
+            get: { Optional(selection) },
+            set: { if let new = $0 { selection = new } }
+        )) {
             Section("Tools") {
                 Label("My Bench", systemImage: "tray.fill")
                     .tag(SidebarSelection.bench)

@@ -15,6 +15,8 @@ import SwiftUI
 struct TeamFinderView: View {
     var store: RankingsStore
     var model: TeamFinderModel
+    var teamBuilder: TeamBuilderModel
+    @Binding var selection: SidebarSelection
 
     var body: some View {
         Form {
@@ -135,6 +137,20 @@ struct TeamFinderView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Party Finder")
+        #if os(iOS)
+        // See MatchupSimulatorView: on iOS the detail column (here,
+        // TeamFinderResultsView) has no other way to become reachable.
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    TeamFinderResultsView(store: store, model: model, teamBuilder: teamBuilder, selection: $selection)
+                } label: {
+                    Label("View Results", systemImage: "wand.and.stars")
+                }
+                .disabled(model.phase != .done)
+            }
+        }
+        #endif
     }
 
     private var seedingLabel: String {

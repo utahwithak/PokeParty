@@ -6,6 +6,11 @@
 //  and uses Vision OCR to extract the Pokémon's species, level, and HP
 //  shown on the detail screen.
 //
+//  iPhone Mirroring and ScreenCaptureKit desktop-window capture are
+//  macOS-only, so this whole file is unavailable on iOS.
+//
+
+#if os(macOS)
 
 import AppKit
 import Foundation
@@ -497,3 +502,5 @@ nonisolated private struct PixelSampler {
         return PixelColor(r: Double(data[offset]), g: Double(data[offset + 1]), b: Double(data[offset + 2]))
     }
 }
+
+#endif

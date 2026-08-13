@@ -57,34 +57,69 @@ struct TeamBuilderDetailView: View {
 
     // MARK: - Controls
 
+    /// On macOS the detail column is wide enough for every control on one
+    /// row. On iOS that same row has no room to fit — the two `.fixedSize()`
+    /// controls (league picker, teams menu) refuse to shrink, so "Rated
+    /// against" and the "Battle" button got squeezed into a sliver and wrapped
+    /// one syllable per line — so it splits into two rows instead.
     private var controlsHeader: some View {
+        #if os(iOS)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("Rated against")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                leaguePicker
+                Spacer()
+                memberCountText
+            }
+            HStack(spacing: 10) {
+                teamsMenu
+                battleButton
+                Spacer()
+            }
+        }
+        #else
         HStack(spacing: 10) {
             Text("Rated against")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Picker("League", selection: $store.format) {
-                ForEach(RankingFormat.coreLeagues) { Text($0.title).tag($0) }
-                if !store.cupFormats.isEmpty {
-                    Divider()
-                    ForEach(store.cupFormats) { Text($0.title).tag($0) }
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .fixedSize()
+            leaguePicker
             Spacer()
             teamsMenu
-            Button {
-                showingBattle = true
-            } label: {
-                Label("Battle", systemImage: "bolt.fill")
-            }
-            .disabled(!model.hasMembers)
-            .help("Simulate a 3v3 against an opponent team")
-            Text("\(model.members.count)/\(TeamBuilderModel.maxMembers)")
-                .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.secondary)
+            battleButton
+            memberCountText
         }
+        #endif
+    }
+
+    private var leaguePicker: some View {
+        Picker("League", selection: $store.format) {
+            ForEach(RankingFormat.coreLeagues) { Text($0.title).tag($0) }
+            if !store.cupFormats.isEmpty {
+                Divider()
+                ForEach(store.cupFormats) { Text($0.title).tag($0) }
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .fixedSize()
+    }
+
+    private var battleButton: some View {
+        Button {
+            showingBattle = true
+        } label: {
+            Label("Battle", systemImage: "bolt.fill")
+        }
+        .disabled(!model.hasMembers)
+        .help("Simulate a 3v3 against an opponent team")
+    }
+
+    private var memberCountText: some View {
+        Text("\(model.members.count)/\(TeamBuilderModel.maxMembers)")
+            .font(.subheadline.monospacedDigit())
+            .foregroundStyle(.secondary)
     }
 
     // MARK: - Saved teams

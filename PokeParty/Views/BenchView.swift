@@ -41,7 +41,9 @@ struct BenchView: View {
     @State private var cacheTask: Task<Void, Never>?
     @State private var benchFinder = BenchFinderModel()
     @State private var showingBenchResults = false
+    #if os(macOS)
     @State private var showingScanner = false
+    #endif
 
     /// Entries for `league` matching the current search, in the chosen sort order.
     private func sortedFilteredEntries(for league: League) -> [BenchEntry] {
@@ -157,6 +159,7 @@ struct BenchView: View {
                 }
                 .fixedSize()
                 .help("Find the best teams from your bench")
+                #if os(macOS)
                 Button { showingScanner = true } label: {
                     Label("Scan", systemImage: "camera.viewfinder")
                         .labelStyle(.iconOnly)
@@ -164,6 +167,7 @@ struct BenchView: View {
                 }
                 .fixedSize()
                 .help("Scan a Pokémon from iPhone Mirroring")
+                #endif
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -177,11 +181,13 @@ struct BenchView: View {
                 model: benchFinder,
                 onOpenInBuilder: openTeamInBuilder)
         }
+        #if os(macOS)
         .sheet(isPresented: $showingScanner) {
             ScannerSheet(bench: bench, store: store) { newID in
                 selectedID = newID
             }
         }
+        #endif
         .onAppear { refreshSortCache() }
         .onChange(of: bench.entries) { refreshSortCache() }
         .overlay {

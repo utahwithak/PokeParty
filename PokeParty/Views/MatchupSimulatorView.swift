@@ -60,6 +60,23 @@ struct MatchupSimulatorView: View {
                 ContentUnavailableView.search(text: searchText)
             }
         }
+        #if os(iOS)
+        // On macOS the detail column (MatchupDetailView) sits alongside this
+        // palette and updates live as sides are assigned. On iOS the split
+        // view collapses to one column at a time, and unlike the List(selection:)
+        // screens elsewhere, this list's rows only mutate `model` rather than
+        // a split-view selection, so there's otherwise no way to reach it.
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    MatchupDetailView(store: store, model: model)
+                } label: {
+                    Label("View Matchup", systemImage: "bolt.horizontal.fill")
+                }
+                .disabled(!model.hasBothSides)
+            }
+        }
+        #endif
     }
 
     private func sideLabel(_ s: MatchupModel.Side) -> String {

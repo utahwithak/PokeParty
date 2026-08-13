@@ -12,6 +12,11 @@
 //  assumptions that only hold in a drawing, which is how earlier versions of
 //  this reader kept passing while returning nonsense.
 //
+//  ScreenScanner itself is macOS-only, so this whole file is unavailable on
+//  iOS.
+//
+
+#if os(macOS)
 
 import AppKit
 import Foundation
@@ -158,3 +163,5 @@ private func metangCapture() throws -> CGImage {
     // route to the HP IV can't carry the feature on its own.
     #expect(info.level == nil)
 }
+
+#endif
