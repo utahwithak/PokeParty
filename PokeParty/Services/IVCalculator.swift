@@ -198,6 +198,30 @@ nonisolated enum IVCalculator {
         return cp(baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, ivs: ivs, cpm: cpms[bestJ])
     }
 
+    /// The level (in 0.5 steps) whose CP for `ivs` is closest to `targetCP`.
+    /// CP increases monotonically with level for fixed IVs, so this is a
+    /// straightforward closest-match scan. Used to let a user-entered CP
+    /// imply a level for a chosen IV spread — a quick sanity check that the
+    /// spread is plausible (e.g. does the implied level roughly match what
+    /// was read off the Pokémon's actual level on screen).
+    static func level(
+        baseAtk: Int, baseDef: Int, baseHp: Int,
+        ivs: IVs, targetCP: Int, levelCap: Double = defaultLevelCap
+    ) -> Double? {
+        let maxJ = Int((levelCap - 1) * 2)
+        guard maxJ >= 0, maxJ < cpms.count else { return nil }
+        var bestJ = 0
+        var bestDiff = Int.max
+        for j in 0...maxJ {
+            let diff = abs(cp(baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, ivs: ivs, cpm: cpms[j]) - targetCP)
+            if diff < bestDiff {
+                bestDiff = diff
+                bestJ = j
+            }
+        }
+        return 1 + Double(bestJ) * 0.5
+    }
+
     /// The effective battle stats for a specific IV combination at the highest
     /// legal level under `cpCap`. Returns nil if the Pokémon exceeds the cap at
     /// every level (e.g. a high-IV Mewtwo in Great League).
