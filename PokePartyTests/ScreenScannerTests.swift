@@ -111,7 +111,10 @@ private func readBars(_ image: CGImage) async throws -> BarIVs? {
                                   // an earlier cross-row "shared edge" heuristic
     (atk: 0,  def: 7,  hp: 15),   // empty attack bar: no fill pixels at all
     (atk: 3,  def: 12, hp: 1),    // a sliver of fill in the first segment
-    (atk: 5,  def: 10, hp: 15)    // fills ending exactly on segment boundaries
+    (atk: 5,  def: 10, hp: 15),   // fills ending exactly on segment boundaries
+    (atk: 3,  def: 8,  hp: 13),   // Inkay spread: three-row ±2px averaging returned
+                                  // hp=9 because adjacent rows fell near a segment
+                                  // boundary; single best-row reads hp=13 correctly
 ])
 func barReaderRecoversKnownIVs(expected: (atk: Int, def: Int, hp: Int)) async throws {
     let image = try #require(makeAppraisalImage(atk: expected.atk, def: expected.def, hp: expected.hp))

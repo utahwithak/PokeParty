@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var store = RankingsStore()
+    @State private var hiddenCups = HiddenCupsStore()
     @State private var rankChecker = RankCheckerModel()
     @State private var teamBuilder = TeamBuilderModel()
     @State private var teamFinder = TeamFinderModel()
@@ -19,10 +20,13 @@ struct ContentView: View {
     @State private var selection: SidebarSelection = .format(.great)
     @State private var selectedEntryID: RankingEntry.ID?
     @State private var selectedBenchID: BenchEntry.ID?
+    #if os(macOS)
+    @State private var showingCaughtScan = false
+    #endif
 
     var body: some View {
         NavigationSplitView {
-            LeagueSidebar(store: store, selection: $selection)
+            LeagueSidebar(store: store, hiddenCups: hiddenCups, selection: $selection)
                 .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 240)
         } content: {
             content
@@ -39,6 +43,19 @@ struct ContentView: View {
         // collapse to a single full-width screen, so a forced minimum here
         // would push most row content off the left edge of the phone screen.
         .frame(minWidth: 1040, minHeight: 600)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingCaughtScan = true
+                } label: {
+                    Label("Scan Caught", systemImage: "camera.badge.ellipsis")
+                }
+                .help("Scan a caught Pokémon's appraisal screen to see IVs and league ranks")
+            }
+        }
+        .sheet(isPresented: $showingCaughtScan) {
+            CaughtScanSheet(store: store)
+        }
         #endif
         .task { await store.load() }
         .onChange(of: selection) { _, new in

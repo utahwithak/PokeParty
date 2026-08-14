@@ -92,18 +92,13 @@ final class ScannerModel {
 
     private func performOneScan(store: RankingsStore) async {
         do {
-            print("[ScannerModel] Capturing frame…")
             let image = try await scanner.capturePhoneMirroringFrame()
-
-            print("[ScannerModel] Running OCR…")
             let observations = try await scanner.recognizeText(in: image)
 
             guard let info = await scanner.extractPokemonInfo(from: observations) else {
-                print("[ScannerModel] extractPokemonInfo returned nil — setting parseFailure error")
                 liveStatus = .error(ScanError.parseFailure.localizedDescription)
                 return
             }
-            print("[ScannerModel] Extracted name='\(info.name)' cp=\(info.cp?.description ?? "nil") level=\(info.level?.description ?? "nil") maxHP=\(info.maxHP?.description ?? "nil")")
 
             let speciesId = fuzzyMatch(info.name, in: store.pokemonById)
             let barIVs = await scanner.extractBarIVs(from: observations, image: image)
@@ -117,7 +112,6 @@ final class ScannerModel {
                 speciesId: speciesId, candidates: candidates
             ))
         } catch {
-            print("[ScannerModel] Error: \(error)")
             liveStatus = .error(error.localizedDescription)
         }
     }

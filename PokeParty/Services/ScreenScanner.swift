@@ -75,25 +75,49 @@ actor ScreenScanner {
                 && $0.frame.width > 100 && $0.frame.height > 100
         }
         guard let window else {
+            #if DEBUG
             // The list is only worth dumping when nothing matched — it's every
             // window on the system, and this runs on a loop.
             print("[ScreenScanner] No mirroring window among \(content.windows.count):")
             for w in content.windows {
                 print("  bundleID=\(w.owningApplication?.bundleIdentifier ?? "nil")  title=\(w.title ?? "nil")  frame=\(w.frame)")
             }
+            #endif
             throw ScanError.windowNotFound
         }
 
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let config = SCStreamConfiguration()
-        // 2× the window's point size for crisp retina output — better OCR accuracy.
-        config.width  = max(Int(window.frame.width  * 2), 100)
-        config.height = max(Int(window.frame.height * 2), 100)
+        // Capture at the display's native pixel density (physical pixels ÷ logical
+        // points). Hardcoding × 2 upscales content on a 1× (non-Retina) display,
+        // blurring bar fill/track edges so the saturation classifier in classify()
+        // reads wrong IV fractions. On a 2× Retina display this computes the same
+        // value as before; on a 1× display it captures at actual pixel resolution.
+        let displayScale: CGFloat = {
+            var bestScale: CGFloat = 2.0
+            var bestOverlap: CGFloat = 0
+            for display in content.displays {
+                let overlap = window.frame.intersection(display.frame).width
+                if overlap > bestOverlap {
+                    bestOverlap = overlap
+                    let logWidth = display.frame.width
+                    if logWidth > 0 { bestScale = CGFloat(display.width) / logWidth }
+                }
+            }
+            return max(bestScale, 1.0)
+        }()
+        #if DEBUG
+        print("[ScreenScanner] Display scale: \(displayScale)×  capture: \(Int(window.frame.width * displayScale))×\(Int(window.frame.height * displayScale))")
+        #endif
+        config.width  = max(Int(window.frame.width  * displayScale), 100)
+        config.height = max(Int(window.frame.height * displayScale), 100)
         do {
             return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         } catch {
+            #if DEBUG
             let nsError = error as NSError
             print("[ScreenScanner] Capture of \(config.width)×\(config.height)px failed: \(nsError.domain) \(nsError.code) — \(nsError.userInfo)")
+            #endif
             throw error
         }
     }
@@ -164,8 +188,19 @@ actor ScreenScanner {
             }
 
             // HP: "218 / 218 HP" — take the second (max) number.
+            // Primary: full "cur / max HP" in one observation.
             if maxHP == nil, let match = firstMatch(in: text, pattern: #"(\d+)\s*/\s*(\d+)\s*HP"#, group: 2) {
                 maxHP = Int(match)
+            }
+            // Fallback A: Vision split "67 / 97" + "HP" across observations;
+            // this observation starts with "/" so only the max-HP number is here.
+            if maxHP == nil, let match = firstMatch(in: text, pattern: #"^/\s*(\d+)\s*HP"#, group: 1),
+               let n = Int(match), n >= 10 { maxHP = n }
+            // Fallback B: "97HP" or "97 HP" as a standalone observation
+            // (slash and current-HP are on a prior observation).
+            if maxHP == nil, upper.hasSuffix("HP") {
+                let numStr = String(text.dropLast(2)).trimmingCharacters(in: .whitespaces)
+                if let n = Int(numStr), n >= 10 { maxHP = n }
             }
 
             // Level: "Lvl 50" or "Lvl 32.5".
@@ -232,18 +267,44 @@ actor ScreenScanner {
         image: CGImage
     ) -> BarIVs? {
         guard let sampler = PixelSampler(image: image) else {
+            #if DEBUG
             print("[ScreenScanner] PixelSampler init failed")
+            #endif
             return nil
         }
         let width = Double(image.width)
         let height = Double(image.height)
 
         let labels = ["Attack", "Defense", "HP"]
-        let rows: [(label: String, obs: VNRecognizedTextObservation)] = labels.compactMap { label in
-            labelObservation(label, in: observations).map { (label, $0) }
+        // Build rows in order, using Attack/Defense positions to disambiguate "HP":
+        // the appraisal screen's "cur/max HP" text can produce a standalone "HP"
+        // observation near the top of the screen. If that's found first, the bar
+        // search anchors in the wrong place and reads the wrong IV. Instead, once
+        // Attack and Defense are located we require the HP bar label to be within
+        // 1.5× their spacing of the expected position (one step below Defense).
+        var rows: [(label: String, obs: VNRecognizedTextObservation)] = []
+        for label in labels {
+            if label == "HP", rows.count == 2 {
+                let atkY = rows[0].obs.boundingBox.midY   // Vision Y: 0=bottom, 1=top
+                let defY = rows[1].obs.boundingBox.midY
+                let spacing = abs(atkY - defY)
+                let expectedY = min(atkY, defY) - spacing  // one step below Defense
+                let tolerance = max(spacing * 1.5, 0.05)
+                if let obs = observations.first(where: {
+                    let t = $0.topCandidates(1).first?.string.trimmingCharacters(in: .whitespaces) ?? ""
+                    guard t.caseInsensitiveCompare("HP") == .orderedSame else { return false }
+                    return abs($0.boundingBox.midY - expectedY) < tolerance
+                }) {
+                    rows.append((label, obs))
+                }
+            } else if let obs = labelObservation(label, in: observations) {
+                rows.append((label, obs))
+            }
         }
         guard rows.count == labels.count else {
+            #if DEBUG
             print("[ScreenScanner] Bars skipped: only found labels \(rows.map { $0.label })")
+            #endif
             return nil
         }
 
@@ -280,11 +341,15 @@ actor ScreenScanner {
                 if m.total > (best?.total ?? 0) { best = m }
             }
             guard let best, best.total > Int(rowSpacing) else {
+                #if DEBUG
                 print("[ScreenScanner] Bar '\(label)': no bar row found below label y=\(labelY)")
+                #endif
                 continue
             }
             measurements[label] = best
+            #if DEBUG
             print("[ScreenScanner] Bar '\(label)': row=\(best.rowY) fill=\(best.fill) track=\(best.track) end=\(best.endX)")
+            #endif
         }
         guard measurements.count == labels.count else { return nil }
 
@@ -298,21 +363,26 @@ actor ScreenScanner {
         let sharedEndX = measurements.values.map { $0.endX }.sorted()[1]
         var ivs: [String: Int] = [:]
         for (label, m) in measurements {
-            // Average three rows of the bar rather than trusting one: the
-            // segments' rounded end caps are antialiased, and a single row
-            // near an edge biases the count.
-            var fill = 0, track = 0
-            for dy in [-2, 0, 2] {
-                let row = measureBarRow(
-                    sampler: sampler, rowY: m.rowY + dy, startX: scanStartX,
-                    endX: sharedEndX, gapTolerance: gapTolerance)
-                fill += row.fill
-                track += row.track
-            }
-            guard fill + track > 0 else { continue }
-            ivs[label] = min(max(Int((15 * Double(fill) / Double(fill + track)).rounded()), 0), 15)
+            // Re-measure the best row against the calibrated sharedEndX — the
+            // search above used a wide upper bound; this locks all three bars
+            // to the same pixel range so fill fractions are comparable.
+            //
+            // Averaging rows at ±2px (an earlier approach) was meant to smooth
+            // antialiasing at the bars' rounded caps, but those nearby rows can
+            // fall near a segment boundary and have a completely different
+            // fill:track ratio, corrupting the result (e.g. HP IV=9 when the
+            // single best row clearly shows IV=13). The best row is found by
+            // maximising total pixel count, so it is the vertical centre of the
+            // bar — not a cap — and is already the most reliable measurement.
+            let row = measureBarRow(
+                sampler: sampler, rowY: m.rowY, startX: scanStartX,
+                endX: sharedEndX, gapTolerance: gapTolerance)
+            guard row.total > 0 else { continue }
+            ivs[label] = min(max(Int((15 * Double(row.fill) / Double(row.total)).rounded()), 0), 15)
         }
+        #if DEBUG
         print("[ScreenScanner] Bar IVs: \(ivs.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        #endif
 
         return BarIVs(atk: ivs["Attack"], def: ivs["Defense"], hp: ivs["HP"])
     }

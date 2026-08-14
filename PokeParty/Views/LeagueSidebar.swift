@@ -21,7 +21,16 @@ enum SidebarSelection: Hashable {
 /// Sidebar listing tools, the core PvP leagues, and active cups (e.g. Summer Cup).
 struct LeagueSidebar: View {
     var store: RankingsStore
+    var hiddenCups: HiddenCupsStore
     @Binding var selection: SidebarSelection
+
+    private var visibleCupFormats: [RankingFormat] {
+        store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
+    }
+
+    private var hiddenCupFormats: [RankingFormat] {
+        store.cupFormats.filter { hiddenCups.isHidden($0.id) }
+    }
 
     var body: some View {
         // The plain, non-optional `List(selection:)` overload ("a single row
@@ -53,10 +62,29 @@ struct LeagueSidebar: View {
                 }
             }
 
-            if !store.cupFormats.isEmpty {
+            if !visibleCupFormats.isEmpty {
                 Section("Cups") {
-                    ForEach(store.cupFormats) { format in
+                    ForEach(visibleCupFormats) { format in
                         row(for: format)
+                            .contextMenu {
+                                Button("Hide Cup", systemImage: "eye.slash") {
+                                    hiddenCups.hide(format.id)
+                                }
+                            }
+                    }
+                }
+            }
+
+            if !hiddenCupFormats.isEmpty {
+                Section("Hidden Cups") {
+                    ForEach(hiddenCupFormats) { format in
+                        row(for: format)
+                            .foregroundStyle(.secondary)
+                            .contextMenu {
+                                Button("Unhide Cup", systemImage: "eye") {
+                                    hiddenCups.unhide(format.id)
+                                }
+                            }
                     }
                 }
             }
