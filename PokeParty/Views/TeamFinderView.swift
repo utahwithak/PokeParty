@@ -17,7 +17,7 @@ struct TeamFinderView: View {
     var model: TeamFinderModel
     var teamBuilder: TeamBuilderModel
     var hiddenCups: HiddenCupsStore
-    @Binding var selection: SidebarSelection
+    @Binding var selection: SidebarSelection?
 
     private var visibleCupFormats: [RankingFormat] {
         store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
@@ -290,7 +290,7 @@ struct TeamFinderResultsView: View {
     var store: RankingsStore
     var model: TeamFinderModel
     var teamBuilder: TeamBuilderModel
-    @Binding var selection: SidebarSelection
+    @Binding var selection: SidebarSelection?
 
     var body: some View {
         Group {

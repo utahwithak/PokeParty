@@ -102,10 +102,17 @@ struct ScannerSheet: View {
             }
             .padding(.vertical, 12)
         case .error(let message):
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.vertical, 4)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Retry") {
+                    model.startLiveScanning(store: store)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(.vertical, 4)
         case .found(let live):
             liveFoundContent(live)
         }

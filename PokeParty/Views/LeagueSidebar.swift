@@ -22,7 +22,7 @@ enum SidebarSelection: Hashable {
 struct LeagueSidebar: View {
     var store: RankingsStore
     var hiddenCups: HiddenCupsStore
-    @Binding var selection: SidebarSelection
+    @Binding var selection: SidebarSelection?
     @State private var showingSettings = false
 
     private var visibleCupFormats: [RankingFormat] {
@@ -30,13 +30,18 @@ struct LeagueSidebar: View {
     }
 
     var body: some View {
-        // The plain, non-optional `List(selection:)` overload ("a single row
-        // that cannot be deselected") is macOS-only; bridge through an
-        // Optional binding for the cross-platform overload, ignoring
-        // deselection (nil) so the always-selected behavior is preserved.
+        // On macOS: prevent deselection so something is always highlighted.
+        // On iOS: allow nil so going back clears the selection, enabling
+        // re-navigation to the same item without requiring a different tap.
         List(selection: Binding(
-            get: { Optional(selection) },
-            set: { if let new = $0 { selection = new } }
+            get: { selection },
+            set: {
+                #if os(macOS)
+                if let new = $0 { selection = new }
+                #else
+                selection = $0
+                #endif
+            }
         )) {
             Section("Tools") {
                 Label("My Bench", systemImage: "tray.fill")

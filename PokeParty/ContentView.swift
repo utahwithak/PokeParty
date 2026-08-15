@@ -17,7 +17,7 @@ struct ContentView: View {
     @State private var breakpoints = BreakpointModel()
     @State private var savedTeams = SavedTeamsStore()
     @State private var bench = BenchStore()
-    @State private var selection: SidebarSelection = .format(.great)
+    @State private var selection: SidebarSelection? = .format(.great)
     @State private var selectedEntryID: RankingEntry.ID?
     @State private var selectedBenchID: BenchEntry.ID?
     #if os(macOS)
@@ -59,7 +59,7 @@ struct ContentView: View {
         #endif
         .task { await store.load() }
         .onChange(of: selection) { _, new in
-            if case .format(let format) = new {
+            if let new, case .format(let format) = new {
                 store.format = format
                 selectedEntryID = nil
             }
@@ -68,7 +68,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var content: some View {
-        switch selection {
+        switch selection ?? .format(.great) {
         case .format:
             RankingsListView(store: store, selection: $selectedEntryID)
         case .rankChecker:
@@ -93,7 +93,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        switch selection {
+        switch selection ?? .format(.great) {
         case .format:
             if let id = selectedEntryID, let entry = store.entry(id: id) {
                 PokemonDetailView(entry: entry, store: store, bench: bench, hiddenCups: hiddenCups,

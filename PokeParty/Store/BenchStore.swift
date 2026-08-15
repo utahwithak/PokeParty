@@ -3,7 +3,10 @@
 //  PokeParty
 //
 //  Persists the player's personal bench of Pokémon (each with their actual IVs
-//  and chosen moveset) as a JSON file in Application Support.
+//  and chosen moveset). Primary storage is NSUbiquitousKeyValueStore so the
+//  bench syncs across the user's devices via iCloud. The local Application
+//  Support file is kept as an offline fallback and migrated to iCloud on first
+//  launch.
 //
 
 import Foundation
@@ -13,13 +16,49 @@ import SwiftUI
 @Observable
 final class BenchStore {
 
+    private static let cloudKey = "Bench"
+
     private(set) var entries: [BenchEntry] = []
 
     private let fileURL: URL
+    private let cloud: NSUbiquitousKeyValueStore
 
-    init(fileURL: URL? = nil) {
+    init(fileURL: URL? = nil, cloud: NSUbiquitousKeyValueStore = .default) {
         self.fileURL = fileURL ?? Self.defaultFileURL
-        entries = Self.load(from: self.fileURL)
+        self.cloud = cloud
+
+        // Cloud-first: prefer whatever iCloud already has.
+        if let data = cloud.data(forKey: Self.cloudKey),
+           let saved = try? JSONDecoder().decode([BenchEntry].self, from: data) {
+            entries = saved
+        } else {
+            // Fall back to local file and migrate it up to iCloud.
+            let local = Self.load(from: self.fileURL)
+            entries = local
+            if !local.isEmpty {
+                if let data = try? JSONEncoder().encode(local) {
+                    cloud.set(data, forKey: Self.cloudKey)
+                    cloud.synchronize()
+                }
+            }
+        }
+
+        cloud.synchronize()
+
+        NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: cloud, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyCloudChange()
+            }
+        }
+    }
+
+    private func applyCloudChange() {
+        guard let data = cloud.data(forKey: Self.cloudKey),
+              let saved = try? JSONDecoder().decode([BenchEntry].self, from: data) else { return }
+        entries = saved
     }
 
     func entry(id: BenchEntry.ID) -> BenchEntry? {
@@ -92,6 +131,8 @@ final class BenchStore {
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(entries) else { return }
+        cloud.set(data, forKey: Self.cloudKey)
+        cloud.synchronize()
         try? data.write(to: fileURL, options: .atomic)
     }
 }

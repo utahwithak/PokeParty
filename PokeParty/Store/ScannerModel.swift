@@ -76,6 +76,15 @@ final class ScannerModel {
     /// no-ops if already running.
     func startLiveScanning(store: RankingsStore) {
         guard liveTask == nil else { return }
+        // Gate on the CoreGraphics screen-recording permission check. On macOS 15+
+        // SCK can still fail even when this returns true (a process restart is
+        // sometimes needed after first grant); performOneScan handles that by
+        // stopping the loop so the OS dialog can't re-trigger automatically.
+        guard CGPreflightScreenCaptureAccess() else {
+            CGRequestScreenCaptureAccess()
+            liveStatus = .error("Screen Recording permission is required. Grant access in System Settings, then tap Retry.")
+            return
+        }
         liveStatus = .scanning
         liveTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -111,8 +120,15 @@ final class ScannerModel {
                 rawName: info.name, cp: info.cp, level: info.level, maxHP: info.maxHP, barIVs: barIVs,
                 speciesId: speciesId, candidates: candidates
             ))
-        } catch {
+        } catch let error as ScanError {
+            // Transient: no mirroring window or parse failure — keep looping.
             liveStatus = .error(error.localizedDescription)
+        } catch {
+            // Unexpected system error — most likely SCK access denied (on macOS 15+
+            // the process sometimes needs a restart after first permission grant).
+            // Stop the loop immediately so the OS dialog can't re-trigger.
+            stopLiveScanning()
+            liveStatus = .error("Screen Recording access failed. If you just granted permission, restart PokeParty — then tap Retry.")
         }
     }
 
