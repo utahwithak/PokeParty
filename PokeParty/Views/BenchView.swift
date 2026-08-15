@@ -34,6 +34,7 @@ struct BenchView: View {
     @Binding var selectedID: BenchEntry.ID?
     /// Called when the user taps "Open in Team Builder" in the bench finder results.
     var openTeamInBuilder: ((League, [TeamMember]) -> Void)? = nil
+    @Environment(EntitlementStore.self) private var entitlements
     @State private var searchText = ""
     @State private var addLeague: League = .great
     @State private var sortOrder: BenchSortOrder = .alphabetical
@@ -160,13 +161,15 @@ struct BenchView: View {
                 .fixedSize()
                 .help("Find the best teams from your bench")
                 #if os(macOS)
-                Button { showingScanner = true } label: {
-                    Label("Scan", systemImage: "camera.viewfinder")
-                        .labelStyle(.iconOnly)
-                        .font(.caption)
+                if entitlements.isUnlocked {
+                    Button { showingScanner = true } label: {
+                        Label("Scan", systemImage: "camera.viewfinder")
+                            .labelStyle(.iconOnly)
+                            .font(.caption)
+                    }
+                    .fixedSize()
+                    .help("Scan a Pokémon from iPhone Mirroring")
                 }
-                .fixedSize()
-                .help("Scan a Pokémon from iPhone Mirroring")
                 #endif
             }
             .padding(.horizontal, 10)

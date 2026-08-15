@@ -10,6 +10,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var store = RankingsStore()
     @State private var hiddenCups = HiddenCupsStore()
+    @State private var entitlements = EntitlementStore()
     @State private var rankChecker = RankCheckerModel()
     @State private var teamBuilder = TeamBuilderModel()
     @State private var teamFinder = TeamFinderModel()
@@ -38,6 +39,7 @@ struct ContentView: View {
                 #endif
         }
         .navigationSplitViewStyle(.balanced)
+        .environment(entitlements)
         #if os(macOS)
         // Keeps the 3-pane layout usable on macOS; on iOS these columns
         // collapse to a single full-width screen, so a forced minimum here
@@ -45,12 +47,14 @@ struct ContentView: View {
         .frame(minWidth: 1040, minHeight: 600)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showingCaughtScan = true
-                } label: {
-                    Label("Scan Caught", systemImage: "camera.badge.ellipsis")
+                if entitlements.isUnlocked {
+                    Button {
+                        showingCaughtScan = true
+                    } label: {
+                        Label("Scan Caught", systemImage: "camera.badge.ellipsis")
+                    }
+                    .help("Scan a caught Pokémon's appraisal screen to see IVs and league ranks")
                 }
-                .help("Scan a caught Pokémon's appraisal screen to see IVs and league ranks")
             }
         }
         .sheet(isPresented: $showingCaughtScan) {
@@ -58,6 +62,7 @@ struct ContentView: View {
         }
         #endif
         .task { await store.load() }
+        .task { await entitlements.load() }
         .onChange(of: selection) { _, new in
             if let new, case .format(let format) = new {
                 store.format = format
@@ -76,7 +81,11 @@ struct ContentView: View {
         case .teamBuilder:
             TeamBuilderView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
         case .partyFinder:
-            TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, hiddenCups: hiddenCups, selection: $selection)
+            if entitlements.isUnlocked {
+                TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, hiddenCups: hiddenCups, selection: $selection)
+            } else {
+                PaywallView()
+            }
         case .matchup:
             MatchupSimulatorView(store: store, model: matchup, hiddenCups: hiddenCups)
         case .breakpoints:
@@ -114,8 +123,12 @@ struct ContentView: View {
         case .teamBuilder:
             TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
         case .partyFinder:
-            TeamFinderResultsView(store: store, model: teamFinder,
-                                  teamBuilder: teamBuilder, selection: $selection)
+            if entitlements.isUnlocked {
+                TeamFinderResultsView(store: store, model: teamFinder,
+                                      teamBuilder: teamBuilder, selection: $selection)
+            } else {
+                ContentUnavailableView("", systemImage: "wand.and.stars")
+            }
         case .matchup:
             MatchupDetailView(store: store, model: matchup, hiddenCups: hiddenCups)
         case .breakpoints:

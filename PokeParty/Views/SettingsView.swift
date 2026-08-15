@@ -14,6 +14,7 @@ struct SettingsView: View {
     var store: RankingsStore
     var hiddenCups: HiddenCupsStore
 
+    @Environment(EntitlementStore.self) private var entitlements
     @State private var showingRestoreAlert = false
     @State private var restoreMessage = ""
 
@@ -65,9 +66,28 @@ struct SettingsView: View {
 
     private var purchasesSection: some View {
         Section {
+            if entitlements.isUnlocked {
+                Label("PokeParty Pro — Unlocked", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Button {
+                    Task { await entitlements.purchase() }
+                } label: {
+                    HStack {
+                        Label("Unlock PokeParty Pro", systemImage: "wand.and.stars")
+                        Spacer()
+                        if let price = entitlements.product?.displayPrice {
+                            Text(price).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .disabled(entitlements.isPurchasing || entitlements.product == nil)
+            }
             Button("Restore Purchases") { restorePurchases() }
         } footer: {
-            Text("Restore purchases you've made on another device.")
+            Text(entitlements.isUnlocked
+                ? "Party Finder, AI Optimizer, Tournament Simulator, and Screen Scanner are unlocked."
+                : "Unlock Party Finder, AI Optimizer, Tournament Simulator, and Screen Scanner. Restore if you've purchased on another device.")
         }
     }
 
