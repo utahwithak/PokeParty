@@ -14,6 +14,7 @@ import SwiftUI
 struct MatchupSimulatorView: View {
     var store: RankingsStore
     @Bindable var model: MatchupModel
+    var hiddenCups: HiddenCupsStore
     @State private var searchText = ""
     @State private var side: MatchupModel.Side = .a
 
@@ -69,7 +70,7 @@ struct MatchupSimulatorView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink {
-                    MatchupDetailView(store: store, model: model)
+                    MatchupDetailView(store: store, model: model, hiddenCups: hiddenCups)
                 } label: {
                     Label("View Matchup", systemImage: "bolt.horizontal.fill")
                 }

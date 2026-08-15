@@ -74,11 +74,11 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerInputView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamBuilderView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench)
+            TeamBuilderView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
         case .partyFinder:
-            TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, selection: $selection)
+            TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, hiddenCups: hiddenCups, selection: $selection)
         case .matchup:
-            MatchupSimulatorView(store: store, model: matchup)
+            MatchupSimulatorView(store: store, model: matchup, hiddenCups: hiddenCups)
         case .breakpoints:
             BreakpointInputView(store: store, model: breakpoints)
         case .bench:
@@ -96,7 +96,7 @@ struct ContentView: View {
         switch selection {
         case .format:
             if let id = selectedEntryID, let entry = store.entry(id: id) {
-                PokemonDetailView(entry: entry, store: store, bench: bench,
+                PokemonDetailView(entry: entry, store: store, bench: bench, hiddenCups: hiddenCups,
                                   onAddToBench: { benchID in
                     selectedBenchID = benchID
                     selection = .bench
@@ -112,12 +112,12 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerResultsView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench)
+            TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
         case .partyFinder:
             TeamFinderResultsView(store: store, model: teamFinder,
                                   teamBuilder: teamBuilder, selection: $selection)
         case .matchup:
-            MatchupDetailView(store: store, model: matchup)
+            MatchupDetailView(store: store, model: matchup, hiddenCups: hiddenCups)
         case .breakpoints:
             BreakpointResultsView(store: store, model: breakpoints)
         case .bench:

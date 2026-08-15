@@ -14,11 +14,14 @@ struct TeamBuilderView: View {
     @Bindable var model: TeamBuilderModel
     var savedTeams: SavedTeamsStore
     var bench: BenchStore
+    var hiddenCups: HiddenCupsStore
     @State private var searchText = ""
 
-    /// Bench entries not already on the team.
+    /// Bench entries rated for the team's current league (CP cap) and not
+    /// already on the team.
     private var benchResults: [BenchEntry] {
-        bench.entries.filter { !model.contains(speciesId: $0.speciesId) }
+        let league = League(cpCap: store.format.cp)
+        return bench.entries.filter { $0.league == league && !model.contains(speciesId: $0.speciesId) }
     }
 
     /// Released Pokémon matching the search, excluding those already on the team.
@@ -37,7 +40,6 @@ struct TeamBuilderView: View {
                 Section("From Your Bench") {
                     ForEach(benchResults) { entry in
                         Button {
-                            store.format = entry.league.format
                             model.add(entry.asTeamMember())
                         } label: {
                             HStack(spacing: 10) {
@@ -108,7 +110,7 @@ struct TeamBuilderView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink {
-                    TeamBuilderDetailView(store: store, model: model, savedTeams: savedTeams, bench: bench)
+                    TeamBuilderDetailView(store: store, model: model, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
                 } label: {
                     Label("View Team", systemImage: "person.3.sequence.fill")
                 }

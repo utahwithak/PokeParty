@@ -12,6 +12,7 @@ struct PokemonDetailView: View {
     let entry: RankingEntry
     let store: RankingsStore
     var bench: BenchStore
+    var hiddenCups: HiddenCupsStore
     /// Called after a bench entry is created so the caller can navigate to it.
     var onAddToBench: ((BenchEntry.ID) -> Void)? = nil
 
@@ -37,11 +38,12 @@ struct PokemonDetailView: View {
     /// The opponent whose battle timeline is being viewed (drives the sheet).
     @State private var timelineOpponent: RankingEntry.Matchup?
 
-    init(entry: RankingEntry, store: RankingsStore, bench: BenchStore,
+    init(entry: RankingEntry, store: RankingsStore, bench: BenchStore, hiddenCups: HiddenCupsStore,
          onAddToBench: ((BenchEntry.ID) -> Void)? = nil) {
         self.entry = entry
         self.store = store
         self.bench = bench
+        self.hiddenCups = hiddenCups
         self.onAddToBench = onAddToBench
         _fastMoveId = State(initialValue: entry.moveset.first ?? "")
         _charged1Id = State(initialValue: entry.moveset.count > 1 ? entry.moveset[1] : "")
@@ -137,7 +139,8 @@ struct PokemonDetailView: View {
             fastMoveId: fastMoveId,
             chargedMoveIds: chargedMoveIds,
             matchup: matchup,
-            store: store
+            store: store,
+            hiddenCups: hiddenCups
         ) { timelineOpponent = nil }
     }
 
@@ -535,13 +538,14 @@ private struct MatchupDetailSheetView: View {
     let chargedMoveIds: [String]
     let matchup: RankingEntry.Matchup
     let store: RankingsStore
+    let hiddenCups: HiddenCupsStore
     let onDismiss: () -> Void
 
     @State private var model = MatchupModel()
 
     var body: some View {
         NavigationStack {
-            MatchupDetailView(store: store, model: model)
+            MatchupDetailView(store: store, model: model, hiddenCups: hiddenCups)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done", action: onDismiss)

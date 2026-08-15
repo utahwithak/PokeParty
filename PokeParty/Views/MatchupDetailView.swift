@@ -14,6 +14,7 @@ import SwiftUI
 struct MatchupDetailView: View {
     @Bindable var store: RankingsStore
     @Bindable var model: MatchupModel
+    var hiddenCups: HiddenCupsStore
 
     var body: some View {
         ScrollView {
@@ -38,6 +39,10 @@ struct MatchupDetailView: View {
 
     // MARK: - Controls
 
+    private var visibleCupFormats: [RankingFormat] {
+        store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
+    }
+
     private var controlsHeader: some View {
         HStack(spacing: 10) {
             Text("Simulated at")
@@ -45,9 +50,9 @@ struct MatchupDetailView: View {
                 .foregroundStyle(.secondary)
             Picker("League", selection: $store.format) {
                 ForEach(RankingFormat.coreLeagues) { Text($0.title).tag($0) }
-                if !store.cupFormats.isEmpty {
+                if !visibleCupFormats.isEmpty {
                     Divider()
-                    ForEach(store.cupFormats) { Text($0.title).tag($0) }
+                    ForEach(visibleCupFormats) { Text($0.title).tag($0) }
                 }
             }
             .labelsHidden()

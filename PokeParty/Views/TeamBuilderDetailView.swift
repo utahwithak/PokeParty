@@ -16,6 +16,7 @@ struct TeamBuilderDetailView: View {
     @Bindable var model: TeamBuilderModel
     var savedTeams: SavedTeamsStore
     var bench: BenchStore
+    var hiddenCups: HiddenCupsStore
     @State private var showingBattle = false
     @State private var showingSavePrompt = false
     @State private var saveName = ""
@@ -93,12 +94,16 @@ struct TeamBuilderDetailView: View {
         #endif
     }
 
+    private var visibleCupFormats: [RankingFormat] {
+        store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
+    }
+
     private var leaguePicker: some View {
         Picker("League", selection: $store.format) {
             ForEach(RankingFormat.coreLeagues) { Text($0.title).tag($0) }
-            if !store.cupFormats.isEmpty {
+            if !visibleCupFormats.isEmpty {
                 Divider()
-                ForEach(store.cupFormats) { Text($0.title).tag($0) }
+                ForEach(visibleCupFormats) { Text($0.title).tag($0) }
             }
         }
         .labelsHidden()

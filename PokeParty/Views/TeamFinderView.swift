@@ -16,7 +16,12 @@ struct TeamFinderView: View {
     var store: RankingsStore
     var model: TeamFinderModel
     var teamBuilder: TeamBuilderModel
+    var hiddenCups: HiddenCupsStore
     @Binding var selection: SidebarSelection
+
+    private var visibleCupFormats: [RankingFormat] {
+        store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
+    }
 
     var body: some View {
         Form {
@@ -25,9 +30,9 @@ struct TeamFinderView: View {
                     ForEach(RankingFormat.coreLeagues) { format in
                         Text(format.title).tag(format)
                     }
-                    if !store.cupFormats.isEmpty {
+                    if !visibleCupFormats.isEmpty {
                         Divider()
-                        ForEach(store.cupFormats) { format in
+                        ForEach(visibleCupFormats) { format in
                             Text(format.title).tag(format)
                         }
                     }

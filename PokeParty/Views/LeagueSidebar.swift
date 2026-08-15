@@ -23,13 +23,10 @@ struct LeagueSidebar: View {
     var store: RankingsStore
     var hiddenCups: HiddenCupsStore
     @Binding var selection: SidebarSelection
+    @State private var showingSettings = false
 
     private var visibleCupFormats: [RankingFormat] {
         store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
-    }
-
-    private var hiddenCupFormats: [RankingFormat] {
-        store.cupFormats.filter { hiddenCups.isHidden($0.id) }
     }
 
     var body: some View {
@@ -75,21 +72,27 @@ struct LeagueSidebar: View {
                 }
             }
 
-            if !hiddenCupFormats.isEmpty {
-                Section("Hidden Cups") {
-                    ForEach(hiddenCupFormats) { format in
-                        row(for: format)
-                            .foregroundStyle(.secondary)
-                            .contextMenu {
-                                Button("Unhide Cup", systemImage: "eye") {
-                                    hiddenCups.unhide(format.id)
-                                }
-                            }
-                    }
+            Section {
+                Button {
+                    showingSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape.fill")
                 }
+                .buttonStyle(.plain)
             }
         }
         .navigationTitle("PokeParty")
+        .sheet(isPresented: $showingSettings) {
+            NavigationStack {
+                SettingsView(store: store, hiddenCups: hiddenCups)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingSettings = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 480, minHeight: 420)
+        }
     }
 
     private func row(for format: RankingFormat) -> some View {
