@@ -105,6 +105,7 @@ final class RankingsStore {
                 .filter { $0.released != false && !($0.tags?.contains("shadow") ?? false) }
                 .sorted { ($0.dex, $0.speciesName) < ($1.dex, $1.speciesName) }
             cupFormats = (gm.formats ?? []).filter { !$0.isCoreLeague && $0.hasRankings && $0.showFormat == true }
+            buildFamilyGraph()
             gameMasterLoaded = true
         } catch {
             phase = .failed(error.localizedDescription)
@@ -160,12 +161,67 @@ final class RankingsStore {
             ?? id.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
-    /// Every Pokémon in the same evolution family as `id` (the line shares a
-    /// `family.id`), dex-sorted. Falls back to just the Pokémon itself.
-    func family(for id: String) -> [Pokemon] {
+    /// Every species directly linked to another by an evolution — built from
+    /// `family.parent`/`family.evolutions`, not `family.id`, so a species
+    /// whose own gamemaster entry is missing its `family` object (e.g.
+    /// Gastrodon, which has no `family` key at all in some dumps) still
+    /// groups correctly as long as a relative declares the link (Shellos
+    /// declares Gastrodon as its evolution). Undirected: covers both the
+    /// forward (`evolutions`) and backward (`parent`) declaration of the
+    /// same edge.
+    private var evolutionNeighbors: [String: Set<String>] = [:]
+    /// Immediate pre-evolution for each species that has one, derived from
+    /// the same links.
+    private var parentOf: [String: String] = [:]
+
+    private func buildFamilyGraph() {
+        evolutionNeighbors = [:]
+        parentOf = [:]
+        func link(_ a: String, _ b: String) {
+            evolutionNeighbors[a, default: []].insert(b)
+            evolutionNeighbors[b, default: []].insert(a)
+        }
+        for pokemon in allPokemon {
+            guard let family = pokemon.family else { continue }
+            if let parent = family.parent {
+                link(pokemon.speciesId, parent)
+                parentOf[pokemon.speciesId] = parent
+            }
+            for evolution in family.evolutions ?? [] {
+                link(pokemon.speciesId, evolution)
+                parentOf[evolution] = pokemon.speciesId
+            }
+        }
+    }
+
+    /// Every Pokémon connected to `id` by a direct evolution link (forward or
+    /// backward, transitively) — the whole line, dex-sorted. Falls back to
+    /// just the Pokémon itself if it neither evolves nor is evolved into.
+    /// When `excludingPreEvolutions` is set, strict ancestors of `id` along
+    /// its own lineage are dropped — you can only evolve one way, so once a
+    /// scan/bench entry confirms the current stage, earlier stages can't
+    /// apply to it anymore (sibling branches from a fork, e.g. Gardevoir
+    /// when `id` is Gallade, are unaffected — only direct ancestors of `id`).
+    func family(for id: String, excludingPreEvolutions: Bool = false) -> [Pokemon] {
         guard let pokemon = pokemonById[id] else { return [] }
-        guard let familyId = pokemon.family?.id else { return [pokemon] }
-        let members = allPokemon.filter { $0.family?.id == familyId }
+        var groupIds: Set<String> = [id]
+        var queue = [id]
+        while let next = queue.popLast() {
+            for neighbor in evolutionNeighbors[next] ?? [] where !groupIds.contains(neighbor) {
+                groupIds.insert(neighbor)
+                queue.append(neighbor)
+            }
+        }
+        var members = allPokemon.filter { groupIds.contains($0.speciesId) }
+        if excludingPreEvolutions {
+            var ancestors: Set<String> = []
+            var current = id
+            while let parent = parentOf[current] {
+                ancestors.insert(parent)
+                current = parent
+            }
+            members.removeAll { ancestors.contains($0.speciesId) }
+        }
         return members.isEmpty ? [pokemon] : members
     }
 

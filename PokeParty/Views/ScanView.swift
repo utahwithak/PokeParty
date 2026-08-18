@@ -28,6 +28,10 @@ struct ScanLiveView: View {
                 statusRow
                 autoAdvanceRow
                 liveContent
+                if !model.history.isEmpty {
+                    Divider()
+                    historySection
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -190,7 +194,8 @@ struct ScanLiveView: View {
             }
 
             if let hit = model.bestRankHit(store: store) {
-                Text("Best rank: #\(hit.rank) — \(hit.league.title) League")
+                let asEvolved = live.speciesId.flatMap { store.pokemonById[$0]?.speciesName } != hit.speciesName
+                Text("Best rank: #\(hit.rank) — \(hit.league.title) League\(asEvolved ? " as \(hit.speciesName)" : "")")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(hit.rank <= model.autoAdvanceThreshold ? Theme.win : .secondary)
                     .monospacedDigit()
@@ -207,6 +212,53 @@ struct ScanLiveView: View {
     private func barsLine(_ barIVs: BarIVs?) -> String? {
         guard let atk = barIVs?.atk, let def = barIVs?.def, let hp = barIVs?.hp else { return nil }
         return "\(atk) / \(def) / \(hp)"
+    }
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Scan History", systemImage: "clock.arrow.circlepath")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear") { model.clearHistory() }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(model.history) { entry in
+                    historyRow(entry)
+                    if entry.id != model.history.last?.id {
+                        Divider()
+                    }
+                }
+            }
+        }
+    }
+
+    private func historyRow(_ entry: ScanModel.HistoryEntry) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.speciesName).font(.body)
+                Text("\(entry.ivs.atk)/\(entry.ivs.def)/\(entry.ivs.hp)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Spacer()
+            if let hit = entry.bestRank {
+                let asEvolved = hit.speciesName != entry.speciesName
+                Text("#\(hit.rank) \(hit.league.title)\(asEvolved ? " (\(hit.speciesName))" : "")")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(hit.rank <= model.autoAdvanceThreshold ? Theme.win : .secondary)
+                    .monospacedDigit()
+            }
+            Text(entry.date, style: .time)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .padding(.vertical, 6)
     }
 
     private func detailLine(_ live: ScanModel.LiveScan) -> String {
@@ -229,7 +281,9 @@ struct ScanGridView: View {
 
     private var family: [Pokemon] {
         guard let id = model.currentSpeciesId else { return [] }
-        return store.family(for: id)
+        // A live scan confirms the current stage — you can't devolve, so
+        // earlier stages in the line aren't a possible outcome here.
+        return store.family(for: id, excludingPreEvolutions: true)
     }
 
     private var selectedCell: (speciesId: String, league: CheckLeague)? {

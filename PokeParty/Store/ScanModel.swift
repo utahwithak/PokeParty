@@ -50,6 +50,17 @@ final class ScanModel {
         let percent: Double
     }
 
+    /// One distinct Pokémon the live loop landed on — recorded so a session
+    /// of auto-advancing through a box leaves a browsable trail behind.
+    struct HistoryEntry: Identifiable {
+        let id = UUID()
+        var date: Date
+        var speciesId: String?
+        var speciesName: String
+        var ivs: IVs
+        var bestRank: RankHit?
+    }
+
     /// A grid cell staged for the bench: species + chosen league + the IVs
     /// (and capture date) in effect at the moment it was tapped. Kept
     /// separate from the live loop so scanning the next Pokémon doesn't
@@ -92,6 +103,12 @@ final class ScanModel {
     /// permission case, so ScanView can offer a shortcut into System
     /// Settings rather than just showing the error text.
     var swipeErrorNeedsAccessibility = false
+
+    /// Distinct Pokémon seen this session, most recent first.
+    private(set) var history: [HistoryEntry] = []
+    private static let maxHistory = 50
+
+    func clearHistory() { history.removeAll() }
 
     func setAutoAdvance(_ enabled: Bool) {
         autoAdvance = enabled
@@ -136,8 +153,8 @@ final class ScanModel {
         liveStatus = .scanning
         liveTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.performOneScan(store: store)
-                try? await Task.sleep(for: .seconds(4.5))
+                let delay = await self?.performOneScan(store: store) ?? Self.idleScanInterval
+                try? await Task.sleep(for: .seconds(delay))
             }
         }
     }
@@ -147,14 +164,24 @@ final class ScanModel {
         liveTask = nil
     }
 
-    private func performOneScan(store: RankingsStore) async {
+    /// While actively chasing the next advance (auto-advance on, not paused
+    /// or stopped) the loop re-scans quickly so a just-fired swipe or a
+    /// still-settling read gets picked up almost immediately; otherwise
+    /// (idle, paused, stopped, or erroring) there's nothing new to catch yet.
+    private static let activeScanInterval: TimeInterval = 1.0
+    private static let idleScanInterval: TimeInterval = 4.5
+
+    /// Runs one capture → OCR → advance cycle. Returns how long the loop
+    /// should wait before the next one.
+    @discardableResult
+    private func performOneScan(store: RankingsStore) async -> TimeInterval {
         do {
             let image = try await scanner.capturePhoneMirroringFrame()
             let observations = try await scanner.recognizeText(in: image)
 
             guard let info = await scanner.extractPokemonInfo(from: observations) else {
                 liveStatus = .error(ScanError.parseFailure.localizedDescription)
-                return
+                return Self.idleScanInterval
             }
 
             let speciesId = fuzzyMatch(info.name, in: store.pokemonById)
@@ -168,34 +195,84 @@ final class ScanModel {
                 rawName: info.name, cp: info.cp, level: info.level, maxHP: info.maxHP, barIVs: barIVs,
                 speciesId: speciesId, candidates: candidates
             ))
+            recordHistory(store: store)
             await handleAutoAdvance(store: store)
+            // Still actively trying to advance (not paused/stopped above) —
+            // keep polling fast so a not-yet-determined read (species or IVs
+            // still resolving) is retried right away instead of blind-swiping
+            // on a stale scan.
+            return (autoAdvance && autoAdvancePausedReason == nil) ? Self.activeScanInterval : Self.idleScanInterval
         } catch let error as ScanError {
             // Transient: no mirroring window or parse failure — keep looping.
             liveStatus = .error(error.localizedDescription)
+            return Self.idleScanInterval
         } catch {
             // Unexpected system error — most likely SCK access denied (on macOS 15+
             // the process sometimes needs a restart after first permission grant).
             // Stop the loop immediately so the OS dialog can't re-trigger.
             stopScanning()
             liveStatus = .error("Screen Recording access failed. If you just granted permission, restart PokeParty — then tap Retry.")
+            return Self.idleScanInterval
         }
     }
 
-    /// If auto-advance is on, swipes to the next Pokémon unless the one just
-    /// scanned already meets `autoAdvanceThreshold` — in which case it pauses
-    /// itself instead, so a rare good IV isn't swiped past unattended.
+    /// If auto-advance is on, swipes to the next Pokémon — but only once the
+    /// scan has actually determined a species and IVs, never on a still-
+    /// resolving or unrecognized read. Stops auto-advance outright (rather
+    /// than a self-resuming pause) once the current Pokémon's best rank
+    /// already meets `autoAdvanceThreshold`, so a good find can't start
+    /// swiping again on its own — e.g. from a transient OCR blip — while
+    /// the toggle is still nominally on and the mouse happens to be back
+    /// over the window. Also holds off (without disabling the toggle) while
+    /// the mouse is outside the mirroring window, since a swipe visibly
+    /// relocates the real cursor and shouldn't yank it away from whatever
+    /// else it's doing.
     private func handleAutoAdvance(store: RankingsStore) async {
         guard autoAdvance else { return }
-        if let hit = bestRankHit(store: store), hit.rank <= autoAdvanceThreshold {
-            autoAdvancePausedReason = "Rank #\(hit.rank) in \(hit.league.title) League — auto-advance paused."
+        guard case .found(let live) = liveStatus, live.speciesId != nil else {
+            // Species not resolved yet (mid-transition, garbled OCR, or an
+            // unrecognized screen) — wait for a clean read before advancing.
+            return
+        }
+        let barsComplete = live.barIVs?.atk != nil && live.barIVs?.def != nil && live.barIVs?.hp != nil
+        guard barsComplete || !live.candidates.isEmpty else {
+            // Species matched but no usable IV signal yet (bars unread and
+            // no candidates narrowed down) — same as above, wait it out.
+            return
+        }
+        guard let hit = bestRankHit(store: store) else { return }
+        if hit.rank <= autoAdvanceThreshold {
+            autoAdvancePausedReason = "Rank #\(hit.rank) in \(hit.league.title) League as \(hit.speciesName) — auto-advance stopped."
+            autoAdvance = false
+            return
+        }
+        guard await scanner.isMouseOverMirroringWindow() else {
+            autoAdvancePausedReason = "Move the mouse back over iPhone Mirroring to resume auto-advance."
             return
         }
         autoAdvancePausedReason = nil
         if !(await performSwipe()) {
-            // Swiping is broken (e.g. permission not granted) — stop retrying
-            // every 4.5s and surfacing the same failure.
+            // Swiping is broken (e.g. permission not granted) — stop
+            // retrying and surfacing the same failure over and over.
             autoAdvance = false
         }
+    }
+
+    /// Appends a history entry when the live loop lands on a Pokémon
+    /// different from the last one recorded — repeated idle re-scans of an
+    /// unchanged screen (while waiting or paused) shouldn't spam the list.
+    /// Requires a resolved species: OCR sometimes picks up incidental screen
+    /// text (e.g. "Show off this Pokémon with a Catch") that fails to match
+    /// any real Pokémon, and that shouldn't get logged as a scan at all.
+    private func recordHistory(store: RankingsStore) {
+        guard case .found(let live) = liveStatus, let speciesId = live.speciesId else { return }
+        let ivs = currentIVs
+        if let last = history.first, last.speciesId == speciesId, last.ivs == ivs { return }
+        let name = store.pokemonById[speciesId]?.speciesName ?? live.rawName
+        history.insert(HistoryEntry(
+            date: .now, speciesId: speciesId, speciesName: name,
+            ivs: ivs, bestRank: bestRankHit(store: store)), at: 0)
+        if history.count > Self.maxHistory { history.removeLast() }
     }
 
     /// Fires the swipe-to-next gesture once, independent of auto-advance —
@@ -231,23 +308,36 @@ final class ScanModel {
     struct RankHit {
         let rank: Int
         let league: CheckLeague
+        /// Which evolution family member this rank belongs to — since IVs
+        /// carry through evolution, the best rank often belongs to a
+        /// different stage than whatever's currently on screen.
+        let speciesName: String
     }
 
-    /// The best (lowest-numbered) IV rank the current scan's species
-    /// achieves across Great/Ultra/Master League — the same three leagues
-    /// shown in the Scan grid — with its currently-known IVs. Exposed (not
-    /// just used internally by auto-advance) so ScanView can show it
-    /// continuously rather than only inside the paused-reason banner.
+    /// The best (lowest-numbered) IV rank across the current scan's species
+    /// and every later evolution (never an earlier stage — you can't
+    /// devolve) across Great/Ultra/Master League, with the currently-known
+    /// IVs. This mirrors every cell the Scan grid shows, so a great roll
+    /// that only shows up once a Pokémon evolves (or only in Ultra/Master)
+    /// is caught the same as a great roll on the current form/league.
+    /// Exposed (not just used internally by auto-advance) so ScanView can
+    /// show it continuously rather than only inside the paused-reason banner.
     func bestRankHit(store: RankingsStore) -> RankHit? {
-        guard case .found(let live) = liveStatus, let sid = live.speciesId,
-              let species = store.pokemonById[sid] else { return nil }
+        guard case .found(let live) = liveStatus, let sid = live.speciesId else { return nil }
         let ivs = currentIVs
-        return [CheckLeague.great, .ultra, .master].compactMap { league in
-            IVCalculator.rank(
-                baseAtk: species.baseStats.atk, baseDef: species.baseStats.def, baseHp: species.baseStats.hp,
-                cpCap: league.cap, ivs: ivs
-            ).map { RankHit(rank: $0.rank, league: league) }
-        }.min { $0.rank < $1.rank }
+        var best: RankHit?
+        for pokemon in store.family(for: sid, excludingPreEvolutions: true) {
+            for league in [CheckLeague.great, .ultra, .master] {
+                guard let result = IVCalculator.rank(
+                    baseAtk: pokemon.baseStats.atk, baseDef: pokemon.baseStats.def, baseHp: pokemon.baseStats.hp,
+                    cpCap: league.cap, ivs: ivs
+                ) else { continue }
+                if best == nil || result.rank < best!.rank {
+                    best = RankHit(rank: result.rank, league: league, speciesName: pokemon.speciesName)
+                }
+            }
+        }
+        return best
     }
 
     /// Infers the actual current level from the scanned maxHP and known IVs.

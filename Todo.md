@@ -16,11 +16,11 @@
 - [ ] Add Shadow toggle to bench pokemon and scanning
 - [ ] shorten scaning time to every 2 seconds
 - [ ] confirmation to remove pokemon from bench
-- [ ] when scanning don't show pokemon of a lesser evolution for the breed
+- [x] when scanning don't show pokemon of a lesser evolution for the breed — `RankingsStore.family(for:excludingPreEvolutions:)` now drops strict ancestors of the scanned/bench species; wired into Scan grid, Bench unclassified grid, and auto-advance's rank check
 - [ ] running a tournament on iOS doesn't show the results. 
 - [ ] remember which tab was selected across launches
 - [ ] sync tournament results on icloud as well
-- [ ] Some evolutions are not showing up during scanning -> Shellos, far fetch'd. 
+- [x] Some evolutions are not showing up during scanning -> Shellos, far fetch'd. — root cause was Gastrodon's gamemaster entry missing its `family` object entirely; family grouping now built from a parent/evolutions link graph (not `family.id` equality), so a relative's declared link is enough even when a species' own entry is incomplete (also fixes the same latent gap for Type: Null/Silvally). Kantonian Farfetch'd itself doesn't evolve in GO, so it correctly stands alone.
 
 ## Future
 - [ ] Add a super-advanced mode to edit move data and availability, then simulate against it

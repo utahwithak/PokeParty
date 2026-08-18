@@ -18,11 +18,18 @@ final class EntitlementStore {
 
     static let productID = "com.freebits.pokeparty.pro"
 
+    /// True when this build embeds a provisioning profile — a development,
+    /// ad-hoc, or Developer ID build run outside the Mac App Store. Apple
+    /// strips this file from Store-distributed builds, so its absence means
+    /// this is a genuine Store install and should be gated behind purchase.
+    static let isNonAppStoreBuild: Bool =
+        Bundle.main.url(forResource: "embedded", withExtension: "provisionprofile") != nil
+
     /// Whether the pro features are currently unlocked.
     #if DEBUG
     private(set) var isUnlocked = true
     #else
-    private(set) var isUnlocked = false
+    private(set) var isUnlocked = Self.isNonAppStoreBuild
     #endif
     /// The StoreKit product — nil until `load()` completes.
     private(set) var product: Product?

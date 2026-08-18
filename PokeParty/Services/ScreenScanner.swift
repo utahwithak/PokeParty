@@ -160,18 +160,28 @@ actor ScreenScanner {
         AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): prompt] as CFDictionary)
     }
 
-    /// Swipes from the top-right toward the top-left of the iPhone Mirroring
+    /// True when the mouse cursor is currently over the iPhone Mirroring
+    /// window. Each auto-advance swipe relocates the real system cursor (it's
+    /// posted as a genuine drag, not a background event), so auto-advance
+    /// pauses itself once the user's mouse — and presumably attention — has
+    /// moved elsewhere, rather than yanking the cursor back every cycle.
+    func isMouseOverMirroringWindow() async -> Bool {
+        guard let frame = try? await mirroringWindowFrame() else { return false }
+        let location = CGEvent(source: nil)?.location ?? .zero
+        return frame.contains(location)
+    }
+
+    /// Swipes from the mid-right toward the mid-left of the iPhone Mirroring
     /// window — the gesture Pokémon GO's detail/appraisal screen uses to
-    /// advance to the next Pokémon in the box/list. The exact tap point
-    /// doesn't matter as long as it clears the status bar and lands on the
-    /// card, so this uses fixed proportions of the window rather than
-    /// anything OCR-derived.
+    /// advance to the next Pokémon in the box/list. Vertically centered so
+    /// the drag lands on the card itself rather than a header/status panel
+    /// near the top of the screen, which can swallow the gesture as a tap.
     func swipeToNextPokemon() async throws {
         guard hasAccessibilityAccess(prompt: true) else {
             throw ScanError.accessibilityDenied
         }
         let frame = try await mirroringWindowFrame()
-        let y = frame.minY + frame.height * 0.18
+        let y = frame.minY + frame.height * 0.5
         let start = CGPoint(x: frame.minX + frame.width * 0.85, y: y)
         let end = CGPoint(x: frame.minX + frame.width * 0.15, y: y)
         try await postDrag(from: start, to: end)
