@@ -83,7 +83,7 @@ nonisolated struct SwitchPolicyNet {
     }
 }
 
-extension SwitchPolicyNet {
+nonisolated extension SwitchPolicyNet {
     /// The policy weights shipped with the app (nil when the resource is absent,
     /// e.g. in the bench/rl CLI builds, or if the file fails validation).
     static let bundled: SwitchPolicyNet? = {

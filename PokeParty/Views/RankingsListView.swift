@@ -36,25 +36,6 @@ struct RankingsListView: View {
         .navigationTitle(store.format.title)
         .inlineNavigationTitle()
         .searchable(text: $store.searchText, prompt: "Search Pokémon")
-        .toolbar {
-            ToolbarItem {
-                Menu {
-                    Button {
-                        Task { await store.refresh() }
-                    } label: {
-                        Label("Check for Updates", systemImage: "arrow.clockwise")
-                    }
-                    Button {
-                        Task { await store.rebuildCache() }
-                    } label: {
-                        Label("Rebuild Data Cache", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                } label: {
-                    Label("Data", systemImage: "arrow.clockwise")
-                }
-                .help("Refresh or rebuild PvPoke data")
-            }
-        }
     }
 
     private var rankingsList: some View {
@@ -102,6 +83,8 @@ private struct RankingRow: View {
                 HStack(spacing: 5) {
                     Text(entry.speciesName)
                         .font(.body.weight(.medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     if store.pokemon(for: entry)?.isShadow == true { ShadowBadge() }
                 }
                 if let types = store.pokemon(for: entry)?.displayTypes, !types.isEmpty {
@@ -125,6 +108,8 @@ struct ScoreBadge: View {
         Text(score, format: .number.precision(.fractionLength(1)))
             .font(.subheadline.weight(.bold).monospacedDigit())
             .foregroundStyle(Theme.scoreText)
+            .lineLimit(1)
+            .fixedSize()
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(Theme.scoreBackground, in: RoundedRectangle(cornerRadius: 8))

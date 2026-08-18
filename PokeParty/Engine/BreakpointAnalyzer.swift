@@ -19,8 +19,19 @@ nonisolated enum BreakpointAnalyzer {
     /// Symmetric shield scenarios analyzed (same count both sides).
     static let shieldScenarios: [Int] = [0, 1, 2]
 
-    /// Subject levels swept for the power-up analysis (vs the level-50 meta).
-    static let sweepLevels: [Double] = Array(stride(from: 20.0, through: 50.0, by: 5.0))
+    /// Subject levels swept for the power-up analysis (15/15/15 vs the meta),
+    /// from a low investment up to the league-legal max level, in ~5-level
+    /// steps. For Master League that's the familiar 20–50; a CP-capped league
+    /// clamps the top of the sweep to whatever level the cap allows.
+    static func sweepLevels(upTo capLevel: Double) -> [Double] {
+        var levels: [Double] = []
+        var offset = 0.0
+        while offset <= 30, capLevel - offset >= 1 {
+            levels.insert(capLevel - offset, at: 0)
+            offset += 5
+        }
+        return levels
+    }
 
     enum Outcome: String, Sendable {
         case win = "Win"
@@ -103,6 +114,7 @@ nonisolated enum BreakpointAnalyzer {
 
     struct Report: Sendable {
         let subjectName: String
+        let leagueTitle: String
         let level: Double
         let fastMoveName: String
         let chargedMoveNames: [String]
@@ -140,6 +152,7 @@ nonisolated enum BreakpointAnalyzer {
     /// Runs the full IV-grid analysis. Battles run in parallel across spreads.
     static func analyze(
         subject: MatchupSimulator.Combatant,
+        leagueTitle: String,
         level: Double,
         opponents: [Opponent],
         movesById: [String: Move]
@@ -291,8 +304,9 @@ nonisolated enum BreakpointAnalyzer {
             if stable { unaffected.append(opp.name) }
         }
 
-        // Level sweep: the subject at 15/15/15, level 20–50, vs the level-50 meta.
-        let levels = sweepLevels
+        // Level sweep: the subject at 15/15/15, from a low level up to the
+        // league-legal max (`level`), vs the meta at that same cap.
+        let levels = sweepLevels(upTo: level)
         let levelStats: [BattlePokemon.Stats] = levels.compactMap { lvl in
             guard let m = IVCalculator.cpm(forLevel: lvl) else { return nil }
             let hp = (m * Double(base.hp + 15)).rounded(.down)
@@ -348,6 +362,7 @@ nonisolated enum BreakpointAnalyzer {
             : subject.species.speciesName
         return Report(
             subjectName: subjectName,
+            leagueTitle: leagueTitle,
             level: level,
             fastMoveName: movesById[subject.fastMoveId]?.name ?? subject.fastMoveId,
             chargedMoveNames: subject.chargedMoveIds.map { movesById[$0]?.name ?? $0 },

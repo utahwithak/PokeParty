@@ -46,7 +46,34 @@ struct TypeBadgeRow: View {
     }
 }
 
+/// A small filled circle for a single type — the compact counterpart to
+/// `TypeBadge` for layouts too narrow to spell out type names.
+struct TypeDot: View {
+    let type: String
+
+    var body: some View {
+        Circle()
+            .fill(PokemonType.gradient(for: type))
+            .frame(width: 10, height: 10)
+            .accessibilityLabel(type.capitalizedFirst)
+    }
+}
+
+/// A horizontal row of `TypeDot`s — the compact counterpart to `TypeBadgeRow`.
+struct TypeDotRow: View {
+    let types: [String]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(types, id: \.self) { TypeDot(type: $0) }
+        }
+    }
+}
+
 #Preview {
-    TypeBadgeRow(types: ["water", "ground"])
-        .padding()
+    VStack(alignment: .leading, spacing: 12) {
+        TypeBadgeRow(types: ["water", "ground"])
+        TypeDotRow(types: ["water", "ground"])
+    }
+    .padding()
 }

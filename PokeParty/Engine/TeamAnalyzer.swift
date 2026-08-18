@@ -18,7 +18,7 @@ import Foundation
 
 // MARK: - Result types
 
-enum LetterGrade: String, Hashable, Codable, Sendable {
+nonisolated enum LetterGrade: String, Hashable, Codable, Sendable {
     case a = "A", b = "B", c = "C", d = "D", f = "F"
 
     /// PvPoke's `calculateLetterGrade(value, goal)`: pure `value / goal`.
@@ -119,7 +119,7 @@ nonisolated struct MetaCandidate: Sendable, Hashable {
 
 // MARK: - Analyzer
 
-enum TeamAnalyzer {
+nonisolated enum TeamAnalyzer {
 
     /// League bulk goals: mean(effectiveDef × hp). Indexed by CP cap. (plan §2.5)
     /// Internal so `GradeFinder` grades trios with the same goals.

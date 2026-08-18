@@ -16,6 +16,11 @@ enum SidebarSelection: Hashable {
     case matchup
     case breakpoints
     case bench
+    #if os(macOS)
+    /// Live capture + IV grid scanning tool — unavailable on iOS since it
+    /// captures the iPhone Mirroring window via ScreenCaptureKit.
+    case scan
+    #endif
 }
 
 /// Sidebar listing tools, the core PvP leagues, and active cups (e.g. Summer Cup).
@@ -56,6 +61,10 @@ struct LeagueSidebar: View {
                     .tag(SidebarSelection.matchup)
                 Label("Breakpoints", systemImage: "stairs")
                     .tag(SidebarSelection.breakpoints)
+                #if os(macOS)
+                Label("Scan", systemImage: "camera.viewfinder")
+                    .tag(SidebarSelection.scan)
+                #endif
             }
 
             Section("Leagues") {
@@ -96,7 +105,9 @@ struct LeagueSidebar: View {
                         }
                     }
             }
+            #if os(macOS)
             .frame(minWidth: 480, minHeight: 420)
+            #endif
         }
     }
 

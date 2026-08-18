@@ -45,7 +45,9 @@ struct TeamBattleView: View {
                 }
             }
         }
+        #if os(macOS)
         .frame(minWidth: 620, minHeight: 640)
+        #endif
     }
 
     // MARK: - Teams
@@ -155,6 +157,7 @@ struct TeamBattleView: View {
                     } label: {
                         HStack(spacing: 8) {
                             Text(pokemon.speciesName).font(.subheadline.weight(.medium))
+                                .lineLimit(1)
                             Spacer()
                             TypeBadgeRow(types: pokemon.displayTypes)
                         }

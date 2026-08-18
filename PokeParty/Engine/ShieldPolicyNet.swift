@@ -71,7 +71,7 @@ nonisolated struct ShieldPolicyNet {
     func decide(_ x: [Double]) -> Bool { logit(x) > 0 }
 }
 
-extension ShieldPolicyNet {
+nonisolated extension ShieldPolicyNet {
     /// The policy weights shipped with the app (nil when the resource is absent,
     /// e.g. in the bench/rl CLI builds, or if the file fails validation).
     static let bundled: ShieldPolicyNet? = {
@@ -81,7 +81,7 @@ extension ShieldPolicyNet {
     }()
 }
 
-extension Battle {
+nonisolated extension Battle {
     /// Drives both sides' shield decisions with the learned policy (a middle
     /// quality tier: near-ShieldSearch play at near-heuristic cost). Any
     /// `shieldOverride` still takes precedence.

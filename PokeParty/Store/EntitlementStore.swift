@@ -23,7 +23,6 @@ final class EntitlementStore {
     private(set) var isUnlocked = true
     #else
     private(set) var isUnlocked = false
-
     #endif
     /// The StoreKit product — nil until `load()` completes.
     private(set) var product: Product?

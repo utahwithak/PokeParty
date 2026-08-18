@@ -47,18 +47,22 @@ struct TeamBuilderView: View {
                                     HStack(spacing: 4) {
                                         Text(benchDisplayName(entry))
                                             .font(.body.weight(.medium))
+                                            .lineLimit(1)
                                         if entry.shadow { ShadowBadge() }
                                     }
                                     HStack(spacing: 6) {
-                                        Text(entry.league.title)
+                                        Text(entry.league?.title ?? "")
                                             .font(.caption2.weight(.semibold))
-                                            .foregroundStyle(entry.league.tint)
+                                            .foregroundStyle(entry.league?.tint ?? .secondary)
+                                            .lineLimit(1)
                                         if let ivs = entry.ivs {
                                             Text("· IVs \(ivs.atk)/\(ivs.def)/\(ivs.hp)")
                                                 .font(.caption2).foregroundStyle(.secondary)
+                                                .lineLimit(1)
                                         } else {
                                             Text("· Optimal IVs")
                                                 .font(.caption2).foregroundStyle(.secondary)
+                                                .lineLimit(1)
                                         }
                                     }
                                 }
@@ -84,6 +88,7 @@ struct TeamBuilderView: View {
                         HStack(spacing: 10) {
                             Text(pokemon.speciesName)
                                 .font(.body.weight(.medium))
+                                .lineLimit(1)
                             Spacer()
                             TypeBadgeRow(types: pokemon.displayTypes)
                         }

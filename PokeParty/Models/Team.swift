@@ -9,7 +9,7 @@
 import Foundation
 
 /// One member of a team: a species plus its chosen moveset.
-struct TeamMember: Identifiable, Hashable, Codable {
+nonisolated struct TeamMember: Identifiable, Hashable, Codable {
     var id = UUID()
     /// The gamemaster species id (e.g. "azumarill").
     var speciesId: String
@@ -39,7 +39,7 @@ struct TeamMember: Identifiable, Hashable, Codable {
     }
 }
 
-extension TeamMember {
+nonisolated extension TeamMember {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id             = try c.decodeIfPresent(UUID.self,      forKey: .id)             ?? UUID()

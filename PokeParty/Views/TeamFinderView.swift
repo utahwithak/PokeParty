@@ -66,7 +66,7 @@ struct TeamFinderView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if model.method == .aiOptimizer {
-                    Text("Hill-climbs the (Pokémon × moveset) space: alternate charged moves and fast moves with significant simulated usage are explored alongside the recommended sets. Each restart begins from a different lead and swaps one team slot at a time until no improvement remains. Results appear as climbers converge.")
+                    Text("Hill-climbs the (Pokémon × moveset) space using recommended movesets by default — optionally alternate charged moves and fast moves with significant simulated usage too. Each restart begins from a different lead and swaps one team slot at a time until no improvement remains. Results appear as climbers converge.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -194,6 +194,28 @@ struct TeamFinderView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Toggle("Explore alternate movesets", isOn: Bindable(model).exploreAlternateMovesets)
+                .disabled(model.isRunning)
+            Text("When on, each Pokémon can also appear with alternate fast/charged move combos, expanding the candidate pool and search space for slower but more thorough runs. Off by default (recommended movesets only).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Slider(
+                    value: Binding(
+                        get: { Double(model.broadFieldSize) },
+                        set: { model.broadFieldSize = Int($0) }),
+                    in: TeamFinderModel.broadFieldSizeRange,
+                    step: TeamFinderModel.broadFieldSizeStep
+                ) {
+                    Text("Broad validation field")
+                }
+                .disabled(model.isRunning || model.isValidatingBroadField)
+                Text("\(model.broadFieldSize.formatted()) random meta teams for the optional post-run \"Validate vs Full Meta\" check")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
             Toggle("Simulate counterswaps", isOn: Bindable(model).simulateCounterswaps)
                 .disabled(model.isRunning)
             Toggle("Learned shield AI", isOn: Bindable(model).learnedShields)
@@ -306,6 +328,7 @@ struct TeamFinderResultsView: View {
                     format: model.resultsFormat,
                     poolSize: model.resultsPoolSize,
                     movesById: store.movesById,
+                    model: model,
                     openInBuilder: { openInTeamBuilder($0.members.map(\.member)) })
             } else if let standings = model.standings {
                 TeamFinderSimulationView(

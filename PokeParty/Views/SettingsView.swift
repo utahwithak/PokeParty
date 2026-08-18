@@ -26,6 +26,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            dataSection
             hiddenCupsSection
             purchasesSection
             feedbackSection
@@ -36,6 +37,25 @@ struct SettingsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(restoreMessage)
+        }
+    }
+
+    private var dataSection: some View {
+        Section {
+            Button {
+                Task { await store.refresh() }
+            } label: {
+                Label("Check for Updates", systemImage: "arrow.clockwise")
+            }
+            Button {
+                Task { await store.rebuildCache() }
+            } label: {
+                Label("Rebuild Data Cache", systemImage: "arrow.triangle.2.circlepath")
+            }
+        } header: {
+            Text("PvPoke Data")
+        } footer: {
+            Text("Check for updated rankings, or rebuild the local cache from scratch.")
         }
     }
 

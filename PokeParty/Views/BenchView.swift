@@ -34,7 +34,6 @@ struct BenchView: View {
     @Binding var selectedID: BenchEntry.ID?
     /// Called when the user taps "Open in Team Builder" in the bench finder results.
     var openTeamInBuilder: ((League, [TeamMember]) -> Void)? = nil
-    @Environment(EntitlementStore.self) private var entitlements
     @State private var searchText = ""
     @State private var addLeague: League = .great
     @State private var sortOrder: BenchSortOrder = .alphabetical
@@ -42,12 +41,10 @@ struct BenchView: View {
     @State private var cacheTask: Task<Void, Never>?
     @State private var benchFinder = BenchFinderModel()
     @State private var showingBenchResults = false
-    #if os(macOS)
-    @State private var showingScanner = false
-    #endif
 
-    /// Entries for `league` matching the current search, in the chosen sort order.
-    private func sortedFilteredEntries(for league: League) -> [BenchEntry] {
+    /// Entries for `league` matching the current search, in the chosen sort
+    /// order. `nil` returns the unclassified bucket.
+    private func sortedFilteredEntries(for league: League?) -> [BenchEntry] {
         var entries = bench.entries.filter { $0.league == league }
         if !searchText.isEmpty {
             let q = searchText.trimmingCharacters(in: .whitespaces)
@@ -89,7 +86,11 @@ struct BenchView: View {
             for entry in entries {
                 guard !Task.isCancelled else { return }
                 guard let sp = pokemonById[entry.speciesId] else { continue }
-                let cap = entry.league.cp
+                // Unclassified entries have no CP cap to rank against — leave
+                // them out of the cache; CP/Rank sort falls back to the
+                // defaults below and sinks them to the bottom.
+                guard let league = entry.league else { continue }
+                let cap = league.cp
                 let levelCap: Double = entry.isBestBuddy ? 51 : 50
                 if let ivs = entry.ivs {
                     let result = IVCalculator.rank(
@@ -157,20 +158,10 @@ struct BenchView: View {
                     Label("Find Teams", systemImage: "wand.and.stars")
                         .labelStyle(.iconOnly)
                         .font(.caption)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
-                .fixedSize()
                 .help("Find the best teams from your bench")
-                #if os(macOS)
-                if entitlements.isUnlocked {
-                    Button { showingScanner = true } label: {
-                        Label("Scan", systemImage: "camera.viewfinder")
-                            .labelStyle(.iconOnly)
-                            .font(.caption)
-                    }
-                    .fixedSize()
-                    .help("Scan a Pokémon from iPhone Mirroring")
-                }
-                #endif
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -184,13 +175,6 @@ struct BenchView: View {
                 model: benchFinder,
                 onOpenInBuilder: openTeamInBuilder)
         }
-        #if os(macOS)
-        .sheet(isPresented: $showingScanner) {
-            ScannerSheet(bench: bench, store: store) { newID in
-                selectedID = newID
-            }
-        }
-        #endif
         .onAppear { refreshSortCache() }
         .onChange(of: bench.entries) { refreshSortCache() }
         .overlay {
@@ -202,6 +186,7 @@ struct BenchView: View {
                 )
             } else if !searchText.isEmpty
                         && League.allCases.allSatisfy({ sortedFilteredEntries(for: $0).isEmpty })
+                        && sortedFilteredEntries(for: nil).isEmpty
                         && addableResults.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             }
@@ -211,25 +196,32 @@ struct BenchView: View {
     @ViewBuilder
     private var benchSections: some View {
         ForEach(League.allCases) { league in
-            let entries = sortedFilteredEntries(for: league)
-            if !entries.isEmpty {
-                Section(league.title + " League") {
-                    ForEach(entries) { entry in
-                        BenchRowView(
-                            entry: entry, store: store,
-                            sortOrder: sortOrder,
-                            cp: sortCache.cp[entry.id],
-                            rank: sortCache.rank[entry.id])
-                            .tag(entry.id)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    if selectedID == entry.id { selectedID = nil }
-                                    bench.delete(entry)
-                                } label: {
-                                    Label("Remove", systemImage: "trash")
-                                }
+            benchSection(title: league.title + " League", entries: sortedFilteredEntries(for: league))
+        }
+        // Fresh scans that could fit several leagues, kept without committing
+        // to one yet — see BenchDetailView's league grid to assign one later.
+        benchSection(title: "Unclassified", entries: sortedFilteredEntries(for: nil))
+    }
+
+    @ViewBuilder
+    private func benchSection(title: String, entries: [BenchEntry]) -> some View {
+        if !entries.isEmpty {
+            Section(title) {
+                ForEach(entries) { entry in
+                    BenchRowView(
+                        entry: entry, store: store,
+                        sortOrder: sortOrder,
+                        cp: sortCache.cp[entry.id],
+                        rank: sortCache.rank[entry.id])
+                        .tag(entry.id)
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                if selectedID == entry.id { selectedID = nil }
+                                bench.delete(entry)
+                            } label: {
+                                Label("Remove", systemImage: "trash")
                             }
-                    }
+                        }
                 }
             }
         }
@@ -247,6 +239,7 @@ struct BenchView: View {
                                 .foregroundColor(.accentColor)
                             Text(pokemon.speciesName)
                                 .font(.body.weight(.medium))
+                                .lineLimit(1)
                             Spacer()
                             TypeBadgeRow(types: pokemon.displayTypes)
                         }
@@ -297,6 +290,7 @@ private struct BenchRowView: View {
                 HStack(spacing: 4) {
                     Text(displayName)
                         .font(.body.weight(.medium))
+                        .lineLimit(1)
                     if entry.shadow { ShadowBadge() }
                     if entry.isBestBuddy {
                         Image(systemName: "star.fill")
@@ -379,10 +373,12 @@ struct BenchDetailView: View {
         local.flatMap { store.entry(id: $0.speciesId)?.moveset } ?? []
     }
 
-    /// Opaque key that changes whenever IVs, league, or Best Buddy status changes.
+    /// Opaque key that changes whenever IVs, league, or Best Buddy status
+    /// changes. nil for unclassified entries — there's no CP cap to rank
+    /// against until a league is chosen.
     private var rankKey: String? {
-        guard let e = local, let ivs = e.ivs else { return nil }
-        return "\(e.speciesId)-\(ivs.atk)-\(ivs.def)-\(ivs.hp)-\(e.league.rawValue)-\(e.isBestBuddy)"
+        guard let e = local, let ivs = e.ivs, let league = e.league else { return nil }
+        return "\(e.speciesId)-\(ivs.atk)-\(ivs.def)-\(ivs.hp)-\(league.rawValue)-\(e.isBestBuddy)"
     }
 
     var body: some View {
@@ -431,13 +427,13 @@ struct BenchDetailView: View {
     private func computeRank(key: String?) {
         rankTask?.cancel()
         guard let key, !key.isEmpty,
-              let e = local, let ivs = e.ivs,
+              let e = local, let ivs = e.ivs, let league = e.league,
               let sp = species else {
             ivRank = nil
             return
         }
         let base = sp.baseStats
-        let cap = e.league.cp
+        let cap = league.cp
         let levelCap: Double = e.isBestBuddy ? 51 : 50
         rankTask = Task.detached(priority: .userInitiated) {
             let result = IVCalculator.rank(
@@ -480,14 +476,21 @@ struct BenchDetailView: View {
                 get: { entry.league },
                 set: { local?.league = $0 }
             )) {
+                Text("Unclassified").tag(League?.none)
                 ForEach(League.allCases) { l in
-                    Text(l.title).tag(l)
+                    Text(l.title).tag(League?.some(l))
                 }
             }
             .pickerStyle(.segmented)
-            Text(entry.league.subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let league = entry.league {
+                Text(league.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Not committed to a league yet — pick one from the ranks below, or scanning will suggest one.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -582,14 +585,33 @@ struct BenchDetailView: View {
                 .padding(.leading, 4)
 
                 if let sp = species {
-                    ivStatsPreview(sp: sp, ivs: ivs, league: entry.league, bestBuddy: entry.isBestBuddy)
+                    if let league = entry.league {
+                        ivStatsPreview(sp: sp, ivs: ivs, league: league, bestBuddy: entry.isBestBuddy)
+                    } else {
+                        unclassifiedGrid(sp: sp, ivs: ivs)
+                    }
                 }
+            } else if let league = entry.league {
+                Text("Uses the best possible IV spread for \(league.title) League's CP cap.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
-                Text("Uses the best possible IV spread for \(entry.league.title) League's CP cap.")
+                Text("Pick a league above, or turn on specific IVs to see ranks across all three.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Multi-league rank grid for an unclassified entry — tapping a cell
+    /// assigns that league to this bench entry (species/IVs stay the same).
+    private func unclassifiedGrid(sp: Pokemon, ivs: IVs) -> some View {
+        IVLeagueGridView(
+            family: store.family(for: sp.speciesId),
+            ivs: ivs,
+            onSelect: { _, league in
+                local?.league = League(rawValue: league.cap)
+            })
     }
 
     /// Shows computed battle stats + IV rank for these IVs at the entry's league CP cap.
@@ -705,7 +727,9 @@ struct BenchTeamResultsView: View {
             Divider()
             content
         }
+        #if os(macOS)
         .frame(minWidth: 760, minHeight: 520)
+        #endif
     }
 
     private var titleBar: some View {
@@ -837,35 +861,19 @@ struct BenchTeamResultsView: View {
 
     private func benchTournamentRow(rank: Int, team: TeamFinder.RankedTeam) -> some View {
         let graded = model.gradedBenchTeams.first(where: { $0.id == team.id })
-        return HStack(alignment: .center, spacing: 12) {
-            Text("#\(rank)")
-                .font(.headline.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
-                .contentTransition(.numericText())
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 12) {
-                    ForEach(Array(team.members.enumerated()), id: \.offset) { index, member in
-                        benchMemberCell(member: member, isLead: index == 0)
-                    }
-                }
-                benchRecordLine(team: team, graded: graded)
-            }
-
-            Spacer()
-
-            if let onOpenInBuilder, let league = model.resultsLeague {
-                Button("Open in Team Builder") {
-                    onOpenInBuilder(league, team.members.map(\.member))
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+        let openInBuilder: (() -> Void)? = (onOpenInBuilder != nil && model.resultsLeague != nil) ? {
+            onOpenInBuilder?(model.resultsLeague!, team.members.map(\.member))
+            dismiss()
+        } : nil
+        return TeamResultRow(
+            rank: rank,
+            members: team.members.enumerated().map { index, member in
+                TeamResultMember(speciesName: member.speciesName, types: member.types,
+                                  shadow: member.shadow, isLead: index == 0)
+            },
+            onOpenInBuilder: openInBuilder,
+            record: { benchRecordLine(team: team, graded: graded) }
+        )
     }
 
     @ViewBuilder
@@ -898,23 +906,6 @@ struct BenchTeamResultsView: View {
         }
     }
 
-    private func benchMemberCell(member: TeamFinder.RankedTeam.Member, isLead: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Text(member.speciesName)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                if member.shadow { ShadowBadge() }
-                if isLead {
-                    Text("LEAD")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            TypeBadgeRow(types: member.types)
-        }
-        .frame(minWidth: 110, alignment: .leading)
-    }
 }
 
 // MARK: - IV text field row

@@ -18,14 +18,19 @@ struct BenchEntry: Identifiable, Hashable, Codable {
     var chargedMoveIds: [String] = []
     var shadow: Bool = false
     /// Which league this Pokémon is built for. IVs optimised for GL differ
-    /// from those for UL or ML.
-    var league: League = .great
+    /// from those for UL or ML. nil = unclassified — kept on the bench without
+    /// committing to a league yet (e.g. a fresh scan that could fit several).
+    var league: League? = nil
     /// The player's actual IVs (0–15 each). nil = use PvP-optimal stats for
     /// the entry's league CP cap.
     var ivs: IVs? = nil
     /// Best Buddy bonus: allows the Pokémon to be powered up one extra level
     /// (level 51 instead of 50), raising its stats and CP ceiling.
     var isBestBuddy: Bool = false
+    /// When this Pokémon was caught/scanned, if known. Used to spot duplicate
+    /// bench entries (same evolution family + same IVs + same day) — a mon
+    /// can evolve between scans, so identity is tracked by family, not species.
+    var capturedDate: Date? = nil
 
     /// Converts this bench entry into a team member, carrying IVs and Best Buddy flag.
     func asTeamMember() -> TeamMember {
@@ -40,7 +45,7 @@ struct BenchEntry: Identifiable, Hashable, Codable {
     }
 
     fileprivate enum CodingKeys: String, CodingKey {
-        case id, speciesId, nickname, fastMoveId, chargedMoveIds, shadow, league, ivs, isBestBuddy
+        case id, speciesId, nickname, fastMoveId, chargedMoveIds, shadow, league, ivs, isBestBuddy, capturedDate
     }
 }
 
@@ -58,8 +63,9 @@ extension BenchEntry {
         fastMoveId     = try c.decode(String.self, forKey: .fastMoveId)
         chargedMoveIds = try c.decodeIfPresent([String].self, forKey: .chargedMoveIds) ?? []
         shadow         = try c.decodeIfPresent(Bool.self,     forKey: .shadow)         ?? false
-        league         = try c.decodeIfPresent(League.self,   forKey: .league)         ?? .great
+        league         = try c.decodeIfPresent(League.self,   forKey: .league)
         ivs            = try c.decodeIfPresent(IVs.self,      forKey: .ivs)
         isBestBuddy    = try c.decodeIfPresent(Bool.self,     forKey: .isBestBuddy)    ?? false
+        capturedDate   = try c.decodeIfPresent(Date.self,     forKey: .capturedDate)
     }
 }

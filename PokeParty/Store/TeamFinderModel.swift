@@ -62,6 +62,13 @@ final class TeamFinderModel {
     static let restartRange = 5.0...50.0
     static let restartStep = 5.0
 
+    /// When off, the AI Optimizer only considers each Pokémon's recommended
+    /// moveset — skipping the alternate (fast, c1, c2) combinations that
+    /// otherwise expand the candidate pool and hill-climb search space.
+    /// Off by default: alternates roughly multiply the search space and most
+    /// runs care about recommended-moveset teams.
+    var exploreAlternateMovesets = false
+
     /// Simulate voluntary switching in tournament battles (turn-0 safe swaps,
     /// counterswaps onto switch-locked opponents, switch-timer escapes, catch
     /// swaps onto a resist, and sac swaps that spend a nearly-fainted mon as an
@@ -86,6 +93,14 @@ final class TeamFinderModel {
     static let fieldSizeRange = 100.0...10000.0
     static let fieldSizeStep = 100.0
 
+    /// Field size for the post-hoc broad-field validation pass: battles each
+    /// AI Optimizer result against this many randomly sampled meta-team
+    /// opponents (much larger than the curated field used during
+    /// hill-climbing) to check which result actually holds up best.
+    var broadFieldSize: Int = 3000
+    static let broadFieldSizeRange = 1000.0...10000.0
+    static let broadFieldSizeStep = 1000.0
+
     /// Completed runs, persisted across launches.
     let savedTournaments = SavedTournamentsStore()
 
@@ -103,11 +118,21 @@ final class TeamFinderModel {
     /// Live optimizer results (nil until first climber converges). Populated
     /// progressively and stays set after the run completes or is cancelled.
     private(set) var optimizerResults: TeamOptimizer.Results?
+    /// The exact candidate pool the last AI Optimizer run was built from —
+    /// kept so a broad-field validation pass can reconstruct battle teams
+    /// using the pool indices in `optimizerResults`.
+    private var optimizerPool: [TeamOptimizer.Candidate] = []
+    /// Live broad-field validation results (nil until a validation pass has
+    /// been started). Populated progressively and stays set after the pass
+    /// completes or is cancelled.
+    private(set) var broadFieldResults: TeamOptimizer.BroadFieldResults?
+    private(set) var isValidatingBroadField = false
     /// The format and pool size the current run was started with.
     private(set) var resultsFormat: RankingFormat?
     private(set) var resultsPoolSize = 0
 
     private var searchTask: Task<Void, Never>?
+    private var validateTask: Task<Void, Never>?
 
     var isRunning: Bool { phase == .loadingRankings || phase == .searching }
 
@@ -144,6 +169,7 @@ final class TeamFinderModel {
     /// Loads the chosen format's rankings and runs the tournament.
     func run(using store: RankingsStore) {
         searchTask?.cancel()
+        validateTask?.cancel()
         let format = format
         let poolSize = poolSize
         let fieldSize = fieldSize
@@ -155,6 +181,7 @@ final class TeamFinderModel {
         let pokemonById = store.pokemonById
         let method = method
         let restarts = restarts
+        let exploreAlternateMovesets = exploreAlternateMovesets
 
         phase = .loadingRankings
         progress = 0
@@ -162,6 +189,9 @@ final class TeamFinderModel {
         standings = nil
         gradedTeams = nil
         optimizerResults = nil
+        optimizerPool = []
+        broadFieldResults = nil
+        isValidatingBroadField = false
         resultsFormat = nil
 
         searchTask = Task {
@@ -199,6 +229,9 @@ final class TeamFinderModel {
             }
 
             if method == .aiOptimizer {
+                optimizerPool = TeamOptimizer.buildCandidates(
+                    entries: entries, poolSize: poolSize, cpCap: format.cp,
+                    pokemonById: pokemonById, exploreAlternateMovesets: exploreAlternateMovesets)
                 let final = await TeamOptimizer.findTeams(
                     entries: entries,
                     poolSize: poolSize,
@@ -210,6 +243,7 @@ final class TeamFinderModel {
                     learnedSwitches: learnedSwitches,
                     voluntarySwitching: simulateCounterswaps,
                     optimalShields: optimalShields,
+                    exploreAlternateMovesets: exploreAlternateMovesets,
                     onProgress: { fraction in
                         Task { @MainActor in self.progress = max(self.progress, fraction) }
                     },
@@ -278,6 +312,55 @@ final class TeamFinderModel {
                     teams: final.teams))
             }
         }
+    }
+
+    /// True once an AI Optimizer run has finished and left a pool + results
+    /// behind to validate against a broader random field.
+    var canValidateAgainstBroadField: Bool {
+        method == .aiOptimizer && !isRunning && !optimizerPool.isEmpty
+            && !(optimizerResults?.teams.isEmpty ?? true)
+    }
+
+    /// Battles every current AI Optimizer result against `broadFieldSize`
+    /// randomly sampled meta-team opponents drawn from the same pool the
+    /// optimizer ran against — a much larger (if noisier) sample than the
+    /// curated field used during hill-climbing, to check which result
+    /// actually holds up best across the metagame.
+    func validateAgainstBroadField(movesById: [String: Move]) {
+        guard canValidateAgainstBroadField, let results = optimizerResults else { return }
+        validateTask?.cancel()
+
+        let teams = results.teams
+        let pool = optimizerPool
+        let fieldSize = broadFieldSize
+        let learnedShields = learnedShields
+        let learnedSwitches = learnedSwitches
+        let voluntarySwitching = simulateCounterswaps
+        let optimalShields = optimalShields
+
+        isValidatingBroadField = true
+        broadFieldResults = nil
+
+        validateTask = Task {
+            let final = await TeamOptimizer.evaluateBroadField(
+                teams: teams, pool: pool, movesById: movesById, fieldSize: fieldSize,
+                learnedShields: learnedShields, learnedSwitches: learnedSwitches,
+                voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
+                onResults: { snapshot in
+                    Task { @MainActor in
+                        withAnimation(.spring(duration: 0.6)) { self.broadFieldResults = snapshot }
+                    }
+                })
+            if Task.isCancelled { return }
+            withAnimation(.spring(duration: 0.6)) { broadFieldResults = final }
+            isValidatingBroadField = false
+        }
+    }
+
+    func cancelBroadFieldValidation() {
+        validateTask?.cancel()
+        validateTask = nil
+        isValidatingBroadField = false
     }
 
     /// The top `poolSize` ranked Pokémon as battle-ready candidates, using the

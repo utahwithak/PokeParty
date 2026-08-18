@@ -407,6 +407,7 @@ struct TeamMovePicker: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

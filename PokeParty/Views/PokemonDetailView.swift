@@ -231,6 +231,8 @@ struct PokemonDetailView: View {
                             .font(.title.weight(.bold))
                             .foregroundStyle(.white)
                             .shadow(color: .black.opacity(0.3), radius: 1, y: 1)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
                         if let types = pokemon?.displayTypes, !types.isEmpty {
                             TypeBadgeRow(types: types)
                         }
@@ -410,6 +412,8 @@ private struct MoveSelectorRow: View {
                     HStack(spacing: 6) {
                         Text(selectedName)
                             .font(.body.weight(.medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                             .help(designation?.help ?? "")
                         if let move { TypeBadge(type: move.type) }
                         Image(systemName: "chevron.up.chevron.down")
@@ -418,6 +422,11 @@ private struct MoveSelectorRow: View {
                     }
                 }
                 .buttonStyle(.plain)
+                // Caps the menu so a long move name can't force the whole row
+                // (and the "Fast"/"Charged" label after the spacer) off-screen —
+                // without this, Menu reports its label's unconstrained ideal
+                // width instead of negotiating for available space.
+                .frame(maxWidth: 200, alignment: .leading)
                 Spacer()
                 Text(slot)
                     .font(.caption2.weight(.semibold))
@@ -552,7 +561,9 @@ private struct MatchupDetailSheetView: View {
                     }
                 }
         }
+        #if os(macOS)
         .frame(minWidth: 580, minHeight: 640)
+        #endif
         .onAppear {
             guard !model.hasBothSides else { return }
             let shadow = store.pokemonById[entry.speciesId]?.isShadow ?? false

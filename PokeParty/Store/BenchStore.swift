@@ -82,9 +82,10 @@ final class BenchStore {
     }
 
     /// Creates and adds a bench entry for a species, defaulting to the
-    /// recommended moveset for the current league (or the first available moves).
+    /// recommended moveset for the current league (or the first available
+    /// moves). `league` nil leaves the entry unclassified.
     @discardableResult
-    func addFromRankings(speciesId: String, store: RankingsStore, league: League = .great) -> BenchEntry {
+    func addFromRankings(speciesId: String, store: RankingsStore, league: League? = .great) -> BenchEntry {
         let moveset: [String]
         if let ranking = store.entry(id: speciesId), ranking.moveset.count >= 2 {
             moveset = Array(ranking.moveset.prefix(3))
@@ -110,9 +111,39 @@ final class BenchStore {
         return entry
     }
 
-    /// Returns true if the species already has a bench entry for the given league.
-    func contains(speciesId: String, league: League) -> Bool {
+    /// Creates and adds a bench entry from a scan result: known IVs and the
+    /// date it was caught, for a specific league (or unclassified if nil).
+    @discardableResult
+    func addFromScan(
+        speciesId: String, ivs: IVs, capturedDate: Date, league: League?, store: RankingsStore
+    ) -> BenchEntry {
+        var entry = addFromRankings(speciesId: speciesId, store: store, league: league)
+        entry.ivs = ivs
+        entry.capturedDate = capturedDate
+        update(entry)
+        return entry
+    }
+
+    /// Returns true if the species already has a bench entry for the given
+    /// league (nil checks the unclassified bucket).
+    func contains(speciesId: String, league: League?) -> Bool {
         entries.contains { $0.speciesId == speciesId && $0.league == league }
+    }
+
+    /// Finds an existing bench entry that likely represents the same physical
+    /// catch: same evolution family, same IVs, same captured day. Pokémon can
+    /// evolve between scans, so identity is tracked by family rather than
+    /// species — re-scanning the same mon after it evolves same-day still
+    /// matches instead of creating a second entry.
+    func duplicate(speciesId: String, ivs: IVs, capturedDate: Date, store: RankingsStore) -> BenchEntry? {
+        guard let familyId = store.pokemonById[speciesId]?.family?.id else { return nil }
+        return entries.first { entry in
+            guard entry.ivs == ivs,
+                  let entryDate = entry.capturedDate,
+                  Calendar.current.isDate(entryDate, inSameDayAs: capturedDate)
+            else { return false }
+            return store.pokemonById[entry.speciesId]?.family?.id == familyId
+        }
     }
 
     // MARK: - Disk

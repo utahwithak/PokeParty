@@ -24,6 +24,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		8F5C56E93030EAB300D739A5 /* Todo.md */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Todo.md; sourceTree = "<group>"; };
 		8F94F9D12FF2AC3700E64E14 /* PokeParty.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PokeParty.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F94F9DE2FF2AC3700E64E14 /* PokePartyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PokePartyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F94F9E82FF2AC3700E64E14 /* PokePartyUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PokePartyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -75,6 +76,7 @@
 		8F94F9C82FF2AC3700E64E14 = {
 			isa = PBXGroup;
 			children = (
+				8F5C56E93030EAB300D739A5 /* Todo.md */,
 				8F94F9D32FF2AC3700E64E14 /* PokeParty */,
 				8F94F9E12FF2AC3700E64E14 /* PokePartyTests */,
 				8F94F9EB2FF2AC3700E64E14 /* PokePartyUITests */,

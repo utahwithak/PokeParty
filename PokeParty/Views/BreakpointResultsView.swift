@@ -21,7 +21,7 @@ struct BreakpointResultsView: View {
                 ContentUnavailableView(
                     "Select a Pokémon",
                     systemImage: "stairs",
-                    description: Text("Choose a Pokémon to see where its IVs change Master League matchups.")
+                    description: Text("Choose a Pokémon to see where its IVs change \(model.format.title) matchups.")
                 )
             }
         }
@@ -29,10 +29,10 @@ struct BreakpointResultsView: View {
         .inlineNavigationTitle()
     }
 
-    /// Re-runs the analysis whenever the subject or its moveset changes.
+    /// Re-runs the analysis whenever the subject, its moveset, or the league changes.
     private var analysisKey: String {
         guard let m = model.member else { return "" }
-        return "\(m.speciesId)|\(m.fastMoveId)|\(m.chargedMoveIds.joined(separator: ","))"
+        return "\(model.format.id)|\(m.speciesId)|\(m.fastMoveId)|\(m.chargedMoveIds.joined(separator: ","))"
     }
 
     private var resultsList: some View {
@@ -58,7 +58,7 @@ struct BreakpointResultsView: View {
                 Section {
                     HStack(spacing: 10) {
                         ProgressView()
-                        Text("Simulating the IV grid against the top \(BreakpointModel.opponentCount) Master League Pokémon…")
+                        Text("Simulating the IV grid against the top \(BreakpointModel.opponentCount) \(model.format.title) Pokémon…")
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
@@ -109,7 +109,7 @@ struct BreakpointResultsView: View {
                     .font(.title2.bold())
                 Text("Level \(report.level.formatted()) · CP \(report.heroCP) at 15/15/15 · \(report.fastMoveName) + \(report.chargedMoveNames.joined(separator: " / "))")
                     .foregroundStyle(.secondary)
-                Text("IVs 12–15 per stat, simulated against the top \(report.opponentNames.count) Master League Pokémon at 0, 1 and 2 shields each (\(report.totalMatchups) matchups per spread).")
+                Text("IVs 12–15 per stat, simulated against the top \(report.opponentNames.count) \(report.leagueTitle) Pokémon at 0, 1 and 2 shields each (\(report.totalMatchups) matchups per spread).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -141,9 +141,9 @@ struct BreakpointResultsView: View {
     }
 
     private func levelSection(_ report: BreakpointAnalyzer.Report) -> some View {
-        Section("Power-up levels — 15/15/15 vs the level-50 meta") {
+        Section("Power-up levels — 15/15/15 up to level \(report.level.formatted())") {
             if report.levelInsights.isEmpty {
-                Text("No matchup changes between level 20 and 50 — leveling past 20 doesn't flip anything against this meta.")
+                Text("No matchup changes across the sweep — powering up further within \(report.leagueTitle)'s cap doesn't flip anything against this meta.")
                     .foregroundStyle(.secondary)
             } else {
                 levelLegend(report.levels)
@@ -151,13 +151,13 @@ struct BreakpointResultsView: View {
                     levelRow(insight)
                 }
             }
-            if !report.alwaysWins.isEmpty {
-                Text("Wins even at level 20: \(report.alwaysWins.joined(separator: ", ")).")
+            if !report.alwaysWins.isEmpty, let lowest = report.levels.first {
+                Text("Wins even at level \(lowest.formatted()): \(report.alwaysWins.joined(separator: ", ")).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             if !report.alwaysLosses.isEmpty {
-                Text("Loses even at level 50: \(report.alwaysLosses.joined(separator: ", ")).")
+                Text("Loses even at level \(report.level.formatted()): \(report.alwaysLosses.joined(separator: ", ")).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

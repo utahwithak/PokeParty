@@ -1,25 +1,25 @@
 //
-//  ScannerModel.swift
+//  ScanModel.swift
 //  PokeParty
 //
-//  Observable model backing the scan sheet. Runs a continuous scan loop
-//  (capture + OCR every few seconds) that feeds a "live" panel; the user
-//  reviews/edits a copy of that data in a separate "staged" panel before
-//  adding it to the bench, without interrupting the live loop.
+//  Observable model backing the Scan tool. Runs a continuous capture + OCR
+//  loop against the iPhone Mirroring window and exposes the best currently-
+//  known IVs for whatever Pokémon is on screen. Staging a bench pick (via a
+//  tap on the IV grid) snapshots those IVs so the live loop can keep scanning
+//  the next Pokémon without disturbing a pick still under review.
 //
-//  Built on ScreenScanner, which captures the iPhone Mirroring window and
-//  is macOS-only, so this whole file is unavailable on iOS.
+//  Built on ScreenScanner, which captures the iPhone Mirroring window and is
+//  macOS-only, so this whole file is unavailable on iOS.
 //
 
 #if os(macOS)
 
 import Foundation
 import SwiftUI
-import Vision
 
 @MainActor
 @Observable
-final class ScannerModel {
+final class ScanModel {
 
     // MARK: - Types
 
@@ -38,6 +38,8 @@ final class ScannerModel {
         var maxHP: Int?
         var barIVs: BarIVs?
         var speciesId: String?
+        /// Best-guess spreads when the bars can't be read cleanly, ranked by
+        /// stat product; `.first` seeds `currentIVs` as a fallback.
         var candidates: [IVCandidate]
     }
 
@@ -46,35 +48,54 @@ final class ScannerModel {
         let ivs: IVs
         let rank: Int
         let percent: Double
-        let level: Double
-        let cp: Int
     }
 
-    /// The editable entry the user is about to add to the bench.
-    struct StagedEntry {
-        var speciesId: String?
-        var ivs = IVs(atk: 15, def: 15, hp: 15)
-        var cp: Int?
-        /// Snapshot of the live scan's candidate list at the moment it was pulled down.
-        var candidates: [IVCandidate] = []
+    /// A grid cell staged for the bench: species + chosen league + the IVs
+    /// (and capture date) in effect at the moment it was tapped. Kept
+    /// separate from the live loop so scanning the next Pokémon doesn't
+    /// disturb a pick still under review; the IVs are editable afterward in
+    /// case the scan misread them.
+    struct StagedPick {
+        var speciesId: String
+        var speciesName: String
+        var league: League
+        var ivs: IVs
+        var capturedDate: Date
     }
 
     // MARK: - State
 
     var liveStatus: LiveStatus = .idle
-    var staged = StagedEntry()
-    var selectedLeague: League = .great
+    var staged: StagedPick?
+    /// Set when confirming `staged` would create a likely duplicate bench
+    /// entry; cleared on any staging change or a forced add.
+    var duplicateWarning: BenchEntry?
 
-    var isLiveScanning: Bool { liveTask != nil }
+    var isScanning: Bool { liveTask != nil }
 
-    // MARK: - Actions
+    /// The best currently-known IV spread: bar readings when complete,
+    /// otherwise the top guessed candidate, otherwise a neutral default.
+    var currentIVs: IVs {
+        guard case .found(let live) = liveStatus else { return IVs(atk: 15, def: 15, hp: 15) }
+        if let atk = live.barIVs?.atk, let def = live.barIVs?.def, let hp = live.barIVs?.hp {
+            return IVs(atk: atk, def: def, hp: hp)
+        }
+        return live.candidates.first?.ivs ?? IVs(atk: 15, def: 15, hp: 15)
+    }
+
+    var currentSpeciesId: String? {
+        guard case .found(let live) = liveStatus else { return nil }
+        return live.speciesId
+    }
+
+    // MARK: - Scanning
 
     private let scanner = ScreenScanner()
     private var liveTask: Task<Void, Never>?
 
     /// Starts the continuous capture → OCR loop. Safe to call repeatedly;
     /// no-ops if already running.
-    func startLiveScanning(store: RankingsStore) {
+    func startScanning(store: RankingsStore) {
         guard liveTask == nil else { return }
         // Gate on the CoreGraphics screen-recording permission check. On macOS 15+
         // SCK can still fail even when this returns true (a process restart is
@@ -94,7 +115,7 @@ final class ScannerModel {
         }
     }
 
-    func stopLiveScanning() {
+    func stopScanning() {
         liveTask?.cancel()
         liveTask = nil
     }
@@ -127,65 +148,72 @@ final class ScannerModel {
             // Unexpected system error — most likely SCK access denied (on macOS 15+
             // the process sometimes needs a restart after first permission grant).
             // Stop the loop immediately so the OS dialog can't re-trigger.
-            stopLiveScanning()
+            stopScanning()
             liveStatus = .error("Screen Recording access failed. If you just granted permission, restart PokeParty — then tap Retry.")
         }
     }
 
-    /// Recomputes the live panel's candidates after the user switches leagues,
-    /// without waiting for the next scan-loop tick or re-running OCR.
-    func recomputeLiveCandidates(store: RankingsStore) {
-        guard case .found(var live) = liveStatus, let speciesId = live.speciesId else { return }
-        live.candidates = computeCandidates(
-            speciesId: speciesId, cp: live.cp, level: live.level, maxHP: live.maxHP, barIVs: live.barIVs, store: store
-        )
-        liveStatus = .found(live)
-    }
+    /// Infers the actual current level from the scanned maxHP and known IVs.
+    /// HP = floor(cpm × (baseHp + hpIV)) is an exact formula, so iterating
+    /// the CPM table gives an exact level match; falls back to the OCR'd level.
+    func determinedLevel(store: RankingsStore) -> Double? {
+        guard case .found(let live) = liveStatus, let sid = live.speciesId,
+              let species = store.pokemonById[sid] else { return nil }
 
-    /// Copies the current live scan down into the editable staging panel.
-    func pullDown() {
-        guard case .found(let live) = liveStatus else { return }
-        staged.speciesId = live.speciesId
-        // A complete bar reading is the measured spread itself, so prefer it
-        // over the top candidate — candidates are ordered by stat product, so
-        // the best-ranked one within the bars' tolerance usually isn't the one
-        // the bars actually showed.
-        if let atk = live.barIVs?.atk, let def = live.barIVs?.def, let hp = live.barIVs?.hp {
-            staged.ivs = IVs(atk: atk, def: def, hp: hp)
-        } else if let top = live.candidates.first {
-            staged.ivs = top.ivs
+        if let maxHP = live.maxHP {
+            let baseHpPlusIV = Double(species.baseStats.hp + currentIVs.hp)
+            var matches: [Double] = []
+            for (index, cpm) in IVCalculator.cpms.enumerated() {
+                if Int((cpm * baseHpPlusIV).rounded(.down)) == maxHP {
+                    matches.append(1.0 + Double(index) * 0.5)
+                }
+            }
+            if !matches.isEmpty {
+                if let sl = live.level {
+                    return matches.min(by: { abs($0 - sl) < abs($1 - sl) })
+                }
+                return matches.first
+            }
         }
-        staged.cp = live.cp
-        staged.candidates = live.candidates
+        return live.level
     }
 
-    /// The level implied by the staged CP + IVs — lets the user sanity-check
-    /// a chosen IV spread against the level actually read off the phone.
-    func stagedDerivedLevel(store: RankingsStore) -> Double? {
-        guard let speciesId = staged.speciesId,
-              let species = store.pokemonById[speciesId],
-              let cp = staged.cp else { return nil }
-        return IVCalculator.level(
-            baseAtk: species.baseStats.atk, baseDef: species.baseStats.def, baseHp: species.baseStats.hp,
-            ivs: staged.ivs, targetCP: cp
-        )
-    }
+    // MARK: - Staging
 
-    /// Adds the staged entry to the bench, then clears the staging panel so
-    /// the live loop can keep feeding the next Pokémon. The live scan loop is
-    /// left running.
-    @discardableResult
-    func addStagedToBench(bench: BenchStore, store: RankingsStore) -> BenchEntry.ID? {
-        guard let speciesId = staged.speciesId else { return nil }
-        var entry = bench.addFromRankings(speciesId: speciesId, store: store, league: selectedLeague)
-        entry.ivs = staged.ivs
-        bench.update(entry)
-        staged = StagedEntry()
-        return entry.id
+    /// Snapshots the current live scan's species + IVs into a staged bench
+    /// pick for the tapped league.
+    func stage(pokemon: Pokemon, league checkLeague: CheckLeague) {
+        guard let league = League(rawValue: checkLeague.cap) else { return }
+        staged = StagedPick(
+            speciesId: pokemon.speciesId, speciesName: pokemon.speciesName,
+            league: league, ivs: currentIVs, capturedDate: .now)
+        duplicateWarning = nil
     }
 
     func clearStaged() {
-        staged = StagedEntry()
+        staged = nil
+        duplicateWarning = nil
+    }
+
+    /// Confirms the staged pick, adding it to the bench. If a likely
+    /// duplicate exists (same evolution family + IVs + captured day) and
+    /// `force` is false, sets `duplicateWarning` instead of adding — call
+    /// again with `force: true` to add anyway.
+    @discardableResult
+    func confirmStaged(bench: BenchStore, store: RankingsStore, force: Bool = false) -> BenchEntry.ID? {
+        guard let staged else { return nil }
+        if !force, let dup = bench.duplicate(
+            speciesId: staged.speciesId, ivs: staged.ivs, capturedDate: staged.capturedDate, store: store
+        ) {
+            duplicateWarning = dup
+            return nil
+        }
+        let entry = bench.addFromScan(
+            speciesId: staged.speciesId, ivs: staged.ivs, capturedDate: staged.capturedDate,
+            league: staged.league, store: store)
+        self.staged = nil
+        duplicateWarning = nil
+        return entry.id
     }
 
     // MARK: - Private
@@ -194,12 +222,14 @@ final class ScannerModel {
         speciesId: String, cp: Int?, level: Double?, maxHP: Int?, barIVs: BarIVs?, store: RankingsStore
     ) -> [IVCandidate] {
         guard let species = store.pokemonById[speciesId] else { return [] }
+        // Master League's cap barely constrains the level climb for any real
+        // Pokémon, so this is a league-agnostic best guess — the IV grid
+        // separately ranks the resolved IVs per league once known.
         let combos = IVCalculator.rankedCombos(
             baseAtk: species.baseStats.atk,
             baseDef: species.baseStats.def,
             baseHp:  species.baseStats.hp,
-            cpCap:   selectedLeague.cp
-        )
+            cpCap:   League.master.cp)
         let bestProduct = combos.first?.statProduct ?? 1.0
 
         // HP is a reliable OCR'd signal: given the actual level, it pins down
@@ -222,11 +252,7 @@ final class ScannerModel {
             if let barDef = barIVs?.def, abs(combo.ivs.def - barDef) > 1 { continue }
             if let barHp  = barIVs?.hp,  abs(combo.ivs.hp  - barHp)  > 1 { continue }
             candidates.append(IVCandidate(
-                ivs:     combo.ivs,
-                rank:    index + 1,
-                percent: combo.statProduct / bestProduct * 100,
-                level:   combo.level,
-                cp:      combo.cp
+                ivs: combo.ivs, rank: index + 1, percent: combo.statProduct / bestProduct * 100
             ))
             if candidates.count >= 20 { break }
         }

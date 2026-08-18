@@ -55,6 +55,18 @@ actor ResourceCache {
         try? modelContext.save()
     }
 
+    /// Seeds a resource from a bundled fallback if nothing is cached yet, and
+    /// backdates it (`fetchedAt: .distantPast`) so it reads as immediately
+    /// stale — the next real load still attempts a live fetch. The bundled
+    /// copy exists only so the very first launch (or a cleared cache) has
+    /// something to show before any network call succeeds.
+    func seedIfMissing(path: String, data: Data) {
+        let descriptor = FetchDescriptor<CachedResource>(predicate: #Predicate { $0.path == path })
+        guard (try? modelContext.fetch(descriptor).first) == nil else { return }
+        modelContext.insert(CachedResource(path: path, data: data, etag: nil, fetchedAt: .distantPast))
+        try? modelContext.save()
+    }
+
     /// Remove every cached resource (used by a manual cache rebuild).
     func deleteAll() {
         try? modelContext.delete(model: CachedResource.self)

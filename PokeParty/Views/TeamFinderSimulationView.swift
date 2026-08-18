@@ -84,30 +84,15 @@ private struct LeaderboardRow: View {
     let openInBuilder: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("#\(rank)")
-                .font(.headline.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
-                .contentTransition(.numericText())
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 12) {
-                    ForEach(Array(team.members.enumerated()), id: \.offset) { index, member in
-                        TeamMemberCell(member: member, isLead: index == 0)
-                    }
-                }
-                record
-            }
-
-            Spacer()
-
-            Button("Open in Team Builder", action: openInBuilder)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+        TeamResultRow(
+            rank: rank,
+            members: team.members.enumerated().map { index, member in
+                TeamResultMember(speciesName: member.speciesName, types: member.types,
+                                  shadow: member.shadow, isLead: index == 0)
+            },
+            onOpenInBuilder: openInBuilder,
+            record: { record }
+        )
     }
 
     @ViewBuilder
@@ -148,31 +133,6 @@ private struct LeaderboardRow: View {
 
 }
 
-/// A member of a suggested team: name, shadow flame, lead marker and types.
-/// Shared by the tournament leaderboard and the AAAA grade-check list.
-private struct TeamMemberCell: View {
-    let member: TeamFinder.RankedTeam.Member
-    let isLead: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Text(member.speciesName)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                if member.shadow { ShadowBadge() }
-                if isLead {
-                    Text("LEAD")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            TypeBadgeRow(types: member.types)
-        }
-        .frame(minWidth: 110, alignment: .leading)
-    }
-}
-
 // MARK: - AI Optimizer results
 
 /// The optimizer's live results: teams ranked by expected meta score, updating
@@ -182,13 +142,25 @@ struct OptimizerResultsView: View {
     let format: RankingFormat?
     let poolSize: Int
     let movesById: [String: Move]
+    let model: TeamFinderModel
     let openInBuilder: (TeamOptimizer.OptimizedTeam) -> Void
+
+    /// Broad-field win rate re-sorts the list once a validation pass has
+    /// produced any results; otherwise the curated meta-field ranking stands.
+    private var displayedTeams: [TeamOptimizer.OptimizedTeam] {
+        model.broadFieldResults?.teams ?? results.teams
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
                 .padding()
             Divider()
+            if results.isComplete {
+                broadFieldBar
+                    .padding()
+                Divider()
+            }
             if results.teams.isEmpty {
                 ContentUnavailableView(
                     "Searching…",
@@ -198,7 +170,7 @@ struct OptimizerResultsView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(results.teams.enumerated()), id: \.element.id) { index, team in
+                        ForEach(Array(displayedTeams.enumerated()), id: \.element.id) { index, team in
                             OptimizerTeamRow(rank: index + 1, team: team, movesById: movesById) {
                                 openInBuilder(team)
                             }
@@ -208,8 +180,47 @@ struct OptimizerResultsView: View {
                         }
                     }
                     .padding(.vertical, 4)
-                    .animation(.spring(duration: 0.6), value: results.teams.map(\.id))
+                    .animation(.spring(duration: 0.6), value: displayedTeams.map(\.id))
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var broadFieldBar: some View {
+        if model.isValidatingBroadField {
+            VStack(alignment: .leading, spacing: 6) {
+                if let broad = model.broadFieldResults, broad.completedTeams > 0 {
+                    ProgressView(
+                        value: Double(broad.completedTeams),
+                        total: Double(max(broad.totalTeams, 1))
+                    ) {
+                        Text("Validated \(broad.completedTeams) of \(broad.totalTeams) teams vs \(broad.fieldSize.formatted()) random meta teams")
+                    }
+                } else {
+                    ProgressView("Sampling a random meta field…")
+                }
+                Button("Cancel", role: .cancel) { model.cancelBroadFieldValidation() }
+            }
+        } else if let broad = model.broadFieldResults, broad.isComplete {
+            HStack {
+                Text("Validated against \(broad.fieldSize.formatted()) random meta teams")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Re-validate") { model.validateAgainstBroadField(movesById: movesById) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        } else if model.canValidateAgainstBroadField {
+            HStack {
+                Text("Curated meta field win rates cluster near 50% by design — validate against a much larger random sample to see which result really holds up.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Validate vs Full Meta") { model.validateAgainstBroadField(movesById: movesById) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
         }
     }
@@ -262,31 +273,26 @@ private struct OptimizerTeamRow: View {
     let openInBuilder: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("#\(rank)")
-                .font(.headline.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
-                .contentTransition(.numericText())
+        TeamResultRow(
+            rank: rank,
+            members: team.members.enumerated().map { index, member in
+                TeamResultMember(
+                    speciesName: member.speciesName, types: member.types,
+                    shadow: member.shadow, isLead: index == 0,
+                    flag: member.isAlternateMoveset ? "ALT" : nil,
+                    tooltip: movesetText(for: member))
+            },
+            onOpenInBuilder: openInBuilder,
+            record: { scoreRow }
+        )
+    }
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 12) {
-                    ForEach(Array(team.members.enumerated()), id: \.offset) { index, member in
-                        OptimizerMemberCell(member: member, isLead: index == 0,
-                                            movesById: movesById)
-                    }
-                }
-                scoreRow
-            }
-
-            Spacer()
-
-            Button("Open in Team Builder", action: openInBuilder)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+    private func movesetText(for member: TeamOptimizer.OptimizedTeam.Member) -> String {
+        let fast = movesById[member.member.fastMoveId]?.name ?? member.member.fastMoveId
+        let charged = member.member.chargedMoveIds
+            .map { movesById[$0]?.name ?? $0 }
+            .joined(separator: " · ")
+        return "\(fast) / \(charged)"
     }
 
     private var scoreRow: some View {
@@ -299,54 +305,14 @@ private struct OptimizerTeamRow: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .contentTransition(.numericText())
-        }
-    }
-}
-
-private struct OptimizerMemberCell: View {
-    let member: TeamOptimizer.OptimizedTeam.Member
-    let isLead: Bool
-    let movesById: [String: Move]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Text(member.speciesName)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                if member.shadow { ShadowBadge() }
-                if isLead {
-                    Text("LEAD")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            TypeBadgeRow(types: member.types)
-            HStack(spacing: 4) {
-                Text(movesetText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if member.isAlternateMoveset {
-                    Text("ALT")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.tint)
-                        .padding(.horizontal, 3)
-                        .padding(.vertical, 1)
-                        .background(.tint.opacity(0.15), in: Capsule())
-                        .help("Alternate moveset — differs from the recommended build.")
-                }
+            if let broadWinRate = team.broadWinRate {
+                Text("· \(broadWinRate, format: .percent.precision(.fractionLength(0))) vs \(team.broadGamesPlayed ?? 0) random")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(broadWinRate >= 0.5 ? Theme.win : Theme.loss)
+                    .contentTransition(.numericText())
+                    .help("Win rate against a much larger random sample of meta teams.")
             }
         }
-        .frame(minWidth: 120, alignment: .leading)
-    }
-
-    private var movesetText: String {
-        let fast = movesById[member.member.fastMoveId]?.name ?? member.member.fastMoveId
-        let charged = member.member.chargedMoveIds
-            .map { movesById[$0]?.name ?? $0 }
-            .joined(separator: " · ")
-        return "\(fast) / \(charged)"
     }
 }
 
@@ -423,29 +389,15 @@ private struct GradedTeamRow: View {
     let openInBuilder: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("#\(rank)")
-                .font(.headline.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 12) {
-                    ForEach(Array(team.members.enumerated()), id: \.offset) { index, member in
-                        TeamMemberCell(member: member, isLead: index == 0)
-                    }
-                }
-                gradeLine
-            }
-
-            Spacer()
-
-            Button("Open in Team Builder", action: openInBuilder)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+        TeamResultRow(
+            rank: rank,
+            members: team.members.enumerated().map { index, member in
+                TeamResultMember(speciesName: member.speciesName, types: member.types,
+                                  shadow: member.shadow, isLead: index == 0)
+            },
+            onOpenInBuilder: openInBuilder,
+            record: { gradeLine }
+        )
     }
 
     private var gradeLine: some View {

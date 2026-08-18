@@ -22,7 +22,7 @@ struct ContentView: View {
     @State private var selectedEntryID: RankingEntry.ID?
     @State private var selectedBenchID: BenchEntry.ID?
     #if os(macOS)
-    @State private var showingCaughtScan = false
+    @State private var scanModel = ScanModel()
     #endif
 
     var body: some View {
@@ -45,21 +45,6 @@ struct ContentView: View {
         // collapse to a single full-width screen, so a forced minimum here
         // would push most row content off the left edge of the phone screen.
         .frame(minWidth: 1040, minHeight: 600)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                if entitlements.isUnlocked {
-                    Button {
-                        showingCaughtScan = true
-                    } label: {
-                        Label("Scan Caught", systemImage: "camera.badge.ellipsis")
-                    }
-                    .help("Scan a caught Pokémon's appraisal screen to see IVs and league ranks")
-                }
-            }
-        }
-        .sheet(isPresented: $showingCaughtScan) {
-            CaughtScanSheet(store: store)
-        }
         #endif
         .task { await store.load() }
         .task { await entitlements.load() }
@@ -97,6 +82,14 @@ struct ContentView: View {
                           teamBuilder.setTeam(members)
                           selection = .teamBuilder
                       })
+        #if os(macOS)
+        case .scan:
+            if entitlements.isUnlocked {
+                ScanLiveView(store: store, model: scanModel)
+            } else {
+                PaywallView()
+            }
+        #endif
         }
     }
 
@@ -144,6 +137,16 @@ struct ContentView: View {
                     description: Text("Choose a Pokémon from your bench to edit its IVs and moves.")
                 )
             }
+        #if os(macOS)
+        case .scan:
+            if entitlements.isUnlocked {
+                ScanGridView(store: store, bench: bench, model: scanModel, onAdded: { benchID in
+                    selectedBenchID = benchID
+                })
+            } else {
+                ContentUnavailableView("", systemImage: "camera.viewfinder")
+            }
+        #endif
         }
     }
 }

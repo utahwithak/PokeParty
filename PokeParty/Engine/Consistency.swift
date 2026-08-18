@@ -10,7 +10,7 @@
 
 import Foundation
 
-enum Consistency {
+nonisolated enum Consistency {
 
     /// A charged/fast move in the form calculateConsistency needs. Reference type
     /// because the algorithm sorts the array and mutates `dpe` in place.

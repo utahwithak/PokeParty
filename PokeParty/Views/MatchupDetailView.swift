@@ -104,6 +104,12 @@ struct MatchupDetailView: View {
                 systemImage: "bolt.horizontal.fill",
                 description: Text("Choose a Pokémon for each side from the list to simulate the 1v1 with every shield scenario for \(store.format.title)."))
             .frame(maxWidth: .infinity, minHeight: 200)
+        } else {
+            ContentUnavailableView(
+                "Can't Simulate These IVs",
+                systemImage: "exclamationmark.triangle",
+                description: Text("One side's custom IVs can't fit under \(store.format.title)'s CP cap. Adjust the IVs or turn off Custom IVs to use the optimal spread."))
+            .frame(maxWidth: .infinity, minHeight: 200)
         }
     }
 
@@ -490,6 +496,8 @@ private struct MatchupMemberCard: View {
                     shadowToggle(member: member)
                 }
                 Divider()
+                ivsSection(member: member)
+                Divider()
                 shieldPicker
             }
             .padding(10)
@@ -572,6 +580,48 @@ private struct MatchupMemberCard: View {
         .toggleStyle(.switch)
         .controlSize(.mini)
         .font(.caption)
+    }
+
+    private func ivsSection(member: TeamMember) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Custom IVs", isOn: Binding(
+                get: { member.ivs != nil },
+                set: { on in
+                    model.setIVs(on ? (member.ivs ?? IVs(atk: 15, def: 15, hp: 15)) : nil, side: side)
+                }))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .font(.caption)
+
+            if let ivs = member.ivs {
+                HStack(spacing: 6) {
+                    ivField("ATK", ivs.atk) { model.setIVs(IVs(atk: $0, def: ivs.def, hp: ivs.hp), side: side) }
+                    ivField("DEF", ivs.def) { model.setIVs(IVs(atk: ivs.atk, def: $0, hp: ivs.hp), side: side) }
+                    ivField("HP",  ivs.hp)  { model.setIVs(IVs(atk: ivs.atk, def: ivs.def, hp: $0), side: side) }
+                }
+            } else {
+                Text("Uses the best possible IV spread for this league's CP cap.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func ivField(_ label: String, _ value: Int, onChange: @escaping (Int) -> Void) -> some View {
+        VStack(spacing: 2) {
+            Text(label)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+            TextField(label, value: Binding(
+                get: { value },
+                set: { onChange(min(max($0, 0), 15)) }
+            ), format: .number)
+            .labelsHidden()
+            .frame(width: 34)
+            .multilineTextAlignment(.center)
+            .textFieldStyle(.roundedBorder)
+            .font(.caption)
+        }
     }
 
     private var shieldPicker: some View {

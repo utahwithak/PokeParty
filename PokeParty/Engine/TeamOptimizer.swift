@@ -10,10 +10,13 @@
 //  1. Expand the ranked meta pool into candidates: one per viable (fast, c1, c2)
 //     moveset combination, using per-move usage weights from the ranking data.
 //     The recommended moveset is always included; alternates are added when
-//     their simulated usage meets the threshold (default 5 %).
+//     their simulated usage meets the threshold (default 5 %) and
+//     `exploreAlternateMovesets` is on (off by default — recommended movesets
+//     only, for a smaller search space and faster runs).
 //  2. Build a meta field: the top `metaSize` ranked Pokémon (recommended
-//     movesets), each paired with its two best coverage partners, weighted
-//     equally. These are the opponent teams candidates are evaluated against.
+//     movesets), each paired with its two best coverage partners, weighted by
+//     meta rank (1/rank, normalized) so beating the top threats matters most.
+//     These are the opponent teams candidates are evaluated against.
 //  3. Hill-climb from `restarts` diverse starting teams. Each step evaluates
 //     every valid single-swap neighbor (different species or different moveset
 //     of the same species, at any of the three positions) in parallel chunks
@@ -54,6 +57,17 @@ nonisolated enum TeamOptimizer {
         let wins: Int
         let losses: Int
         let ties: Int
+        /// Indices into the candidate pool this run was built from — lets a
+        /// later broad-field validation pass rebuild the exact battle team
+        /// without re-deriving it from `members`.
+        let poolIndices: [Int]
+
+        /// Record against a much larger, randomly sampled field of meta teams
+        /// (set by `TeamOptimizer.evaluateBroadField`; nil until that
+        /// validation pass runs against this team).
+        var broadWins: Int?
+        var broadLosses: Int?
+        var broadTies: Int?
 
         /// Order-independent identity: same 3 species + movesets = same team.
         var id: String {
@@ -63,12 +77,33 @@ nonisolated enum TeamOptimizer {
             }.sorted().joined(separator: "|")
         }
         var gamesPlayed: Int { wins + losses + ties }
+
+        var broadGamesPlayed: Int? {
+            guard let broadWins, let broadLosses, let broadTies else { return nil }
+            return broadWins + broadLosses + broadTies
+        }
+        var broadWinRate: Double? {
+            guard let broadWins, let broadTies, let games = broadGamesPlayed, games > 0 else { return nil }
+            return (Double(broadWins) + Double(broadTies) * 0.5) / Double(games)
+        }
     }
 
     struct Results: Sendable {
         var teams: [OptimizedTeam]
         var completedClimbers: Int
         var totalClimbers: Int
+        var isComplete: Bool
+    }
+
+    /// Progress/output of validating optimizer teams against a large, randomly
+    /// sampled field of meta teams — a noisier but far broader check than the
+    /// curated `metaSize`-team field used during hill-climbing. `teams` stays
+    /// sorted by broad win rate (best first) as results stream in.
+    struct BroadFieldResults: Sendable {
+        var teams: [OptimizedTeam]
+        var fieldSize: Int
+        var completedTeams: Int
+        var totalTeams: Int
         var isComplete: Bool
     }
 
@@ -90,13 +125,15 @@ nonisolated enum TeamOptimizer {
         learnedSwitches: Bool = true,
         voluntarySwitching: Bool = false,
         optimalShields: Bool = false,
+        exploreAlternateMovesets: Bool = false,
         prefilterTopK: Int = 30,
         onProgress: (@Sendable (Double) -> Void)? = nil,
         onResults: (@Sendable (Results) -> Void)? = nil
     ) async -> Results {
         let empty = Results(teams: [], completedClimbers: 0, totalClimbers: restarts, isComplete: false)
         let pool = buildCandidates(
-            entries: entries, poolSize: poolSize, cpCap: cpCap, pokemonById: pokemonById)
+            entries: entries, poolSize: poolSize, cpCap: cpCap, pokemonById: pokemonById,
+            exploreAlternateMovesets: exploreAlternateMovesets)
         guard pool.count >= 3 else {
             return Results(teams: [], completedClimbers: 0, totalClimbers: restarts, isComplete: true)
         }
@@ -161,17 +198,133 @@ nonisolated enum TeamOptimizer {
         return Results(teams: best, completedClimbers: completed, totalClimbers: total, isComplete: true)
     }
 
+    // MARK: - Broad-field validation
+
+    /// Battles every one of `teams` against a randomly sampled field of up to
+    /// `fieldSize` distinct meta-team trios drawn from `pool` (the same pool
+    /// the teams were hill-climbed from — see `OptimizedTeam.poolIndices`).
+    /// Where the curated `metaSize`-team field used during optimization is a
+    /// handful of best-coverage trios, this is a much larger, unweighted
+    /// random sample — noisier per-battle, but a broader check of which
+    /// optimized team actually holds up best across the metagame. Returns
+    /// `teams` with `broadWins`/`broadLosses`/`broadTies` filled in, sorted by
+    /// broad win rate (best first); `onResults` streams the same ordering as
+    /// each team's validation completes.
+    static func evaluateBroadField(
+        teams: [OptimizedTeam],
+        pool: [Candidate],
+        movesById: [String: Move],
+        fieldSize: Int,
+        learnedShields: Bool = true,
+        learnedSwitches: Bool = true,
+        voluntarySwitching: Bool = false,
+        optimalShields: Bool = false,
+        onProgress: (@Sendable (Double) -> Void)? = nil,
+        onResults: (@Sendable (BroadFieldResults) -> Void)? = nil
+    ) async -> BroadFieldResults {
+        let empty = BroadFieldResults(
+            teams: teams, fieldSize: 0, completedTeams: 0, totalTeams: teams.count, isComplete: true)
+        guard !teams.isEmpty else { return empty }
+
+        let field = generateRandomField(pool: pool, size: fieldSize)
+        guard !field.isEmpty else { return empty }
+
+        let shieldNet = learnedShields ? ShieldPolicyNet.bundled : nil
+        let switchNet = learnedSwitches ? SwitchPolicyNet.bundled : nil
+
+        var results = teams
+        var completed = 0
+        let total = teams.count
+
+        onResults?(BroadFieldResults(
+            teams: results, fieldSize: field.count, completedTeams: 0, totalTeams: total, isComplete: false))
+
+        await withTaskGroup(of: (index: Int, wins: Int, losses: Int, ties: Int).self) { group in
+            for (index, team) in teams.enumerated() {
+                group.addTask {
+                    guard !Task.isCancelled else { return (index, 0, 0, 0) }
+                    let members = team.poolIndices.map { pool[$0] }
+                    guard let battleTeam = makeTeam(members, movesById: movesById) else {
+                        return (index, 0, 0, 0)
+                    }
+                    var wins = 0, losses = 0, ties = 0
+                    for opponent in field {
+                        if Task.isCancelled { break }
+                        let oppMembers = opponent.map { pool[$0] }
+                        guard let oppTeam = makeTeam(oppMembers, movesById: movesById) else { continue }
+                        var battle = ThreeVThreeBattle(
+                            teamA: battleTeam, teamB: oppTeam,
+                            switchPolicy: .bestMatchup,
+                            optimalShields: optimalShields,
+                            voluntarySwitching: voluntarySwitching,
+                            learnedShieldNet: shieldNet)
+                        if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
+                        switch battle.run().winner {
+                        case .teamA: wins += 1
+                        case .teamB: losses += 1
+                        case .tie: ties += 1
+                        }
+                    }
+                    return (index, wins, losses, ties)
+                }
+            }
+            for await result in group {
+                completed += 1
+                results[result.index].broadWins = result.wins
+                results[result.index].broadLosses = result.losses
+                results[result.index].broadTies = result.ties
+                let ranked = results.sorted { ($0.broadWinRate ?? -1) > ($1.broadWinRate ?? -1) }
+                onProgress?(Double(completed) / Double(max(total, 1)))
+                onResults?(BroadFieldResults(
+                    teams: ranked, fieldSize: field.count,
+                    completedTeams: completed, totalTeams: total,
+                    isComplete: completed == total))
+            }
+        }
+
+        return BroadFieldResults(
+            teams: results.sorted { ($0.broadWinRate ?? -1) > ($1.broadWinRate ?? -1) },
+            fieldSize: field.count, completedTeams: completed, totalTeams: total, isComplete: true)
+    }
+
+    /// Randomly samples up to `size` distinct valid trios (species/family
+    /// disjoint, like any real team) from `pool` via rejection sampling.
+    /// Returns fewer than `size` only when the pool is too small to have that
+    /// many unique combinations.
+    private static func generateRandomField(pool: [Candidate], size: Int) -> [[Int]] {
+        guard pool.count >= 3, size > 0 else { return [] }
+        var field: [[Int]] = []
+        var used = Set<String>()
+        let maxAttempts = size * 20
+        var attempts = 0
+        while field.count < size && attempts < maxAttempts {
+            attempts += 1
+            let i = Int.random(in: 0..<pool.count)
+            var j = Int.random(in: 0..<pool.count)
+            while j == i { j = Int.random(in: 0..<pool.count) }
+            var k = Int.random(in: 0..<pool.count)
+            while k == i || k == j { k = Int.random(in: 0..<pool.count) }
+            guard distinct(pool[i], pool[j]), distinct(pool[i], pool[k]), distinct(pool[j], pool[k])
+            else { continue }
+            let key = [i, j, k].sorted().map(String.init).joined(separator: "+")
+            guard used.insert(key).inserted else { continue }
+            field.append([i, j, k])
+        }
+        return field
+    }
+
     // MARK: - Candidate pool construction
 
     /// Expands the top `poolSize` ranking entries into (Pokémon × moveset) candidates.
-    /// The recommended moveset is always first; alternates with simulated usage ≥
-    /// `usageThreshold` are appended. Species with fewer than 2 viable charged
-    /// moves fall back to just the recommended moveset.
+    /// The recommended moveset is always first; when `exploreAlternateMovesets` is on,
+    /// alternates with simulated usage ≥ `usageThreshold` are appended. Species with
+    /// fewer than 2 viable charged moves fall back to just the recommended moveset.
     static func buildCandidates(
         entries: [RankingEntry],
         poolSize: Int,
         cpCap: Int,
         pokemonById: [String: Pokemon],
+        exploreAlternateMovesets: Bool = false,
         usageThreshold: Double = 0.05
     ) -> [Candidate] {
         var result: [Candidate] = []
@@ -186,6 +339,12 @@ nonisolated enum TeamOptimizer {
 
             let recFast = entry.moveset[0]
             let recCharged = Array(entry.moveset[1...].prefix(2))
+
+            guard exploreAlternateMovesets else {
+                addCandidate(entry: entry, r: r, fast: recFast, charged: recCharged,
+                             cpCap: cpCap, isAlternate: false, to: &result)
+                continue
+            }
 
             // Collect viable fast moves; always include recommended.
             var viableFast: [String] = entry.moves?.fastMoves
@@ -266,7 +425,9 @@ nonisolated enum TeamOptimizer {
 
     /// Builds representative opponent teams: the top `metaSize` unique species
     /// (recommended movesets), each paired with its two best coverage partners
-    /// via the 1v1 rating matrix. All teams are weighted equally.
+    /// via the 1v1 rating matrix. Teams are weighted by the rank of their lead
+    /// species (1/rank, normalized), so beating the very top meta threats counts
+    /// far more toward the score than beating the bottom of the meta field.
     private static func buildMetaField(
         pool: [Candidate],
         metaSize: Int,
@@ -310,6 +471,7 @@ nonisolated enum TeamOptimizer {
 
         // For each meta candidate i, greedily find the 2 best coverage partners.
         var teams: [MetaTeam] = []
+        var rawWeights: [Double] = []
         for i in 0..<n {
             var bestJ = -1, bestJCov = -1
             for j in 0..<n where j != i && distinct(metaCandidates[i], metaCandidates[j]) {
@@ -330,10 +492,13 @@ nonisolated enum TeamOptimizer {
             teams.append(MetaTeam(
                 members: [metaCandidates[i], metaCandidates[bestJ], metaCandidates[bestK]],
                 weight: 1.0))
+            rawWeights.append(1.0 / Double(i + 1))
         }
         guard !teams.isEmpty else { return [] }
-        let w = 1.0 / Double(teams.count)
-        return teams.map { MetaTeam(members: $0.members, weight: w) }
+        let totalWeight = rawWeights.reduce(0, +)
+        return zip(teams, rawWeights).map { team, raw in
+            MetaTeam(members: team.members, weight: raw / totalWeight)
+        }
     }
 
     /// Builds the pre-filter matrix: 1v1 ratings for all (pool candidate × unique
@@ -574,7 +739,8 @@ nonisolated enum TeamOptimizer {
                     isAlternateMoveset: c.isAlternateMoveset)
             },
             metaScore: currentScore,
-            wins: wins, losses: losses, ties: ties)
+            wins: wins, losses: losses, ties: ties,
+            poolIndices: current)
     }
 
     // MARK: - Score evaluation

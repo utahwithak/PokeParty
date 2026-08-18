@@ -228,7 +228,7 @@ nonisolated enum IVCalculator {
     static func stats(
         baseAtk: Int, baseDef: Int, baseHp: Int,
         ivs: IVs, cpCap: Int, levelCap: Double = defaultLevelCap
-    ) -> (atk: Double, def: Double, hp: Int)? {
+    ) -> (atk: Double, def: Double, hp: Int, level: Double)? {
         let maxJ = Int((levelCap - 1) * 2)
         guard maxJ >= 0, maxJ < cpms.count else { return nil }
 
@@ -247,7 +247,8 @@ nonisolated enum IVCalculator {
         return (
             atk: m * Double(baseAtk + ivs.atk),
             def: m * Double(baseDef + ivs.def),
-            hp: max(Int((m * Double(baseHp + ivs.hp)).rounded(.down)), 10)
+            hp: max(Int((m * Double(baseHp + ivs.hp)).rounded(.down)), 10),
+            level: 1 + Double(bestJ) * 0.5
         )
     }
 

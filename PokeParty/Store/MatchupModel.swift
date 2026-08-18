@@ -125,6 +125,12 @@ final class MatchupModel {
         update(side) { $0.shadow = shadow }
     }
 
+    /// Sets (or clears, with `nil`) a side's IVs. nil uses PvP-optimal stats
+    /// for the current league's CP cap.
+    func setIVs(_ ivs: IVs?, side: Side) {
+        update(side) { $0.ivs = ivs }
+    }
+
     private func update(_ side: Side, _ change: (inout TeamMember) -> Void) {
         guard var member = member(for: side) else { return }
         let before = member
@@ -192,8 +198,9 @@ final class MatchupModel {
         }
     }
 
-    /// Builds the combatant + IV-optimal stats for a member. Prefers the stats
-    /// already in the ranking data; falls back to the (expensive) IV optimizer.
+    /// Builds the combatant + stats for a member. A member with explicit IVs
+    /// uses those (at the CP cap's best level); otherwise prefers the stats
+    /// already in the ranking data, falling back to the (expensive) IV optimizer.
     private static func prepare(
         _ member: TeamMember, store: RankingsStore
     ) -> (combatant: MatchupSimulator.Combatant, stats: BattlePokemon.Stats)? {
@@ -202,7 +209,13 @@ final class MatchupModel {
             species: species, shadow: member.shadow,
             fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
         let stats: BattlePokemon.Stats?
-        if let s = store.entry(id: member.speciesId)?.stats {
+        if let ivs = member.ivs {
+            let levelCap: Double = member.isBestBuddy ? 51 : 50
+            stats = IVCalculator.stats(
+                baseAtk: species.baseStats.atk, baseDef: species.baseStats.def, baseHp: species.baseStats.hp,
+                ivs: ivs, cpCap: store.format.cp, levelCap: levelCap
+            ).map { BattlePokemon.Stats(atk: $0.atk, def: $0.def, hp: $0.hp) }
+        } else if let s = store.entry(id: member.speciesId)?.stats {
             stats = .init(atk: s.atk, def: s.def, hp: Int(s.hp))
         } else {
             stats = MatchupSimulator.optimalStats(for: combatant, cpCap: store.format.cp)

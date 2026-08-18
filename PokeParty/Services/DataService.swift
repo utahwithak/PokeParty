@@ -45,6 +45,20 @@ actor DataService {
     private let session: URLSession
     private let decoder = JSONDecoder()
     private let cache: ResourceCache?
+    private var hasSeeded = false
+
+    /// Bundled fallbacks for a fresh install (or a cleared cache) so the app
+    /// has something to show before any network call succeeds — see
+    /// `seedBundledDataIfNeeded()`. Cups aren't seeded since they rotate and
+    /// a stale one would be actively misleading; only re-fetched via network.
+    /// IMPORTANT: refresh these bundled JSON files before each release — see
+    /// docs/RELEASE_CHECKLIST.md.
+    private static let seedResources: [(path: String, resourceName: String)] = [
+        ("gamemaster.json", "seed_gamemaster"),
+        ("rankings/all/overall/rankings-1500.json", "seed_rankings_1500"),
+        ("rankings/all/overall/rankings-2500.json", "seed_rankings_2500"),
+        ("rankings/all/overall/rankings-10000.json", "seed_rankings_10000"),
+    ]
 
     init() {
         let config = URLSessionConfiguration.default
@@ -78,6 +92,10 @@ actor DataService {
     // MARK: - Loading & caching
 
     private func load<T: Decodable>(path: String, as type: T.Type, policy: LoadPolicy = .cache) async throws -> T {
+        if !hasSeeded {
+            await seedBundledDataIfNeeded()
+            hasSeeded = true
+        }
         let cached = await cache?.entry(for: path)
 
         // 1. Fresh cache wins outright — no network (skipped when revalidating/reloading).
@@ -114,6 +132,18 @@ actor DataService {
                 return value
             }
             throw error
+        }
+    }
+
+    /// Loads each bundled seed resource into the cache if it isn't already
+    /// present, so a fresh install (or a cleared cache) works offline before
+    /// any network call succeeds. Runs once per launch, lazily on first load.
+    private func seedBundledDataIfNeeded() async {
+        guard let cache else { return }
+        for (path, resourceName) in Self.seedResources {
+            guard let url = Bundle.main.url(forResource: resourceName, withExtension: "json"),
+                  let data = try? Data(contentsOf: url) else { continue }
+            await cache.seedIfMissing(path: path, data: data)
         }
     }
 }

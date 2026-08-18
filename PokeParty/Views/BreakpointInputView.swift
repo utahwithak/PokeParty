@@ -21,6 +21,19 @@ struct BreakpointInputView: View {
 
     var body: some View {
         List {
+            Section("League") {
+                // Menu style, not segmented: segmented pickers inside a macOS
+                // List emit AttributeGraph cycles on re-layout.
+                Picker("League", selection: Binding(
+                    get: { model.format },
+                    set: { newValue in Task { await model.setFormat(newValue, store: store) } }
+                )) {
+                    ForEach(RankingFormat.coreLeagues) { format in
+                        Text(format.title).tag(format)
+                    }
+                }
+                .labelsHidden()
+            }
             Section("Tap a Pokémon to analyze") {
                 ForEach(searchResults) { pokemon in
                     Button {
@@ -29,6 +42,7 @@ struct BreakpointInputView: View {
                         HStack(spacing: 10) {
                             Text(pokemon.speciesName)
                                 .font(.body.weight(.medium))
+                                .lineLimit(1)
                             if pokemon.speciesId == model.member?.speciesId {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.tint)

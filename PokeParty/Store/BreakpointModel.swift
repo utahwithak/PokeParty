@@ -3,8 +3,8 @@
 //  PokeParty
 //
 //  Observable state for the Breakpoints tool: one subject Pokémon at a chosen
-//  level, analyzed across an IV grid (12–15 per stat) against the Master
-//  League meta. See BreakpointAnalyzer for the analysis itself.
+//  league, analyzed across an IV grid (12–15 per stat) against that league's
+//  meta. See BreakpointAnalyzer for the analysis itself.
 //
 
 import SwiftUI
@@ -13,15 +13,15 @@ import SwiftUI
 @Observable
 final class BreakpointModel {
 
-    /// The league whose meta defines the opponent set (Master for now).
-    let format: RankingFormat = .master
+    /// The league whose meta defines the opponent set.
+    private(set) var format: RankingFormat = .master
 
     /// How many top-ranked meta Pokémon to battle.
     static let opponentCount = 20
 
     private(set) var member: TeamMember?
 
-    /// The subject's recommended Master League moveset (labels the pickers).
+    /// The subject's recommended moveset for the current league (labels the pickers).
     private(set) var recommendedMoveset: [String] = []
 
     private(set) var report: BreakpointAnalyzer.Report?
@@ -29,7 +29,7 @@ final class BreakpointModel {
     private(set) var errorMessage: String?
     private var task: Task<Void, Never>?
 
-    /// Sets the subject, defaulting to its recommended Master League moveset.
+    /// Sets the subject, defaulting to its recommended moveset for the current league.
     func select(speciesId: String, store: RankingsStore) async {
         guard let species = store.pokemonById[speciesId] else { return }
         let entry = try? await store.rankings(for: format)
@@ -49,6 +49,16 @@ final class BreakpointModel {
             member = nil
         }
         invalidate()
+    }
+
+    /// Switches the league the subject is analyzed against, resetting to that
+    /// league's recommended moveset (a mon's ideal moves often differ by CP cap).
+    func setFormat(_ newFormat: RankingFormat, store: RankingsStore) async {
+        guard newFormat != format else { return }
+        format = newFormat
+        if let speciesId = member?.speciesId {
+            await select(speciesId: speciesId, store: store)
+        }
     }
 
     func setFastMove(_ id: String) {
@@ -97,6 +107,15 @@ final class BreakpointModel {
         let subject = MatchupSimulator.Combatant(
             species: species, shadow: member.shadow,
             fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
+        let base = species.baseStats
+        guard let heroLevel = IVCalculator.stats(
+            baseAtk: base.atk, baseDef: base.def, baseHp: base.hp,
+            ivs: IVs(atk: 15, def: 15, hp: 15), cpCap: format.cp
+        )?.level else {
+            report = nil
+            errorMessage = "\(species.speciesName) doesn't fit \(format.title) at 15/15/15."
+            return
+        }
         let movesById = store.movesById
         let pokemonById = store.pokemonById
         let format = format
@@ -110,9 +129,11 @@ final class BreakpointModel {
                                                cpCap: format.cp, count: Self.opponentCount,
                                                mirrorId: member.speciesId)
                 let result = await Task.detached {
-                    // IV grid at the level cap; the level sweep is built in.
+                    // IV grid at the league-legal level cap; the power-up
+                    // sweep is built in, clamped to that same level.
                     await BreakpointAnalyzer.analyze(subject: subject,
-                                                     level: IVCalculator.defaultLevelCap,
+                                                     leagueTitle: format.title,
+                                                     level: heroLevel,
                                                      opponents: opponents, movesById: movesById)
                 }.value
                 guard !Task.isCancelled else { return }

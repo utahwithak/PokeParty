@@ -45,6 +45,7 @@ struct RankCheckerInputView: View {
                     HStack(spacing: 10) {
                         Text(pokemon.speciesName)
                             .font(.body.weight(.medium))
+                            .lineLimit(1)
                         Spacer()
                         TypeBadgeRow(types: pokemon.displayTypes)
                     }
