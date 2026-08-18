@@ -18,7 +18,9 @@
 - [ ] confirmation to remove pokemon from bench
 - [ ] when scanning don't show pokemon of a lesser evolution for the breed
 - [ ] running a tournament on iOS doesn't show the results. 
-- [ ] 
+- [ ] remember which tab was selected across launches
+- [ ] sync tournament results on icloud as well
+- [ ] Some evolutions are not showing up during scanning -> Shellos, far fetch'd. 
 
 ## Future
 - [ ] Add a super-advanced mode to edit move data and availability, then simulate against it

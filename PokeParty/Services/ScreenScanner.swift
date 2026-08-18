@@ -20,6 +20,8 @@ import Vision
 enum ScanError: LocalizedError {
     case windowNotFound
     case parseFailure
+    case accessibilityDenied
+    case inputSynthesisFailed
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +29,10 @@ enum ScanError: LocalizedError {
             "iPhone Mirroring window not found. Open iPhone Mirroring, navigate to a Pokémon's detail screen, then try again."
         case .parseFailure:
             "Could not read a Pokémon name. Make sure a Pokémon's detail screen is fully visible in iPhone Mirroring."
+        case .accessibilityDenied:
+            "Accessibility permission is required to auto-advance. Grant access in System Settings → Privacy & Security → Accessibility, then try again."
+        case .inputSynthesisFailed:
+            "Couldn't send the swipe gesture to iPhone Mirroring."
         }
     }
 }
@@ -56,15 +62,14 @@ actor ScreenScanner {
 
     // MARK: - Capture
 
-    /// Finds the iPhone Mirroring window and returns a retina-resolution screenshot.
-    func capturePhoneMirroringFrame() async throws -> CGImage {
-        let content = try await SCShareableContent.current
-
-        // Priority 1: ScreenContinuity window titled exactly "iPhone Mirroring".
-        // Priority 2: Any ScreenContinuity window large enough to be the mirroring viewport
-        //             (excludes the tiny menu-bar status icon at ~54×54).
-        // Priority 3: Any window with "iPhone Mirroring" in the title as a last resort.
-        let window = content.windows.first {
+    /// Finds the iPhone Mirroring window among `content`'s windows.
+    ///
+    /// Priority 1: ScreenContinuity window titled exactly "iPhone Mirroring".
+    /// Priority 2: Any ScreenContinuity window large enough to be the mirroring viewport
+    ///             (excludes the tiny menu-bar status icon at ~54×54).
+    /// Priority 3: Any window with "iPhone Mirroring" in the title as a last resort.
+    private func findMirroringWindow(in content: SCShareableContent) -> SCWindow? {
+        content.windows.first {
             $0.owningApplication?.bundleIdentifier == "com.apple.ScreenContinuity"
                 && $0.title == "iPhone Mirroring"
         } ?? content.windows.first {
@@ -74,7 +79,23 @@ actor ScreenScanner {
             ($0.title ?? "").localizedCaseInsensitiveContains("iPhone Mirroring")
                 && $0.frame.width > 100 && $0.frame.height > 100
         }
-        guard let window else {
+    }
+
+    /// The iPhone Mirroring window's current on-screen frame, in the same
+    /// global-display coordinate space `CGEventPost` expects — used to aim
+    /// the auto-advance swipe without capturing a screenshot.
+    private func mirroringWindowFrame() async throws -> CGRect {
+        let content = try await SCShareableContent.current
+        guard let window = findMirroringWindow(in: content) else {
+            throw ScanError.windowNotFound
+        }
+        return window.frame
+    }
+
+    /// Finds the iPhone Mirroring window and returns a retina-resolution screenshot.
+    func capturePhoneMirroringFrame() async throws -> CGImage {
+        let content = try await SCShareableContent.current
+        guard let window = findMirroringWindow(in: content) else {
             #if DEBUG
             // The list is only worth dumping when nothing matched — it's every
             // window on the system, and this runs on a loop.
@@ -93,16 +114,22 @@ actor ScreenScanner {
         // blurring bar fill/track edges so the saturation classifier in classify()
         // reads wrong IV fractions. On a 2× Retina display this computes the same
         // value as before; on a 1× display it captures at actual pixel resolution.
+        //
+        // SCDisplay.width/.height are documented as points — the same unit as
+        // .frame.width/.height — so dividing one by the other (an earlier version
+        // of this code) always yields ~1.0 and never detects Retina at all. The
+        // actual backing scale has to come from the matching NSScreen instead.
         let displayScale: CGFloat = {
             var bestScale: CGFloat = 2.0
             var bestOverlap: CGFloat = 0
             for display in content.displays {
                 let overlap = window.frame.intersection(display.frame).width
-                if overlap > bestOverlap {
-                    bestOverlap = overlap
-                    let logWidth = display.frame.width
-                    if logWidth > 0 { bestScale = CGFloat(display.width) / logWidth }
-                }
+                guard overlap > bestOverlap else { continue }
+                guard let screen = NSScreen.screens.first(where: {
+                    ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == display.displayID
+                }) else { continue }
+                bestOverlap = overlap
+                bestScale = screen.backingScaleFactor
             }
             return max(bestScale, 1.0)
         }()
@@ -120,6 +147,59 @@ actor ScreenScanner {
             #endif
             throw error
         }
+    }
+
+    // MARK: - Input synthesis (auto-advance swipe)
+
+    /// Whether this process currently has the Accessibility permission
+    /// needed to post synthetic mouse events into other applications —
+    /// separate from the Screen Recording permission used for capture.
+    /// Passing `prompt: true` shows the system permission dialog (and adds
+    /// the app to the Accessibility list) the first time it's called.
+    func hasAccessibilityAccess(prompt: Bool) -> Bool {
+        AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): prompt] as CFDictionary)
+    }
+
+    /// Swipes from the top-right toward the top-left of the iPhone Mirroring
+    /// window — the gesture Pokémon GO's detail/appraisal screen uses to
+    /// advance to the next Pokémon in the box/list. The exact tap point
+    /// doesn't matter as long as it clears the status bar and lands on the
+    /// card, so this uses fixed proportions of the window rather than
+    /// anything OCR-derived.
+    func swipeToNextPokemon() async throws {
+        guard hasAccessibilityAccess(prompt: true) else {
+            throw ScanError.accessibilityDenied
+        }
+        let frame = try await mirroringWindowFrame()
+        let y = frame.minY + frame.height * 0.18
+        let start = CGPoint(x: frame.minX + frame.width * 0.85, y: y)
+        let end = CGPoint(x: frame.minX + frame.width * 0.15, y: y)
+        try await postDrag(from: start, to: end)
+    }
+
+    /// Posts a mouseDown at `start`, several interpolated mouseDragged
+    /// events toward `end`, then a mouseUp at `end` — indistinguishable to
+    /// the receiving app from a real trackpad/mouse drag.
+    private func postDrag(from start: CGPoint, to end: CGPoint, steps: Int = 12) async throws {
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            throw ScanError.inputSynthesisFailed
+        }
+        func post(_ type: CGEventType, at point: CGPoint) throws {
+            guard let event = CGEvent(
+                mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left
+            ) else {
+                throw ScanError.inputSynthesisFailed
+            }
+            event.post(tap: .cghidEventTap)
+        }
+        try post(.leftMouseDown, at: start)
+        for step in 1...steps {
+            let t = Double(step) / Double(steps)
+            let point = CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t)
+            try post(.leftMouseDragged, at: point)
+            try await Task.sleep(for: .milliseconds(12))
+        }
+        try post(.leftMouseUp, at: end)
     }
 
     // MARK: - OCR
@@ -223,13 +303,21 @@ actor ScreenScanner {
             }
 
             // Fallback name: first text that isn't a stat label, number, or CP prefix.
+            // Species names are always letters (plus ♀/♂/apostrophes/hyphens for names
+            // like "Farfetch'd"), so require a letter too — without it, a status-bar
+            // clock reading like "9:41" passes every other check (it's not an `Int`,
+            // doesn't start with "CP"/"#") and gets mistaken for the species name. A
+            // clock with an AM/PM suffix ("9:41 AM") does contain letters, so it's
+            // excluded separately by shape (digits, colon, optional AM/PM).
             if fallbackName == nil {
                 let lower = text.lowercased().trimmingCharacters(in: .whitespaces)
                 if !skipWords.contains(lower)
                     && Int(text) == nil
                     && !upper.hasPrefix("CP")
                     && !upper.hasPrefix("#")
-                    && text.count >= 3 {
+                    && text.count >= 3
+                    && text.contains(where: { $0.isLetter })
+                    && text.range(of: #"^\d{1,2}:\d{2}(\s*[AP]M)?$"#, options: [.regularExpression, .caseInsensitive]) == nil {
                     fallbackName = text
                 }
             }
@@ -291,8 +379,7 @@ actor ScreenScanner {
                 let expectedY = min(atkY, defY) - spacing  // one step below Defense
                 let tolerance = max(spacing * 1.5, 0.05)
                 if let obs = observations.first(where: {
-                    let t = $0.topCandidates(1).first?.string.trimmingCharacters(in: .whitespaces) ?? ""
-                    guard t.caseInsensitiveCompare("HP") == .orderedSame else { return false }
+                    guard firstWordMatches($0, label: "HP") else { return false }
                     return abs($0.boundingBox.midY - expectedY) < tolerance
                 }) {
                     rows.append((label, obs))
@@ -303,7 +390,8 @@ actor ScreenScanner {
         }
         guard rows.count == labels.count else {
             #if DEBUG
-            print("[ScreenScanner] Bars skipped: only found labels \(rows.map { $0.label })")
+            let allText = observations.compactMap { $0.topCandidates(1).first?.string }
+            print("[ScreenScanner] Bars skipped: only found labels \(rows.map { $0.label }) — all recognized text: \(allText)")
             #endif
             return nil
         }
@@ -445,10 +533,18 @@ actor ScreenScanner {
     private func labelObservation(
         _ label: String, in observations: [VNRecognizedTextObservation]
     ) -> VNRecognizedTextObservation? {
-        observations.first {
-            let text = $0.topCandidates(1).first?.string.trimmingCharacters(in: .whitespaces) ?? ""
-            return text.caseInsensitiveCompare(label) == .orderedSame
-        }
+        observations.first { firstWordMatches($0, label: label) }
+    }
+
+    /// Matches on the observation's first word rather than requiring the
+    /// whole observation to be exactly the label — Vision sometimes fuses a
+    /// row's label with adjacent text (trailing punctuation, a qualifier
+    /// word) into one observation, which an exact match silently rejects.
+    private func firstWordMatches(_ observation: VNRecognizedTextObservation, label: String) -> Bool {
+        let text = observation.topCandidates(1).first?.string.trimmingCharacters(in: .whitespaces) ?? ""
+        let firstWord = text.split(separator: " ", maxSplits: 1).first.map(String.init) ?? text
+        let stripped = firstWord.trimmingCharacters(in: CharacterSet.punctuationCharacters)
+        return stripped.caseInsensitiveCompare(label) == .orderedSame
     }
 
 

@@ -13,6 +13,7 @@
 
 #if os(macOS)
 
+import AppKit
 import SwiftUI
 
 // MARK: - Content column (live status)
@@ -25,6 +26,7 @@ struct ScanLiveView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 statusRow
+                autoAdvanceRow
                 liveContent
             }
             .padding(20)
@@ -45,17 +47,77 @@ struct ScanLiveView: View {
         }
     }
 
+    private var autoAdvanceRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .bottom) {
+                Toggle("Auto-Advance", isOn: Binding(
+                    get: { model.autoAdvance },
+                    set: { model.setAutoAdvance($0) }
+                ))
+                .toggleStyle(.switch)
+                Spacer()
+                Button("Swipe to Next") { model.advanceManually() }
+                    .buttonStyle(.bordered)
+            }
+            // On its own row rather than crammed into the toggle row above —
+            // that squeezed "Swipe to Next" the moment auto-advance was
+            // turned on and this appeared next to it.
+            if model.autoAdvance {
+                HStack(spacing: 6) {
+                    Text("Pause at rank")
+                    TextField("Rank", value: $model.autoAdvanceThreshold, format: .number)
+                        .frame(width: 50)
+                        .textFieldStyle(.roundedBorder)
+                        .labelsHidden()
+                    Text("or better")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            if let reason = model.autoAdvancePausedReason {
+                Label(reason, systemImage: "pause.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if let error = model.swipeError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                if model.swipeErrorNeedsAccessibility {
+                    Button("Open Accessibility Settings") { openAccessibilitySettings() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    /// Deep-links straight to Privacy & Security → Accessibility rather than
+    /// leaving the user to hunt for it — the pane's exact location has moved
+    /// around across macOS versions, but this anchor has stayed stable.
+    private func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     @ViewBuilder
     private var liveIndicator: some View {
         switch model.liveStatus {
-        case .scanning:
+        case .idle, .scanning:
             ProgressView().controlSize(.small)
-        default:
+        case .found:
             HStack(spacing: 4) {
                 Image(systemName: "circle.fill")
                     .font(.system(size: 6))
                     .foregroundStyle(.green)
                 Text("Live").font(.caption2).foregroundStyle(.secondary)
+            }
+        case .error:
+            HStack(spacing: 4) {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 6))
+                    .foregroundStyle(.red)
+                Text("Error").font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
@@ -124,6 +186,13 @@ struct ScanLiveView: View {
             if let level = model.determinedLevel(store: store) {
                 Text("Detected: Lv \(level.formatted())")
                     .font(.caption.weight(.medium))
+                    .monospacedDigit()
+            }
+
+            if let hit = model.bestRankHit(store: store) {
+                Text("Best rank: #\(hit.rank) — \(hit.league.title) League")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(hit.rank <= model.autoAdvanceThreshold ? Theme.win : .secondary)
                     .monospacedDigit()
             }
 

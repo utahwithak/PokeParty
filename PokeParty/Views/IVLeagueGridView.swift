@@ -89,51 +89,68 @@ struct IVLeagueGridView: View {
         )
         let badge = result.flatMap { badge(rank: $0.rank, percent: $0.percent) }
 
-        VStack(spacing: 2) {
-            if let result {
-                HStack(spacing: 3) {
-                    Text("#" + result.rank.formatted(.number.grouping(.never)))
-                        .font(.callout.weight(.bold).monospacedDigit())
-                        .lineLimit(1)
-                    if let badge {
-                        Image(systemName: badge.icon)
-                            .font(.system(size: 9))
-                            .foregroundStyle(badge.color)
+        // If we know the Pokémon's actual current level and it's already over
+        // this league's cap, the rank/%/level numbers below describe a build
+        // that can't be reached (you can't power a Pokémon down), so showing
+        // them next to a red "over cap" marker is misleading. Show just the
+        // over-cap marker and the real current CP instead.
+        if let cp = nowCP, nowFits == false {
+            VStack(spacing: 2) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color.red)
+                Text("\(cp)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(Color.red)
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
+            .help("Over \(league.title) League cap now (CP \(cp) > \(league.cap))")
+        } else {
+            VStack(spacing: 2) {
+                if let result {
+                    HStack(spacing: 3) {
+                        Text("#" + result.rank.formatted(.number.grouping(.never)))
+                            .font(.callout.weight(.bold).monospacedDigit())
+                            .lineLimit(1)
+                        if let badge {
+                            Image(systemName: badge.icon)
+                                .font(.system(size: 9))
+                                .foregroundStyle(badge.color)
+                        }
                     }
+                    Text(String(format: "%.1f%%", result.percent))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(percentColor(result.percent))
+                    Text("L\(result.combo.level.formatted()) · \(result.combo.cp)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                } else {
+                    Text("—")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
                 }
-                Text(String(format: "%.1f%%", result.percent))
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(percentColor(result.percent))
-                Text("L\(result.combo.level.formatted()) · \(result.combo.cp)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            } else {
-                Text("—")
-                    .font(.callout)
-                    .foregroundStyle(.tertiary)
-            }
 
-            // Current-level eligibility badge — shows whether this form fits
-            // under the cap right now without any powering up.
-            if let cp = nowCP, let fits = nowFits {
-                HStack(spacing: 2) {
-                    Image(systemName: fits ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(fits ? Color.green : Color.red)
-                    Text("now \(cp)")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(fits ? Color.gray : Color.red)
+                // Current-level eligibility badge — shows this form already
+                // fits under the cap right now without any powering up.
+                if let cp = nowCP {
+                    HStack(spacing: 2) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.green)
+                        Text("now \(cp)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(Color.gray)
+                    }
+                    .help("Eligible for \(league.title) League now (CP \(cp) ≤ \(league.cap))")
                 }
-                .help(fits
-                    ? "Eligible for \(league.title) League now (CP \(cp) ≤ \(league.cap))"
-                    : "Over \(league.title) League cap now (CP \(cp) > \(league.cap))"
-                )
             }
+            .padding(6)
+            .background(badgeBackground(badge), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
         }
-        .padding(6)
-        .background(badgeBackground(badge), in: RoundedRectangle(cornerRadius: 6))
-        .contentShape(Rectangle())
     }
 
     /// A quick-glance marker for standout IV ranks: a gold crown for the

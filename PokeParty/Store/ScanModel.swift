@@ -71,6 +71,33 @@ final class ScanModel {
     /// entry; cleared on any staging change or a forced add.
     var duplicateWarning: BenchEntry?
 
+    /// Master toggle for auto-advance; off by default so Scan doesn't start
+    /// swiping through the box unexpectedly the moment it's opened. Use
+    /// `setAutoAdvance` rather than setting this directly so the
+    /// paused-reason banner clears along with it.
+    var autoAdvance: Bool = false
+    /// Auto-advance stops swiping once the current Pokémon's best rank
+    /// across Great/Ultra/Master League is at or better than this.
+    var autoAdvanceThreshold: Int = 100
+    /// Set when auto-advance pauses itself after finding a match at or
+    /// better than `autoAdvanceThreshold`; cleared the next time a scan's
+    /// best rank no longer qualifies (e.g. once the user manually swipes
+    /// past it or catches it).
+    var autoAdvancePausedReason: String?
+    /// Set when the swipe gesture itself fails (e.g. missing Accessibility
+    /// permission or no mirroring window) — kept separate from `liveStatus`
+    /// so a swipe failure doesn't hide the Pokémon that was just found.
+    var swipeError: String?
+    /// True when `swipeError` is specifically the missing-Accessibility-
+    /// permission case, so ScanView can offer a shortcut into System
+    /// Settings rather than just showing the error text.
+    var swipeErrorNeedsAccessibility = false
+
+    func setAutoAdvance(_ enabled: Bool) {
+        autoAdvance = enabled
+        if !enabled { autoAdvancePausedReason = nil }
+    }
+
     var isScanning: Bool { liveTask != nil }
 
     /// The best currently-known IV spread: bar readings when complete,
@@ -141,6 +168,7 @@ final class ScanModel {
                 rawName: info.name, cp: info.cp, level: info.level, maxHP: info.maxHP, barIVs: barIVs,
                 speciesId: speciesId, candidates: candidates
             ))
+            await handleAutoAdvance(store: store)
         } catch let error as ScanError {
             // Transient: no mirroring window or parse failure — keep looping.
             liveStatus = .error(error.localizedDescription)
@@ -151,6 +179,75 @@ final class ScanModel {
             stopScanning()
             liveStatus = .error("Screen Recording access failed. If you just granted permission, restart PokeParty — then tap Retry.")
         }
+    }
+
+    /// If auto-advance is on, swipes to the next Pokémon unless the one just
+    /// scanned already meets `autoAdvanceThreshold` — in which case it pauses
+    /// itself instead, so a rare good IV isn't swiped past unattended.
+    private func handleAutoAdvance(store: RankingsStore) async {
+        guard autoAdvance else { return }
+        if let hit = bestRankHit(store: store), hit.rank <= autoAdvanceThreshold {
+            autoAdvancePausedReason = "Rank #\(hit.rank) in \(hit.league.title) League — auto-advance paused."
+            return
+        }
+        autoAdvancePausedReason = nil
+        if !(await performSwipe()) {
+            // Swiping is broken (e.g. permission not granted) — stop retrying
+            // every 4.5s and surfacing the same failure.
+            autoAdvance = false
+        }
+    }
+
+    /// Fires the swipe-to-next gesture once, independent of auto-advance —
+    /// backs the manual "Swipe to Next" button in ScanView.
+    func advanceManually() {
+        Task { [weak self] in
+            await self?.performSwipe()
+        }
+    }
+
+    /// Sends the swipe-to-next gesture, surfacing any failure via
+    /// `swipeError` rather than `liveStatus`. Returns whether it succeeded.
+    @discardableResult
+    private func performSwipe() async -> Bool {
+        do {
+            try await scanner.swipeToNextPokemon()
+            swipeError = nil
+            swipeErrorNeedsAccessibility = false
+            return true
+        } catch ScanError.accessibilityDenied {
+            swipeError = ScanError.accessibilityDenied.localizedDescription
+            swipeErrorNeedsAccessibility = true
+        } catch let error as ScanError {
+            swipeError = error.localizedDescription
+            swipeErrorNeedsAccessibility = false
+        } catch {
+            swipeError = "Couldn't send the swipe gesture: \(error.localizedDescription)"
+            swipeErrorNeedsAccessibility = false
+        }
+        return false
+    }
+
+    struct RankHit {
+        let rank: Int
+        let league: CheckLeague
+    }
+
+    /// The best (lowest-numbered) IV rank the current scan's species
+    /// achieves across Great/Ultra/Master League — the same three leagues
+    /// shown in the Scan grid — with its currently-known IVs. Exposed (not
+    /// just used internally by auto-advance) so ScanView can show it
+    /// continuously rather than only inside the paused-reason banner.
+    func bestRankHit(store: RankingsStore) -> RankHit? {
+        guard case .found(let live) = liveStatus, let sid = live.speciesId,
+              let species = store.pokemonById[sid] else { return nil }
+        let ivs = currentIVs
+        return [CheckLeague.great, .ultra, .master].compactMap { league in
+            IVCalculator.rank(
+                baseAtk: species.baseStats.atk, baseDef: species.baseStats.def, baseHp: species.baseStats.hp,
+                cpCap: league.cap, ivs: ivs
+            ).map { RankHit(rank: $0.rank, league: league) }
+        }.min { $0.rank < $1.rank }
     }
 
     /// Infers the actual current level from the scanned maxHP and known IVs.
@@ -290,8 +387,13 @@ final class ScanModel {
         return best?.id
     }
 
+    /// Folds diacritics before comparing — the game master stores some
+    /// species names in plain ASCII ("Flabebe") while Pokémon GO's on-screen
+    /// text uses the accented form ("Flabébé"). "é" (U+00E9) and "e" aren't
+    /// the same Unicode scalar, so without folding, an otherwise-exact match
+    /// silently fails every scoring tier and the species goes unmatched.
     private func normalized(_ s: String) -> String {
-        s.lowercased()
+        s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
             .replacingOccurrences(of: "♀", with: "f")
             .replacingOccurrences(of: "♂", with: "m")
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
