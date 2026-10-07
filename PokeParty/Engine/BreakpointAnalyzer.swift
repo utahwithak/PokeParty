@@ -384,6 +384,75 @@ nonisolated enum BreakpointAnalyzer {
         )
     }
 
+    // MARK: - Rank comparison
+
+    /// One target-rank spread's real-world matchup outcomes against the
+    /// meta. Unlike the grid above (which sweeps IV 12–15 around a shared
+    /// 15/15/15 level), this uses the actual best-known IV combination for
+    /// the requested rank at *its own* optimal level under the CP cap —
+    /// which is rarely 15/15/15 in a capped league, since trading Attack
+    /// IVs for an extra level or two often wins more stat product than it
+    /// costs. Master League has no such tradeoff (the cap barely
+    /// constrains level), so rank 1 there is still 15/15/15.
+    struct RankComparison: Sendable, Identifiable {
+        struct OpponentOutcome: Sendable, Identifiable {
+            let opponentName: String
+            /// Outcome at each shield count, in `shieldScenarios` order.
+            let outcomes: [Outcome]
+            var id: String { opponentName }
+        }
+
+        let rank: Int
+        let totalCombos: Int
+        let ivs: IVs
+        let level: Double
+        let cp: Int
+        /// This combo's stat product as a percentage of the #1 combo's
+        /// (PvPoke's familiar "IV%").
+        let percent: Double
+        let outcomes: [OpponentOutcome]
+        var id: Int { rank }
+    }
+
+    /// Resolves `rank`'s real IV combination (via the same ranking used by
+    /// the Rank Checker/Bench) and battles it against `opponents` at every
+    /// shield scenario. `nil` if `rank` exceeds the number of valid combos
+    /// for this base stat line under `cpCap`.
+    static func compareAtRank(
+        rank: Int,
+        subject: MatchupSimulator.Combatant,
+        cpCap: Int,
+        opponents: [Opponent],
+        movesById: [String: Move]
+    ) -> RankComparison? {
+        let base = subject.species.baseStats
+        let combos = IVCalculator.rankedCombos(baseAtk: base.atk, baseDef: base.def, baseHp: base.hp, cpCap: cpCap)
+        guard let best = combos.first, rank >= 1, rank <= combos.count else { return nil }
+        let combo = combos[rank - 1]
+        guard let cpm = IVCalculator.cpm(forLevel: combo.level) else { return nil }
+        let hp = (cpm * Double(base.hp + combo.ivs.hp)).rounded(.down)
+        let stats = BattlePokemon.Stats(
+            atk: cpm * Double(base.atk + combo.ivs.atk),
+            def: cpm * Double(base.def + combo.ivs.def),
+            hp: max(Int(hp), 10))
+
+        let outcomes = opponents.map { opp in
+            RankComparison.OpponentOutcome(
+                opponentName: opp.name,
+                outcomes: shieldScenarios.map { shields in
+                    Outcome(rating: MatchupSimulator.rate(
+                        subject, statsA: stats, opp.combatant, statsB: opp.stats,
+                        movesById: movesById, shieldsA: shields, shieldsB: shields
+                    )?.a ?? 500)
+                })
+        }
+
+        return RankComparison(
+            rank: rank, totalCombos: combos.count, ivs: combo.ivs, level: combo.level, cp: combo.cp,
+            percent: combo.statProduct / best.statProduct * 100,
+            outcomes: outcomes)
+    }
+
     /// A human-readable threshold for one matchup's outcomes across the sweep.
     private static func levelSummary(_ outcomes: [Outcome], levels: [Double]) -> String {
         // All-same rows are filtered out before this is called, but stay safe.

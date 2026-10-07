@@ -80,7 +80,7 @@ struct IVLeagueGridView: View {
     private func rankCell(for pokemon: Pokemon, league: CheckLeague) -> some View {
         let nowCP = currentLevel.flatMap { cp(for: pokemon, at: $0) }
         let nowFits = nowCP.map { $0 <= league.cap }
-        let result = IVCalculator.rank(
+        let result = IVRankCache.rank(
             baseAtk: pokemon.baseStats.atk,
             baseDef: pokemon.baseStats.def,
             baseHp: pokemon.baseStats.hp,

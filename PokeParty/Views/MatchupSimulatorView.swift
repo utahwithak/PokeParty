@@ -22,8 +22,8 @@ struct MatchupSimulatorView: View {
     /// species (mirror matchups are legitimate).
     private var searchResults: [Pokemon] {
         let query = searchText.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return store.allPokemon }
-        return store.allPokemon.filter { $0.speciesName.localizedCaseInsensitiveContains(query) }
+        guard !query.isEmpty else { return store.pokemonForPicker }
+        return store.pokemonForPicker.filter { $0.speciesName.localizedCaseInsensitiveContains(query) }
     }
 
     var body: some View {

@@ -11,7 +11,7 @@ import SwiftUI
 import StoreKit
 
 struct SettingsView: View {
-    var store: RankingsStore
+    @Bindable var store: RankingsStore
     var hiddenCups: HiddenCupsStore
 
     @Environment(EntitlementStore.self) private var entitlements
@@ -27,6 +27,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             dataSection
+            megaSection
             hiddenCupsSection
             purchasesSection
             feedbackSection
@@ -40,6 +41,7 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
     private var dataSection: some View {
         Section {
             Button {
@@ -56,6 +58,33 @@ struct SettingsView: View {
             Text("PvPoke Data")
         } footer: {
             Text("Check for updated rankings, or rebuild the local cache from scratch.")
+        }
+
+        Section {
+            Picker("Ranking Order", selection: $store.rankingSource) {
+                Text("PvPoke").tag(RankingsStore.RankingSource.pvpoke)
+                Text("PokeParty (Local)").tag(RankingsStore.RankingSource.local)
+            }
+            if case .building(let formatTitle) = store.localRankingBuilder.phase {
+                HStack {
+                    ProgressView(value: store.localRankingBuilder.progress)
+                    Text(formatTitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Ranking Order")
+        } footer: {
+            Text("PvPoke shows their published ranking order. PokeParty (Local) computes its own ordering on-device from the raw game data, using PokeParty's own battle engine — it won't exactly match PvPoke's list. Great/Ultra/Master League are kept up to date automatically in the background; cups compute the first time you view them in Local mode.")
+        }
+    }
+
+    private var megaSection: some View {
+        Section {
+            Toggle("Show Mega Evolutions", isOn: $store.showMegaEvolutions)
+        } footer: {
+            Text("Include Mega Evolutions when picking Pokémon in the Team Builder, Bench, Rank Checker, Breakpoints, and 1v1 Simulator — even in leagues where Megas aren't officially legal.")
         }
     }
 

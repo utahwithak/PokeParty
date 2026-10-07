@@ -13,6 +13,8 @@
 #if os(macOS)
 
 import AppKit
+import CoreImage
+import CoreMedia
 import Foundation
 import ScreenCaptureKit
 import Vision
@@ -52,7 +54,7 @@ struct PokemonScanInfo {
 /// IVs read directly off the Attack/Defense/HP fill bars on the detail
 /// screen (each bar's fill fraction is the stat's IV / 15). nil per-stat
 /// when that bar's label wasn't found or its fill couldn't be measured.
-struct BarIVs {
+struct BarIVs: Equatable {
     var atk: Int?
     var def: Int?
     var hp: Int?
@@ -92,8 +94,28 @@ actor ScreenScanner {
         return window.frame
     }
 
-    /// Finds the iPhone Mirroring window and returns a retina-resolution screenshot.
-    func capturePhoneMirroringFrame() async throws -> CGImage {
+    /// Frames are throttled to this rate — fast enough that a swipe's
+    /// settling animation is caught within a couple of frames, slow enough
+    /// that OCR (the actual bottleneck, at ~100-300ms/frame) never
+    /// meaningfully backs up behind capture.
+    private static let frameInterval = CMTime(value: 1, timescale: 3)
+
+    /// Kept alive on the actor for as long as a frame stream is running —
+    /// both would otherwise be deallocated the moment `startFrameStream`
+    /// returns, since nothing else holds a strong reference to them.
+    private var activeStream: SCStream?
+    private var activeRelay: FrameStreamRelay?
+
+    /// Starts (or restarts) a continuous, throttled stream of frames from
+    /// the iPhone Mirroring window — replacing the single-shot screenshot
+    /// this used to take on every poll. `SCStream` only emits a frame when
+    /// the display actually redrew (`FrameStreamRelay` filters out the
+    /// rest via each frame's `.status`), so the scan loop above reacts the
+    /// moment a swipe's animation settles instead of waiting out a blind
+    /// delay, and does no OCR work at all while the screen is static.
+    func startFrameStream() async throws -> AsyncThrowingStream<CGImage, Error> {
+        await stopFrameStream()
+
         let content = try await SCShareableContent.current
         guard let window = findMirroringWindow(in: content) else {
             #if DEBUG
@@ -109,44 +131,89 @@ actor ScreenScanner {
 
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let config = SCStreamConfiguration()
-        // Capture at the display's native pixel density (physical pixels ÷ logical
-        // points). Hardcoding × 2 upscales content on a 1× (non-Retina) display,
-        // blurring bar fill/track edges so the saturation classifier in classify()
-        // reads wrong IV fractions. On a 2× Retina display this computes the same
-        // value as before; on a 1× display it captures at actual pixel resolution.
-        //
-        // SCDisplay.width/.height are documented as points — the same unit as
-        // .frame.width/.height — so dividing one by the other (an earlier version
-        // of this code) always yields ~1.0 and never detects Retina at all. The
-        // actual backing scale has to come from the matching NSScreen instead.
-        let displayScale: CGFloat = {
-            var bestScale: CGFloat = 2.0
-            var bestOverlap: CGFloat = 0
-            for display in content.displays {
-                let overlap = window.frame.intersection(display.frame).width
-                guard overlap > bestOverlap else { continue }
-                guard let screen = NSScreen.screens.first(where: {
-                    ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == display.displayID
-                }) else { continue }
-                bestOverlap = overlap
-                bestScale = screen.backingScaleFactor
-            }
-            return max(bestScale, 1.0)
-        }()
-        #if DEBUG
-        print("[ScreenScanner] Display scale: \(displayScale)×  capture: \(Int(window.frame.width * displayScale))×\(Int(window.frame.height * displayScale))")
-        #endif
+        let displayScale = nativeDisplayScale(for: window, in: content)
         config.width  = max(Int(window.frame.width  * displayScale), 100)
         config.height = max(Int(window.frame.height * displayScale), 100)
+        config.minimumFrameInterval = Self.frameInterval
+        // Without this, moving the real cursor over the mirroring window —
+        // including the drag this same actor posts for auto-advance's own
+        // swipe gesture — composites into the capture and counts as the
+        // display "changing," producing a burst of otherwise-identical
+        // frames that don't actually reflect new content.
+        config.showsCursor = false
+        #if DEBUG
+        print("[ScreenScanner] Starting frame stream at \(config.width)×\(config.height)px, display scale \(displayScale)×")
+        #endif
+
+        let relay = FrameStreamRelay()
+        let stream = SCStream(filter: filter, configuration: config, delegate: relay)
+        try stream.addStreamOutput(relay, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
+
+        let (asyncStream, continuation) = AsyncThrowingStream.makeStream(
+            of: CGImage.self, throwing: Error.self, bufferingPolicy: .bufferingNewest(1))
+        relay.continuation = continuation
+        // Task cancellation of the loop consuming this stream (ScanModel
+        // stopping the scan) drives this the same way `finish()` would —
+        // AsyncThrowingStream calls `onTermination` on either path — so
+        // this is the single place the underlying SCStream gets torn down.
+        continuation.onTermination = { _ in
+            stream.stopCapture()
+        }
+
+        activeStream = stream
+        activeRelay = relay
         do {
-            return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                stream.startCapture { error in
+                    if let error { cont.resume(throwing: error) } else { cont.resume() }
+                }
+            }
         } catch {
-            #if DEBUG
-            let nsError = error as NSError
-            print("[ScreenScanner] Capture of \(config.width)×\(config.height)px failed: \(nsError.domain) \(nsError.code) — \(nsError.userInfo)")
-            #endif
+            activeStream = nil
+            activeRelay = nil
             throw error
         }
+        return asyncStream
+    }
+
+    /// Stops the running frame stream, if any. Safe to call when nothing's
+    /// running — used both to tear down a previous stream before starting a
+    /// new one, and (via `onTermination` above) when the consumer stops.
+    private func stopFrameStream() async {
+        guard let stream = activeStream else { return }
+        activeStream = nil
+        activeRelay = nil
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            stream.stopCapture { _ in cont.resume() }
+        }
+    }
+
+    /// The native pixel density (physical pixels ÷ logical points) of
+    /// whichever display the mirroring window mostly overlaps. Hardcoding
+    /// × 2 upscales content on a 1× (non-Retina) display, blurring bar
+    /// fill/track edges so the saturation classifier in classify() reads
+    /// wrong IV fractions. On a 2× Retina display this computes the same
+    /// value as before; on a 1× display it captures at actual pixel
+    /// resolution.
+    ///
+    /// SCDisplay.width/.height are documented as points — the same unit as
+    /// .frame.width/.height — so dividing one by the other (an earlier
+    /// version of this code) always yields ~1.0 and never detects Retina at
+    /// all. The actual backing scale has to come from the matching
+    /// NSScreen instead.
+    private func nativeDisplayScale(for window: SCWindow, in content: SCShareableContent) -> CGFloat {
+        var bestScale: CGFloat = 2.0
+        var bestOverlap: CGFloat = 0
+        for display in content.displays {
+            let overlap = window.frame.intersection(display.frame).width
+            guard overlap > bestOverlap else { continue }
+            guard let screen = NSScreen.screens.first(where: {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == display.displayID
+            }) else { continue }
+            bestOverlap = overlap
+            bestScale = screen.backingScaleFactor
+        }
+        return max(bestScale, 1.0)
     }
 
     // MARK: - Input synthesis (auto-advance swipe)
@@ -398,7 +465,13 @@ actor ScreenScanner {
                 rows.append((label, obs))
             }
         }
-        guard rows.count == labels.count else {
+        // A single missed label (in practice, almost always "Defense" —
+        // Vision occasionally fails to recognize just that word even when
+        // "Attack" and "HP" on the same screen OCR fine) shouldn't void an
+        // otherwise-good reading: the three rows sit at even vertical
+        // spacing, so the missing one's position can be recovered from the
+        // other two instead of requiring OCR to find it.
+        guard rows.count >= 2 else {
             #if DEBUG
             let allText = observations.compactMap { $0.topCandidates(1).first?.string }
             print("[ScreenScanner] Bars skipped: only found labels \(rows.map { $0.label }) — all recognized text: \(allText)")
@@ -406,12 +479,26 @@ actor ScreenScanner {
             return nil
         }
 
-        let labelRowYs: [(label: String, rowY: Int)] = rows.map { label, obs in
+        var labelRowYs: [(label: String, rowY: Int)] = rows.map { label, obs in
             let box = obs.boundingBox
             let topPx = (1 - box.maxY) * height
             let bottomPx = (1 - box.minY) * height
             return (label, Int(((topPx + bottomPx) / 2).rounded()))
         }
+        if labelRowYs.count == 2, let inferred = inferredRow(for: labels, from: labelRowYs) {
+            #if DEBUG
+            print("[ScreenScanner] Bar label '\(inferred.label)' wasn't OCR'd — inferring its row from the other two.")
+            #endif
+            labelRowYs.append(inferred)
+        }
+        guard labelRowYs.count == labels.count else {
+            #if DEBUG
+            let allText = observations.compactMap { $0.topCandidates(1).first?.string }
+            print("[ScreenScanner] Bars skipped: only found labels \(rows.map { $0.label }) — all recognized text: \(allText)")
+            #endif
+            return nil
+        }
+
         let sortedYs = labelRowYs.map { $0.rowY }.sorted()
         let rowSpacing = Double(sortedYs.last! - sortedYs.first!) / Double(sortedYs.count - 1)
         guard rowSpacing > 4 else { return nil }
@@ -483,6 +570,34 @@ actor ScreenScanner {
         #endif
 
         return BarIVs(atk: ivs["Attack"], def: ivs["Defense"], hp: ivs["HP"])
+    }
+
+    /// When exactly two of the three row labels were found, recovers the
+    /// third's row position from the other two — Attack/Defense/HP sit at
+    /// even vertical spacing top-to-bottom, so the missing row is either
+    /// the midpoint between the other two (if it's Defense, the middle
+    /// one) or one spacing-step beyond the nearer of them (if it's Attack
+    /// or HP, the ends). Returns nil if `known` isn't exactly two rows, or
+    /// (defensively) if the missing label can't be identified.
+    private func inferredRow(
+        for labels: [String], from known: [(label: String, rowY: Int)]
+    ) -> (label: String, rowY: Int)? {
+        guard known.count == 2,
+              let missingLabel = labels.first(where: { label in !known.contains { $0.label == label } }),
+              let missingIndex = labels.firstIndex(of: missingLabel)
+        else { return nil }
+        func rowY(_ label: String) -> Int? { known.first { $0.label == label }?.rowY }
+        switch missingIndex {
+        case 1: // Defense — the middle row is the average of the two ends.
+            guard let top = rowY(labels[0]), let bottom = rowY(labels[2]) else { return nil }
+            return (missingLabel, (top + bottom) / 2)
+        case 0: // Attack — one spacing-step above Defense.
+            guard let mid = rowY(labels[1]), let bottom = rowY(labels[2]) else { return nil }
+            return (missingLabel, mid - (bottom - mid))
+        default: // HP — one spacing-step below Defense.
+            guard let top = rowY(labels[0]), let mid = rowY(labels[1]) else { return nil }
+            return (missingLabel, mid + (mid - top))
+        }
     }
 
     /// One horizontal pass across a candidate bar row.
@@ -614,6 +729,37 @@ actor ScreenScanner {
     }
 
     #endif
+}
+
+/// Forwards `SCStream` output into an `AsyncThrowingStream`. This exists
+/// only because `SCStreamOutput`/`SCStreamDelegate` require
+/// `NSObjectProtocol` conformance, which the `ScreenScanner` actor itself
+/// can't provide — the relay is a plain, non-isolated class instead.
+nonisolated private final class FrameStreamRelay: NSObject, SCStreamOutput, SCStreamDelegate {
+    var continuation: AsyncThrowingStream<CGImage, Error>.Continuation?
+    private let ciContext = CIContext()
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .screen,
+              let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let attachments = attachmentsArray.first,
+              let statusRawValue = attachments[.status] as? Int,
+              // `.complete` is a genuinely new frame; every other status
+              // (idle, blank, suspended, ...) means the display didn't
+              // actually change, so skip OCR entirely for it — this is what
+              // lets the scan loop above stay silent while the screen is static.
+              SCFrameStatus(rawValue: statusRawValue) == .complete,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
+        else { return }
+
+        let ciImage = CIImage(cvImageBuffer: pixelBuffer)
+        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
+        continuation?.yield(cgImage)
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        continuation?.finish(throwing: error)
+    }
 }
 
 // `nonisolated` on both: they're pure pixel math used from `ScreenScanner`'s

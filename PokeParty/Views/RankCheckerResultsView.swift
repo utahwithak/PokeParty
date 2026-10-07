@@ -113,7 +113,7 @@ struct RankCheckerResultsView: View {
 
     @ViewBuilder
     private func cell(for pokemon: Pokemon, league: CheckLeague) -> some View {
-        if let result = IVCalculator.rank(
+        if let result = IVRankCache.rank(
             baseAtk: pokemon.baseStats.atk,
             baseDef: pokemon.baseStats.def,
             baseHp: pokemon.baseStats.hp,

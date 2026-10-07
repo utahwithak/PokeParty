@@ -19,12 +19,22 @@ final class BreakpointModel {
     /// How many top-ranked meta Pokémon to battle.
     static let opponentCount = 20
 
+    /// Rank tiers offered by the "Compare as Rank" picker — 1 is the
+    /// theoretical best; the rest are tiers a real caught Pokémon might
+    /// plausibly land on.
+    static let rankTiers = [1, 20, 50, 100, 200]
+
+    /// Which rank tier's real IV combination (own optimal level under the
+    /// league's CP cap — not necessarily 15/15/15) the rank comparison uses.
+    private(set) var targetRank = 1
+
     private(set) var member: TeamMember?
 
     /// The subject's recommended moveset for the current league (labels the pickers).
     private(set) var recommendedMoveset: [String] = []
 
     private(set) var report: BreakpointAnalyzer.Report?
+    private(set) var rankComparison: BreakpointAnalyzer.RankComparison?
     private(set) var isAnalyzing = false
     private(set) var errorMessage: String?
     private var task: Task<Void, Never>?
@@ -61,24 +71,20 @@ final class BreakpointModel {
         }
     }
 
+    /// Changes which rank tier the meta comparison targets.
+    func setTargetRank(_ rank: Int) {
+        guard rank != targetRank else { return }
+        targetRank = rank
+        invalidate()
+    }
+
     func setFastMove(_ id: String) {
         update { $0.fastMoveId = id }
     }
 
     /// Sets (or clears, with `nil`) a charged-move slot (0 = first, 1 = second).
     func setChargedMove(_ id: String?, slot: Int) {
-        update { member in
-            var charged = member.chargedMoveIds
-            if let id {
-                // Don't allow the same move in both charged slots.
-                if charged.enumerated().contains(where: { $0.offset != slot && $0.element == id }) { return }
-                if slot < charged.count { charged[slot] = id } else { charged.append(id) }
-            } else if slot < charged.count {
-                charged.remove(at: slot)
-            }
-            guard !charged.isEmpty else { return }
-            member.chargedMoveIds = charged
-        }
+        update { $0.setChargedMove(id, slot: slot) }
     }
 
     private func update(_ change: (inout TeamMember) -> Void) {
@@ -93,6 +99,7 @@ final class BreakpointModel {
     private func invalidate() {
         task?.cancel()
         report = nil
+        rankComparison = nil
         errorMessage = nil
         isAnalyzing = false
     }
@@ -119,8 +126,10 @@ final class BreakpointModel {
         let movesById = store.movesById
         let pokemonById = store.pokemonById
         let format = format
+        let targetRank = targetRank
         isAnalyzing = true
         report = nil
+        rankComparison = nil
         errorMessage = nil
         task = Task {
             do {
@@ -131,14 +140,19 @@ final class BreakpointModel {
                 let result = await Task.detached {
                     // IV grid at the league-legal level cap; the power-up
                     // sweep is built in, clamped to that same level.
-                    await BreakpointAnalyzer.analyze(subject: subject,
+                    let report = await BreakpointAnalyzer.analyze(subject: subject,
                                                      leagueTitle: format.title,
                                                      level: heroLevel,
                                                      opponents: opponents, movesById: movesById)
+                    let rankComparison = BreakpointAnalyzer.compareAtRank(
+                        rank: targetRank, subject: subject, cpCap: format.cp,
+                        opponents: opponents, movesById: movesById)
+                    return (report, rankComparison)
                 }.value
                 guard !Task.isCancelled else { return }
-                report = result
-                if result == nil {
+                report = result.0
+                rankComparison = result.1
+                if result.0 == nil {
                     errorMessage = "Couldn't run the analysis for this Pokémon."
                 }
                 isAnalyzing = false

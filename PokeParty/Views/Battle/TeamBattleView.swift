@@ -16,13 +16,30 @@ struct TeamBattleView: View {
     var bench: BenchStore
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
+    @State private var opponentSource: OpponentSource = .all
+
+    private enum OpponentSource: String, CaseIterable, Identifiable {
+        case all = "All", bench = "Bench"
+        var id: String { rawValue }
+    }
 
     private var opponentResults: [Pokemon] {
         let query = search.trimmingCharacters(in: .whitespaces)
-        return store.allPokemon.filter { p in
+        return store.eligiblePokemon(for: store.format).filter { p in
             if model.opponentContains(speciesId: p.speciesId) { return false }
             guard !query.isEmpty else { return true }
             return p.speciesName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var benchOpponentResults: [BenchEntry] {
+        let query = search.trimmingCharacters(in: .whitespaces)
+        return bench.entries.filter { entry in
+            if model.opponentContains(speciesId: entry.speciesId) { return false }
+            guard !query.isEmpty else { return true }
+            let name = store.pokemonById[entry.speciesId]?.speciesName ?? entry.speciesId
+            return name.localizedCaseInsensitiveContains(query)
+                || entry.nickname.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -60,14 +77,18 @@ struct TeamBattleView: View {
         }
     }
 
+    private var savedTeamsForCurrentFormat: [Team] {
+        savedTeams.teams(for: store.format)
+    }
+
     private func teamColumn(title: String, members: [TeamMember], opponent: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title).font(.subheadline.weight(.semibold))
-                if opponent, !savedTeams.teams.isEmpty {
+                if opponent, !savedTeamsForCurrentFormat.isEmpty {
                     Spacer()
                     Menu("Load Saved") {
-                        ForEach(savedTeams.teams) { team in
+                        ForEach(savedTeamsForCurrentFormat) { team in
                             Button(team.name) { model.setOpponentTeam(team.members) }
                         }
                     }
@@ -119,52 +140,60 @@ struct TeamBattleView: View {
             Text("Add opponent (\(model.opponentMembers.count)/\(TeamBuilderModel.maxMembers))")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
 
-            // Bench Pokémon not already on the opponent team
-            let benchAvailable = bench.entries.filter {
-                !model.opponentContains(speciesId: $0.speciesId)
+            if !bench.entries.isEmpty {
+                Picker("Source", selection: $opponentSource) {
+                    ForEach(OpponentSource.allCases) { source in
+                        Text(source.rawValue).tag(source)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            if !benchAvailable.isEmpty && search.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("From your bench")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                    ForEach(benchAvailable) { entry in
+
+            TextField("Search Pokémon", text: $search)
+                .textFieldStyle(.roundedBorder)
+
+            VStack(spacing: 4) {
+                if opponentSource == .bench {
+                    if benchOpponentResults.isEmpty {
+                        Text("No matching bench Pokémon").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(benchOpponentResults) { entry in
+                            Button {
+                                model.addOpponent(entry.asTeamMember())
+                            } label: {
+                                HStack(spacing: 8) {
+                                    let name = store.pokemonById[entry.speciesId]?.speciesName ?? entry.speciesId
+                                    Text(entry.nickname.isEmpty ? name : entry.nickname)
+                                        .font(.subheadline.weight(.medium))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    TypeBadgeRow(types: store.pokemonById[entry.speciesId]?.displayTypes ?? [])
+                                }
+                                .padding(6)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                } else {
+                    ForEach(opponentResults.prefix(12)) { pokemon in
                         Button {
-                            model.addOpponent(entry.asTeamMember())
+                            if let m = model.makeMember(speciesId: pokemon.speciesId, store: store) {
+                                model.addOpponent(m)
+                            }
                         } label: {
                             HStack(spacing: 8) {
-                                let name = store.pokemonById[entry.speciesId]?.speciesName ?? entry.speciesId
-                                Text(entry.nickname.isEmpty ? name : entry.nickname)
-                                    .font(.subheadline.weight(.medium))
+                                Text(pokemon.speciesName).font(.subheadline.weight(.medium))
+                                    .lineLimit(1)
                                 Spacer()
-                                TypeBadgeRow(types: store.pokemonById[entry.speciesId]?.displayTypes ?? [])
+                                TypeBadgeRow(types: pokemon.displayTypes)
                             }
                             .padding(6)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
-                }
-            }
-
-            TextField("Search Pokémon", text: $search)
-                .textFieldStyle(.roundedBorder)
-            VStack(spacing: 4) {
-                ForEach(opponentResults.prefix(12)) { pokemon in
-                    Button {
-                        if let m = model.makeMember(speciesId: pokemon.speciesId, store: store) {
-                            model.addOpponent(m)
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text(pokemon.speciesName).font(.subheadline.weight(.medium))
-                                .lineLimit(1)
-                            Spacer()
-                            TypeBadgeRow(types: pokemon.displayTypes)
-                        }
-                        .padding(6)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -208,7 +237,10 @@ struct TeamBattleView: View {
         if let log = model.battleLog {
             VStack(alignment: .leading, spacing: 14) {
                 outcomeHeader(log.result)
-                ForEach(Array(log.segments.enumerated()), id: \.offset) { _, segment in
+                ForEach(Array(log.segments.enumerated()), id: \.offset) { index, segment in
+                    switchDivider(index == 0
+                                  ? leadSwapTransitions(log)
+                                  : switchTransitions(from: log.segments[index - 1], to: segment))
                     segmentView(segment)
                 }
             }
@@ -245,6 +277,131 @@ struct TeamBattleView: View {
         }
         .padding(12)
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - Switch section
+
+    private enum SwitchCause { case fainted, voluntary }
+
+    private struct SwitchTransition: Identifiable {
+        let id: Int   // side (0 or 1) — at most one transition per side per boundary
+        let outName: String
+        let inName: String
+        let cause: SwitchCause
+        /// Energy the opponent banked for free while this side spent its turn
+        /// switching. Always 0 for `.fainted` (a faint doesn't cost extra tempo).
+        let tempoEnergy: Int
+        /// Damage those same free fast moves dealt to the Pokémon switching in.
+        let tempoDamage: Int
+        let opponentName: String
+    }
+
+    /// The switches (if any) that happened between two consecutive segments —
+    /// a side's active Pokémon differs either because it fainted or because it
+    /// voluntarily switched, which (unlike a faint) spends a turn and lets the
+    /// opponent bank free energy and free damage.
+    private func switchTransitions(from previous: TeamBattleLog.Segment, to current: TeamBattleLog.Segment) -> [SwitchTransition] {
+        var out: [SwitchTransition] = []
+        if current.indexA != previous.indexA {
+            let cause: SwitchCause = previous.log.hpA <= 0 ? .fainted : .voluntary
+            let voluntary = current.voluntarySwitchSide == 0
+            out.append(SwitchTransition(
+                id: 0,
+                outName: participant(model.members, index: previous.indexA).name,
+                inName: participant(model.members, index: current.indexA).name,
+                cause: cause,
+                tempoEnergy: voluntary ? current.switchTempoEnergy : 0,
+                tempoDamage: voluntary ? current.switchTempoDamage : 0,
+                opponentName: participant(model.opponentMembers, index: current.indexB).name))
+        }
+        if current.indexB != previous.indexB {
+            let cause: SwitchCause = previous.log.hpB <= 0 ? .fainted : .voluntary
+            let voluntary = current.voluntarySwitchSide == 1
+            out.append(SwitchTransition(
+                id: 1,
+                outName: participant(model.opponentMembers, index: previous.indexB).name,
+                inName: participant(model.opponentMembers, index: current.indexB).name,
+                cause: cause,
+                tempoEnergy: voluntary ? current.switchTempoEnergy : 0,
+                tempoDamage: voluntary ? current.switchTempoDamage : 0,
+                opponentName: participant(model.members, index: current.indexA).name))
+        }
+        return out
+    }
+
+    /// The switches (if any) that happened before the very first segment: a
+    /// turn-0 safe-swap can move either side off its configured lead before any
+    /// battle plays out, so the first segment shown may not be lead-vs-lead.
+    private func leadSwapTransitions(_ log: TeamBattleLog) -> [SwitchTransition] {
+        guard let first = log.segments.first else { return [] }
+        let leadA = log.result.entrancesA.first ?? first.indexA
+        let leadB = log.result.entrancesB.first ?? first.indexB
+        var out: [SwitchTransition] = []
+        if first.indexA != leadA {
+            let voluntary = first.voluntarySwitchSide == 0
+            out.append(SwitchTransition(
+                id: 0,
+                outName: participant(model.members, index: leadA).name,
+                inName: participant(model.members, index: first.indexA).name,
+                cause: .voluntary,
+                tempoEnergy: voluntary ? first.switchTempoEnergy : 0,
+                tempoDamage: voluntary ? first.switchTempoDamage : 0,
+                opponentName: participant(model.opponentMembers, index: first.indexB).name))
+        }
+        if first.indexB != leadB {
+            let voluntary = first.voluntarySwitchSide == 1
+            out.append(SwitchTransition(
+                id: 1,
+                outName: participant(model.opponentMembers, index: leadB).name,
+                inName: participant(model.opponentMembers, index: first.indexB).name,
+                cause: .voluntary,
+                tempoEnergy: voluntary ? first.switchTempoEnergy : 0,
+                tempoDamage: voluntary ? first.switchTempoDamage : 0,
+                opponentName: participant(model.members, index: first.indexA).name))
+        }
+        return out
+    }
+
+    @ViewBuilder
+    private func switchDivider(_ transitions: [SwitchTransition]) -> some View {
+        if !transitions.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(transitions) { switchRow($0) }
+            }
+        }
+    }
+
+    private func switchRow(_ t: SwitchTransition) -> some View {
+        let color: Color = t.id == 0 ? .blue : .orange
+        return HStack(spacing: 8) {
+            Image(systemName: "arrow.left.arrow.right.circle.fill")
+                .foregroundStyle(color)
+            Text(t.cause == .fainted
+                 ? "\(t.outName) fainted — \(t.inName) in"
+                 : "\(t.outName) switched out for \(t.inName)")
+                .font(.caption.weight(.medium))
+            if t.cause == .voluntary, t.tempoEnergy > 0 {
+                Spacer(minLength: 4)
+                tempoBar(t.tempoEnergy)
+                Text("\(t.opponentName) gets +\(t.tempoEnergy) energy and hits \(t.inName) for \(t.tempoDamage)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.loss)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+        .help("Switching spends this side's whole turn — the opponent's Pokémon stays on the field and gets free energy and damage in while the new one comes in.")
+    }
+
+    private func tempoBar(_ energy: Int) -> some View {
+        Capsule()
+            .fill(Color.primary.opacity(0.08))
+            .overlay(alignment: .leading) {
+                Capsule().fill(Theme.loss)
+                    .scaleEffect(x: Double(energy) / 100.0, y: 1, anchor: .leading)
+            }
+            .frame(width: 36, height: 5)
     }
 
     // MARK: - Helpers

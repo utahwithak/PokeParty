@@ -107,18 +107,7 @@ final class MatchupModel {
 
     /// Sets (or clears, with `nil`) a charged-move slot (0 = first, 1 = second).
     func setChargedMove(_ id: String?, slot: Int, side: Side) {
-        update(side) { member in
-            var charged = member.chargedMoveIds
-            if let id {
-                // Don't allow the same move in both charged slots.
-                if charged.enumerated().contains(where: { $0.offset != slot && $0.element == id }) { return }
-                if slot < charged.count { charged[slot] = id } else { charged.append(id) }
-            } else if slot < charged.count {
-                charged.remove(at: slot)
-            }
-            guard !charged.isEmpty else { return }
-            member.chargedMoveIds = charged
-        }
+        update(side) { $0.setChargedMove(id, slot: slot) }
     }
 
     func setShadow(_ shadow: Bool, side: Side) {
@@ -152,21 +141,9 @@ final class MatchupModel {
 
     // MARK: - Building members from the data
 
-    /// Builds a combatant for a species, defaulting to its recommended moveset
-    /// (mirrors `TeamBuilderModel.makeMember`).
+    /// Builds a combatant for a species, defaulting to its recommended moveset.
     func makeMember(speciesId: String, store: RankingsStore) -> TeamMember? {
-        guard let species = store.pokemonById[speciesId] else { return nil }
-        if let entry = store.entry(id: speciesId), entry.moveset.count >= 2 {
-            return TeamMember(speciesId: speciesId,
-                              fastMoveId: entry.moveset[0],
-                              chargedMoveIds: Array(entry.moveset[1...].prefix(2)),
-                              shadow: species.isShadow)
-        }
-        guard let fast = species.fastMoves.first else { return nil }
-        return TeamMember(speciesId: speciesId,
-                          fastMoveId: fast,
-                          chargedMoveIds: Array(species.chargedMoves.prefix(2)),
-                          shadow: species.isShadow)
+        store.makeMember(speciesId: speciesId)
     }
 
     // MARK: - Simulation

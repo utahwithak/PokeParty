@@ -33,4 +33,25 @@ nonisolated struct Move: Decodable, Identifiable, Hashable {
     var buffApplyChanceValue: Double? {
         buffApplyChance.flatMap(Double.init)
     }
+
+    /// Fast moves needed to reach this charged move on each of the next 5
+    /// throws, carrying leftover energy between throws. "Straight N" when
+    /// every throw is the same, otherwise a dash-separated series like
+    /// "5 - 4 - 4 - 4 - 4". nil for a fast move, or when `fastEnergyGain`
+    /// is unavailable.
+    func chargeCounts(fastEnergyGain: Int?) -> String? {
+        guard !isFast, let gain = fastEnergyGain, gain > 0, energy > 0 else { return nil }
+        var stored = 0
+        var counts: [Int] = []
+        for _ in 0..<5 {
+            let needed = max(0, energy - stored)
+            let fastMoves = Int((Double(needed) / Double(gain)).rounded(.up))
+            counts.append(fastMoves)
+            stored += fastMoves * gain - energy
+        }
+        if let first = counts.first, counts.allSatisfy({ $0 == first }) {
+            return "Straight \(first)"
+        }
+        return counts.map(String.init).joined(separator: " - ")
+    }
 }

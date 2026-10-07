@@ -207,6 +207,18 @@ nonisolated enum ActionLogic {
             }
         }
 
+        // MARK: Cramorant — use Dive or Surf ASAP to trigger its form change,
+        // unless a non-Gulp move is meaningfully more effective right now.
+        if poke.hasGulpMissile, poke.gulpMissileForm == .none {
+            let gulpMove = poke.activeChargedMoves.first { $0.moveId == "DIVE" || $0.moveId == "SURF" }
+            let nonGulpMove = poke.activeChargedMoves.first { $0.moveId != "DIVE" && $0.moveId != "SURF" }
+            if let gulpMove, let nonGulpMove, poke.energy >= gulpMove.energy,
+               Double(opponent.hp) > Double(nonGulpMove.damage) * 1.3, nonGulpMove.dpe / gulpMove.dpe < 1.5 {
+                return TimelineAction(type: .charged, actor: poke.index, turn: turns,
+                                      value: poke.chargedMoveIndex(gulpMove), priority: poke.priority)
+            }
+        }
+
         // MARK: If KO will take many cycles, just throw the best (or bait) move.
         let bestChargedDamage = DamageCalculator.damage(poke, opponent, poke.bestChargedMove ?? poke.activeChargedMoves[0])
         let bestMove = poke.bestChargedMove ?? poke.activeChargedMoves[0]
@@ -302,7 +314,9 @@ nonisolated enum ActionLogic {
                 return nil
             }
         }
-        if plan[0].selfDebuffing {
+        // Treat an opponent Cramorant holding prey like a self-debuffing move:
+        // minimize time spent letting Gulp Missile trigger by stacking energy.
+        if plan[0].selfDebuffing || (opponent.hasGulpMissile && opponent.gulpMissileForm != .none) {
             let targetEnergy = (100 / plan[0].energy) * plan[0].energy
             if poke.energy < targetEnergy {
                 let moveDamage = DamageCalculator.damage(poke, opponent, plan[0])
@@ -337,19 +351,73 @@ nonisolated enum ActionLogic {
 
     // MARK: - Optimal plan (DP)
 
+    /// A queue of state indices, kept sorted ascending by `BattleState.turn`
+    /// (ties broken by insertion order per the `upToTurn`/`beforeTurn`
+    /// policies below). Backed by an array with a head pointer instead of
+    /// `removeFirst()` so dequeuing doesn't shift every remaining element,
+    /// and inserts locate their position with binary search instead of a
+    /// linear scan — this queue is pushed/popped on every DP state
+    /// expansion, which runs on every turn-action decision of every
+    /// simulated battle, so both were meaningful hot-path costs.
+    private struct StateQueue {
+        private var storage: [Int]
+        private var head = 0
+
+        init(_ initial: Int) { storage = [initial] }
+
+        var isEmpty: Bool { head >= storage.count }
+
+        /// Not-yet-processed indices, oldest-turn-first.
+        func active() -> ArraySlice<Int> { storage[head...] }
+
+        mutating func popFront() -> Int {
+            defer {
+                head += 1
+                // Compact occasionally so `storage` doesn't grow unbounded;
+                // amortized O(1) since each index is dropped only once.
+                if head > 64 && head * 2 > storage.count {
+                    storage.removeFirst(head)
+                    head = 0
+                }
+            }
+            return storage[head]
+        }
+
+        /// Inserts after any existing entries at exactly `limit` (i.e. `newIdx`'s
+        /// own turn), matching the caller's "upToTurn: state.turn" convention.
+        mutating func insert(_ newIdx: Int, allStates: [BattleState], upToTurn limit: Int) {
+            var lo = head, hi = storage.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if allStates[storage[mid]].turn <= limit { lo = mid + 1 } else { hi = mid }
+            }
+            storage.insert(newIdx, at: lo)
+        }
+
+        /// Inserts before any existing entries at exactly `limit`.
+        mutating func insert(_ newIdx: Int, allStates: [BattleState], beforeTurn limit: Int) {
+            var lo = head, hi = storage.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if allStates[storage[mid]].turn < limit { lo = mid + 1 } else { hi = mid }
+            }
+            storage.insert(newIdx, at: lo)
+        }
+    }
+
     /// The optimal charged-move sequence, or nil if no KO plan was found.
     private static func optimalPlan(_ battle: Battle, _ poke: BattlePokemon, _ opponent: BattlePokemon) -> [BattleMove]? {
         var stateCount = 0
         // Flat pool of all states ever created; queue holds indices into this array.
         // Parent-pointer path tracking eliminates per-state array copies.
         var allStates: [BattleState] = [BattleState(poke.energy, opponent.hp, 0, opponent.shields, -1, -1, 0)]
-        var queue: [Int] = [0]
+        var queue = StateQueue(0)
         var finalIdx = -1
 
         while !queue.isEmpty {
             if stateCount >= 500 { return nil }
             stateCount += 1
-            let currIdx = queue.removeFirst()
+            let currIdx = queue.popFront()
             var curr = allStates[currIdx]
             curr.buffs = min(4, max(-4, curr.buffs))
             allStates[currIdx] = curr
@@ -359,16 +427,16 @@ nonisolated enum ActionLogic {
                 break // chance is always 1 in our deterministic port
             }
 
-            var ready: [Int] = []
-            for m in poke.activeChargedMoves {
-                if curr.energy >= m.energy { ready.append(0) }
-                else { ready.append(Int(ceil(Double(m.energy - curr.energy) / Double(poke.fastMove.energyGain))) * poke.fastMove.turns) }
-            }
+            // Depends only on curr.buffs, not on the move — hoisted out of the
+            // per-move loop below (was recomputed once per charged move).
+            let fastSimulatedDamage = DamageCalculator.damage(poke, opponent, poke.fastMove, atkBuff: curr.buffs)
 
             for (n, move) in poke.activeChargedMoves.enumerated() {
+                let readyN = curr.energy >= move.energy ? 0
+                    : Int(ceil(Double(move.energy - curr.energy) / Double(poke.fastMove.energyGain))) * poke.fastMove.turns
+
                 // Damage with this state's attack buffs applied — no BattlePokemon copy needed.
                 let moveDamage = DamageCalculator.damage(poke, opponent, move, atkBuff: curr.buffs)
-                let fastSimulatedDamage = DamageCalculator.damage(poke, opponent, poke.fastMove, atkBuff: curr.buffs)
 
                 // Farm-down terminal state (only fast moves to finish).
                 let movesToFarmDown = Int(ceil(Double(curr.oppHealth) / Double(fastSimulatedDamage)))
@@ -385,7 +453,7 @@ nonisolated enum ActionLogic {
                     attackMult -= (move.buffs?.count ?? 0) > 1 ? (move.buffs?[1] ?? 0) : 0
                 }
 
-                if ready[n] == 0 {
+                if readyN == 0 {
                     var newOppHealth = curr.oppHealth - moveDamage
                     if curr.oppShields > 0 { newOppHealth = curr.oppHealth - 1 }
                     var newShields = curr.oppShields
@@ -411,10 +479,10 @@ nonisolated enum ActionLogic {
                         }
                     }
                 } else {
-                    let newEnergy = curr.energy - move.energy + poke.fastMove.energyGain * (ready[n] / poke.fastMove.turns)
-                    var newOppHealth = curr.oppHealth - moveDamage - fastSimulatedDamage * (ready[n] / poke.fastMove.turns)
-                    if curr.oppShields > 0 { newOppHealth = curr.oppHealth - fastSimulatedDamage * (ready[n] / poke.fastMove.turns) - 1 }
-                    let newTurn = curr.turn + ready[n] + 1
+                    let newEnergy = curr.energy - move.energy + poke.fastMove.energyGain * (readyN / poke.fastMove.turns)
+                    var newOppHealth = curr.oppHealth - moveDamage - fastSimulatedDamage * (readyN / poke.fastMove.turns)
+                    if curr.oppShields > 0 { newOppHealth = curr.oppHealth - fastSimulatedDamage * (readyN / poke.fastMove.turns) - 1 }
+                    let newTurn = curr.turn + readyN + 1
                     var newShields = curr.oppShields
                     if newShields > 0 { newShields -= 1 }
                     let s = BattleState(newEnergy, newOppHealth, newTurn, newShields, currIdx, n, attackMult)
@@ -447,36 +515,27 @@ nonisolated enum ActionLogic {
     }
 
     /// Appends state to allStates and inserts its index into the turn-ordered queue (≤ limit).
-    private static func insertState(_ state: BattleState, into queue: inout [Int], allStates: inout [BattleState], upToTurn limit: Int) {
+    private static func insertState(_ state: BattleState, into queue: inout StateQueue, allStates: inout [BattleState], upToTurn limit: Int) {
         let newIdx = allStates.count
         allStates.append(state)
-        var i = 0
-        while i < queue.count && allStates[queue[i]].turn <= limit { i += 1 }
-        queue.insert(newIdx, at: i)
+        queue.insert(newIdx, allStates: allStates, upToTurn: limit)
     }
 
-    private static func insertState(_ state: BattleState, into queue: inout [Int], allStates: inout [BattleState], beforeTurn limit: Int) {
+    private static func insertState(_ state: BattleState, into queue: inout StateQueue, allStates: inout [BattleState], beforeTurn limit: Int) {
         let newIdx = allStates.count
         allStates.append(state)
-        var i = 0
-        while i < queue.count && allStates[queue[i]].turn < limit { i += 1 }
-        queue.insert(newIdx, at: i)
+        queue.insert(newIdx, allStates: allStates, beforeTurn: limit)
     }
 
     /// Dedup states at the same turn with equal health, buffs, and energy.
-    private static func shouldSkip(queue: [Int], allStates: [BattleState], atTurn turn: Int, oppHealth: Int, buffs: Int, energy: Int) -> Bool {
-        var i = 0
-        while i < queue.count && allStates[queue[i]].turn == turn {
-            let s = allStates[queue[i]]
+    private static func shouldSkip(queue: StateQueue, allStates: [BattleState], atTurn turn: Int, oppHealth: Int, buffs: Int, energy: Int) -> Bool {
+        for idx in queue.active() {
+            let s = allStates[idx]
+            guard s.turn == turn else { break }
             if s.oppHealth == oppHealth && s.buffs == buffs {
-                if s.energy == energy {
-                    // Keep the path with fewer net debuffs (Perrserker/Giratina rule); approximate by skipping.
-                    return false
-                } else {
-                    return true
-                }
+                // Keep the path with fewer net debuffs (Perrserker/Giratina rule); approximate by skipping.
+                return s.energy != energy
             }
-            i += 1
         }
         return false
     }
@@ -525,6 +584,16 @@ nonisolated enum ActionLogic {
 
         if move.selfAttackDebuffing && Double(move.damage) / Double(defender.hp) > 0.55 { useShield = true; shieldWeight = 4 }
         if attacker.baitShields == 2 { useShield = true }
+
+        // Don't shield weak hits from Cramorant — save shields for bigger threats.
+        if attacker.hasGulpMissile, Double(move.damage) / Double(defender.hp) < 0.33 { useShield = false }
+
+        // Cramorant holding prey: let a weak hit through to trigger Gulp
+        // Missile's guaranteed counter-debuff instead of spending a shield.
+        if defender.hasGulpMissile, defender.gulpMissileForm != .none,
+           Double(move.damage) * 2.2 < Double(defender.hp) {
+            useShield = false
+        }
 
         return ShieldDecision(value: useShield, shieldWeight: shieldWeight, noShieldWeight: noShieldWeight)
     }

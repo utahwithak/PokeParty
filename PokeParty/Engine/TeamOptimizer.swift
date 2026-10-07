@@ -16,7 +16,10 @@
 //  2. Build a meta field: the top `metaSize` ranked Pokémon (recommended
 //     movesets), each paired with its two best coverage partners, weighted by
 //     meta rank (1/rank, normalized) so beating the top threats matters most.
-//     These are the opponent teams candidates are evaluated against.
+//     These are the opponent teams candidates are evaluated against. Up to 4
+//     user-picked "strong against" Pokémon are appended the same way, each
+//     weighted equal to the single top-ranked automatic threat so a large
+//     `metaSize` can't dilute them away.
 //  3. Hill-climb from `restarts` diverse starting teams. Each step evaluates
 //     every valid single-swap neighbor (different species or different moveset
 //     of the same species, at any of the three positions) in parallel chunks
@@ -30,7 +33,7 @@ nonisolated enum TeamOptimizer {
 
     // MARK: - Public types
 
-    struct Candidate: Sendable {
+    struct Candidate: TeamCandidate, Sendable {
         let member: TeamMember
         let speciesName: String
         let types: [String]
@@ -39,12 +42,13 @@ nonisolated enum TeamOptimizer {
         let dex: Int
         let combatant: MatchupSimulator.Combatant
         let stats: BattlePokemon.Stats
+        var isMegaEvolution: Bool = false
         /// True when this moveset differs from the entry's recommended moveset.
         let isAlternateMoveset: Bool
     }
 
-    struct OptimizedTeam: Identifiable, Sendable {
-        struct Member: Sendable {
+    struct OptimizedTeam: Identifiable, Sendable, Codable {
+        struct Member: Sendable, Codable {
             let member: TeamMember
             let speciesName: String
             let types: [String]
@@ -118,6 +122,8 @@ nonisolated enum TeamOptimizer {
         cpCap: Int,
         pokemonById: [String: Pokemon],
         movesById: [String: Move],
+        lockedMembers: [TeamMember] = [],
+        strongAgainstMembers: [TeamMember] = [],
         metaSize: Int = 15,
         restarts: Int = 20,
         maxResults: Int = 50,
@@ -131,9 +137,11 @@ nonisolated enum TeamOptimizer {
         onResults: (@Sendable (Results) -> Void)? = nil
     ) async -> Results {
         let empty = Results(teams: [], completedClimbers: 0, totalClimbers: restarts, isComplete: false)
-        let pool = buildCandidates(
+        let built = buildPool(
             entries: entries, poolSize: poolSize, cpCap: cpCap, pokemonById: pokemonById,
-            exploreAlternateMovesets: exploreAlternateMovesets)
+            exploreAlternateMovesets: exploreAlternateMovesets, lockedMembers: lockedMembers)
+        let pool = built.pool
+        let lockedIndices = built.lockedIndices
         guard pool.count >= 3 else {
             return Results(teams: [], completedClimbers: 0, totalClimbers: restarts, isComplete: true)
         }
@@ -141,9 +149,14 @@ nonisolated enum TeamOptimizer {
         let shieldNet = learnedShields ? ShieldPolicyNet.bundled : nil
         let switchNet = learnedSwitches ? SwitchPolicyNet.bundled : nil
 
+        let strongAgainstCandidates = strongAgainstMembers.prefix(4).compactMap {
+            makeLockedCandidate(member: $0, cpCap: cpCap, pokemonById: pokemonById)
+        }
+
         onProgress?(0.0)
         let metaField = await buildMetaField(
-            pool: pool, metaSize: metaSize, movesById: movesById, shieldNet: shieldNet)
+            pool: pool, metaSize: metaSize, movesById: movesById, shieldNet: shieldNet,
+            extraTargets: Array(strongAgainstCandidates))
         guard !metaField.isEmpty else {
             return Results(teams: [], completedClimbers: 0, totalClimbers: restarts, isComplete: true)
         }
@@ -157,7 +170,10 @@ nonisolated enum TeamOptimizer {
             : nil
         if Task.isCancelled { return empty }
 
-        let starts = generateStarts(pool: pool, count: restarts)
+        let starts = generateStarts(pool: pool, count: restarts, lockedIndices: lockedIndices)
+        guard !starts.isEmpty else {
+            return Results(teams: [], completedClimbers: 0, totalClimbers: 0, isComplete: true)
+        }
         let total = starts.count
 
         // Signal that climbing has begun (0 done) so the UI can switch from
@@ -175,7 +191,7 @@ nonisolated enum TeamOptimizer {
                         start: start, pool: pool, metaField: metaField,
                         movesById: movesById, shieldNet: shieldNet, switchNet: switchNet,
                         voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
-                        prefilter: prefilterData)
+                        prefilter: prefilterData, lockedCount: lockedIndices.count)
                 }
             }
             for await result in group {
@@ -226,7 +242,7 @@ nonisolated enum TeamOptimizer {
             teams: teams, fieldSize: 0, completedTeams: 0, totalTeams: teams.count, isComplete: true)
         guard !teams.isEmpty else { return empty }
 
-        let field = generateRandomField(pool: pool, size: fieldSize)
+        let field = TeamFinder.randomField(pool: pool, size: fieldSize)
         guard !field.isEmpty else { return empty }
 
         let shieldNet = learnedShields ? ShieldPolicyNet.bundled : nil
@@ -287,33 +303,67 @@ nonisolated enum TeamOptimizer {
             fieldSize: field.count, completedTeams: completed, totalTeams: total, isComplete: true)
     }
 
-    /// Randomly samples up to `size` distinct valid trios (species/family
-    /// disjoint, like any real team) from `pool` via rejection sampling.
-    /// Returns fewer than `size` only when the pool is too small to have that
-    /// many unique combinations.
-    private static func generateRandomField(pool: [Candidate], size: Int) -> [[Int]] {
-        guard pool.count >= 3, size > 0 else { return [] }
-        var field: [[Int]] = []
-        var used = Set<String>()
-        let maxAttempts = size * 20
-        var attempts = 0
-        while field.count < size && attempts < maxAttempts {
-            attempts += 1
-            let i = Int.random(in: 0..<pool.count)
-            var j = Int.random(in: 0..<pool.count)
-            while j == i { j = Int.random(in: 0..<pool.count) }
-            var k = Int.random(in: 0..<pool.count)
-            while k == i || k == j { k = Int.random(in: 0..<pool.count) }
-            guard distinct(pool[i], pool[j]), distinct(pool[i], pool[k]), distinct(pool[j], pool[k])
-            else { continue }
-            let key = [i, j, k].sorted().map(String.init).joined(separator: "+")
-            guard used.insert(key).inserted else { continue }
-            field.append([i, j, k])
+    // MARK: - Candidate pool construction
+
+    /// Builds the ranked candidate pool plus, when `lockedMembers` is non-empty
+    /// (the Party Finder's "lock a Pokémon" picker), appends a candidate for
+    /// each locked member and reports their indices — so `findTeams` can pin
+    /// them to fixed team slots instead of searching over them. Kept separate
+    /// from `buildCandidates` so callers that only need the plain ranked pool
+    /// (e.g. broad-field validation setup) aren't forced through this path.
+    static func buildPool(
+        entries: [RankingEntry],
+        poolSize: Int,
+        cpCap: Int,
+        pokemonById: [String: Pokemon],
+        exploreAlternateMovesets: Bool = false,
+        lockedMembers: [TeamMember] = []
+    ) -> (pool: [Candidate], lockedIndices: [Int]) {
+        var pool = buildCandidates(
+            entries: entries, poolSize: poolSize, cpCap: cpCap, pokemonById: pokemonById,
+            exploreAlternateMovesets: exploreAlternateMovesets)
+        let lockedCandidates = lockedMembers.prefix(2).compactMap {
+            makeLockedCandidate(member: $0, cpCap: cpCap, pokemonById: pokemonById)
         }
-        return field
+        let lockedIndices = Array(pool.count..<(pool.count + lockedCandidates.count))
+        pool.append(contentsOf: lockedCandidates)
+        return (pool, lockedIndices)
     }
 
-    // MARK: - Candidate pool construction
+    /// A hill-climbable candidate for a user-locked Pokémon: uses its bench
+    /// IVs (with Best Buddy level cap) when present, otherwise IV-optimal
+    /// stats for the format's CP cap — mirrors `TeamFinderModel.benchCandidate`.
+    static func makeLockedCandidate(
+        member: TeamMember, cpCap: Int, pokemonById: [String: Pokemon]
+    ) -> Candidate? {
+        guard let r = Pokemon.resolve(speciesId: member.speciesId, pokemonById: pokemonById) else { return nil }
+        let combatant = MatchupSimulator.Combatant(
+            species: r.species, shadow: member.shadow,
+            fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
+        let levelCap: Double = member.isBestBuddy ? 51 : 50
+        let stats: BattlePokemon.Stats
+        if let ivs = member.ivs,
+           let s = IVCalculator.stats(
+               baseAtk: r.species.baseStats.atk, baseDef: r.species.baseStats.def, baseHp: r.species.baseStats.hp,
+               ivs: ivs, cpCap: cpCap, levelCap: levelCap) {
+            stats = BattlePokemon.Stats(atk: s.atk, def: s.def, hp: s.hp)
+        } else if let s = MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap, levelCap: levelCap) {
+            stats = s
+        } else {
+            return nil
+        }
+        return Candidate(
+            member: member,
+            speciesName: r.species.speciesName,
+            types: r.species.types.filter { $0 != "none" },
+            shadow: member.shadow,
+            familyId: r.species.family?.id,
+            dex: r.species.dex,
+            combatant: combatant,
+            stats: stats,
+            isMegaEvolution: r.species.isMegaEvolution,
+            isAlternateMoveset: false)
+    }
 
     /// Expands the top `poolSize` ranking entries into (Pokémon × moveset) candidates.
     /// The recommended moveset is always first; when `exploreAlternateMovesets` is on,
@@ -333,7 +383,7 @@ nonisolated enum TeamOptimizer {
         for entry in entries {
             guard speciesCount < poolSize else { break }
             guard entry.moveset.count >= 2,
-                  let r = resolve(speciesId: entry.speciesId, pokemonById: pokemonById)
+                  let r = Pokemon.resolve(speciesId: entry.speciesId, pokemonById: pokemonById)
             else { continue }
             speciesCount += 1
 
@@ -424,81 +474,128 @@ nonisolated enum TeamOptimizer {
     }
 
     /// Builds representative opponent teams: the top `metaSize` unique species
-    /// (recommended movesets), each paired with its two best coverage partners
-    /// via the 1v1 rating matrix. Teams are weighted by the rank of their lead
-    /// species (1/rank, normalized), so beating the very top meta threats counts
-    /// far more toward the score than beating the bottom of the meta field.
+    /// (recommended movesets) are the "threats" a good meta field must cover;
+    /// each gets its two best coverage partners, searched across the *entire*
+    /// pool (not just the other top-`metaSize` threats — in a Mega-legal cup,
+    /// the top of the rankings can be almost entirely Mega Evolutions, and
+    /// since only one Mega is allowed per team, restricting the partner search
+    /// to that same top slice can leave every threat with no legal partner at
+    /// all, emptying the meta field). Teams are weighted by the rank of their
+    /// lead species (1/rank, normalized), so beating the very top meta threats
+    /// counts far more toward the score than beating the bottom of the field.
+    ///
+    /// `extraTargets` are user-picked "strong against" Pokémon (see
+    /// `findTeams`): they get their own coverage-partner team built the same
+    /// way, each weighted equal to the single top-ranked automatic threat
+    /// (`1.0` raw, vs. that threat's own `1.0`) so they can't be diluted away
+    /// by a large `metaSize` — but they're never eligible to be *someone
+    /// else's* coverage partner, since partner search only ever draws from
+    /// `pool`.
     private static func buildMetaField(
         pool: [Candidate],
         metaSize: Int,
         movesById: [String: Move],
-        shieldNet: ShieldPolicyNet?
+        shieldNet: ShieldPolicyNet?,
+        extraTargets: [Candidate] = []
     ) async -> [MetaTeam] {
         // One recommended-moveset candidate per unique species, up to metaSize.
         var metaCandidates: [Candidate] = []
+        var metaCandidateIndices: [Int] = []  // each candidate's index into `matrixPool`
         var seenDex = Set<Int>()
-        for c in pool where !c.isAlternateMoveset {
+        for (idx, c) in pool.enumerated() where !c.isAlternateMoveset {
             guard seenDex.insert(c.dex).inserted else { continue }
             metaCandidates.append(c)
+            metaCandidateIndices.append(idx)
             if metaCandidates.count >= metaSize { break }
         }
         guard metaCandidates.count >= 3 else { return [] }
+        let autoCount = metaCandidates.count
 
-        // Pairwise 1v1 rating matrix for the meta candidates.
+        // Extra "strong against" targets are appended as additional threats,
+        // skipping any that duplicate an automatic threat already in the field.
+        let autoKeys = Set(metaCandidates.map(candidateKey))
+        let dedupedExtras = extraTargets.filter { !autoKeys.contains(candidateKey($0)) }
+        for (i, extra) in dedupedExtras.enumerated() {
+            metaCandidates.append(extra)
+            metaCandidateIndices.append(pool.count + i)
+        }
+        let matrixPool = pool + dedupedExtras
+
+        // 1v1 ratings between every pool/extra-target candidate and every meta threat.
         let n = metaCandidates.count
-        var matrix = Array(repeating: Array(repeating: 500, count: n), count: n)
-        await withTaskGroup(of: (Int, Int, Int, Int)?.self) { group in
-            for i in 0..<n {
-                for j in (i + 1)..<n {
+        let poolCount = matrixPool.count
+        var matrix = Array(repeating: Array(repeating: 500, count: n), count: poolCount)
+        await withTaskGroup(of: (Int, Int, Int)?.self) { group in
+            for p in 0..<poolCount {
+                for t in 0..<n {
                     group.addTask {
                         guard !Task.isCancelled,
                               let r = MatchupSimulator.rate(
-                                metaCandidates[i].combatant, statsA: metaCandidates[i].stats,
-                                metaCandidates[j].combatant, statsB: metaCandidates[j].stats,
+                                matrixPool[p].combatant, statsA: matrixPool[p].stats,
+                                metaCandidates[t].combatant, statsB: metaCandidates[t].stats,
                                 movesById: movesById, shieldsA: 1, shieldsB: 1,
                                 shieldNet: shieldNet)
                         else { return nil }
-                        return (i, j, r.a, r.b)
+                        return (p, t, r.a)
                     }
                 }
             }
             for await r in group where r != nil {
-                let r = r!
-                matrix[r.0][r.1] = r.2; matrix[r.1][r.0] = r.3
+                let (p, t, score) = r!
+                matrix[p][t] = score
             }
         }
         if Task.isCancelled { return [] }
 
-        // For each meta candidate i, greedily find the 2 best coverage partners.
+        // For each meta threat i (as lead), greedily find its 2 best coverage
+        // partners — drawn only from the real pool, never from `extraTargets`.
+        // A target that turns out to be the partner itself is excluded from
+        // that partner's coverage credit (covering yourself is meaningless).
+        let metaIndexByPoolIndex = Dictionary(
+            uniqueKeysWithValues: metaCandidateIndices.enumerated().map { ($1, $0) })
+        func targetIndex(ofPoolIndex idx: Int) -> Int? { metaIndexByPoolIndex[idx] }
+
         var teams: [MetaTeam] = []
         var rawWeights: [Double] = []
+        let realPoolCount = pool.count
         for i in 0..<n {
+            let leadIdx = metaCandidateIndices[i]
             var bestJ = -1, bestJCov = -1
-            for j in 0..<n where j != i && distinct(metaCandidates[i], metaCandidates[j]) {
-                let cov = (0..<n).filter { $0 != i && $0 != j }
-                    .reduce(0) { $0 + max(matrix[i][$1], matrix[j][$1]) }
-                if cov > bestJCov { bestJCov = cov; bestJ = j }
+            for p in 0..<realPoolCount where p != leadIdx && distinct(metaCandidates[i], matrixPool[p]) {
+                var excluded: Set<Int> = [i]
+                if let t = targetIndex(ofPoolIndex: p) { excluded.insert(t) }
+                let cov = (0..<n).filter { !excluded.contains($0) }
+                    .reduce(0) { $0 + max(matrix[leadIdx][$1], matrix[p][$1]) }
+                if cov > bestJCov { bestJCov = cov; bestJ = p }
             }
             guard bestJ >= 0 else { continue }
             var bestK = -1, bestKCov = -1
-            for k in 0..<n where k != i && k != bestJ
-                    && distinct(metaCandidates[i], metaCandidates[k])
-                    && distinct(metaCandidates[bestJ], metaCandidates[k]) {
-                let cov = (0..<n).filter { $0 != i && $0 != bestJ && $0 != k }
-                    .reduce(0) { $0 + max(max(matrix[i][$1], matrix[bestJ][$1]), matrix[k][$1]) }
+            for k in 0..<realPoolCount where k != leadIdx && k != bestJ
+                    && distinct(metaCandidates[i], matrixPool[k])
+                    && distinct(matrixPool[bestJ], matrixPool[k]) {
+                var excluded: Set<Int> = [i]
+                if let t = targetIndex(ofPoolIndex: bestJ) { excluded.insert(t) }
+                if let t = targetIndex(ofPoolIndex: k) { excluded.insert(t) }
+                let cov = (0..<n).filter { !excluded.contains($0) }
+                    .reduce(0) { $0 + max(max(matrix[leadIdx][$1], matrix[bestJ][$1]), matrix[k][$1]) }
                 if cov > bestKCov { bestKCov = cov; bestK = k }
             }
             guard bestK >= 0 else { continue }
             teams.append(MetaTeam(
-                members: [metaCandidates[i], metaCandidates[bestJ], metaCandidates[bestK]],
+                members: [metaCandidates[i], matrixPool[bestJ], matrixPool[bestK]],
                 weight: 1.0))
-            rawWeights.append(1.0 / Double(i + 1))
+            rawWeights.append(i < autoCount ? 1.0 / Double(i + 1) : 1.0)
         }
         guard !teams.isEmpty else { return [] }
         let totalWeight = rawWeights.reduce(0, +)
         return zip(teams, rawWeights).map { team, raw in
             MetaTeam(members: team.members, weight: raw / totalWeight)
         }
+    }
+
+    /// Identity key for deduplicating candidates by species + moveset.
+    private static func candidateKey(_ c: Candidate) -> String {
+        "\(c.member.speciesId)|\(c.member.fastMoveId)|\(c.member.chargedMoveIds.sorted().joined(separator: ","))"
     }
 
     /// Builds the pre-filter matrix: 1v1 ratings for all (pool candidate × unique
@@ -566,8 +663,50 @@ nonisolated enum TeamOptimizer {
     // MARK: - Diverse starting teams
 
     /// Generates up to `count` starting trios by cycling through unique lead
-    /// species and rotating companion offsets for diversity.
-    private static func generateStarts(pool: [Candidate], count: Int) -> [[Int]] {
+    /// species and rotating companion offsets for diversity. When
+    /// `lockedIndices` is non-empty (1–2 user-locked Pokémon), those pool
+    /// indices occupy the first slots of every start and only the remaining
+    /// slot(s) vary — the climb below then only searches for partners.
+    private static func generateStarts(pool: [Candidate], count: Int, lockedIndices: [Int] = []) -> [[Int]] {
+        guard !lockedIndices.isEmpty else { return generateUnlockedStarts(pool: pool, count: count) }
+
+        let lockedCandidates = lockedIndices.map { pool[$0] }
+        var firstByDex: [Int: Int] = [:]
+        for (i, c) in pool.enumerated() where !c.isAlternateMoveset {
+            if firstByDex[c.dex] == nil { firstByDex[c.dex] = i }
+        }
+        let unique = firstByDex.values.sorted().filter { !lockedIndices.contains($0) }
+        let needed = 3 - lockedIndices.count
+        let n = unique.count
+        guard n >= needed else { return [] }
+
+        var starts: [[Int]] = []
+        var used = Set<String>()
+
+        for r in 0..<max(count * 4, n * n) {
+            if starts.count >= count { break }
+            var chosen: [Int] = []
+            for d in 0..<n {
+                if chosen.count == needed { break }
+                let idx = unique[(r + d) % n]
+                let candidate = pool[idx]
+                guard lockedCandidates.allSatisfy({ distinct(candidate, $0) }),
+                      chosen.allSatisfy({ distinct(candidate, pool[$0]) })
+                else { continue }
+                chosen.append(idx)
+            }
+            guard chosen.count == needed else { continue }
+
+            let full = lockedIndices + chosen
+            let key = full.sorted().map(String.init).joined(separator: "+")
+            if used.insert(key).inserted {
+                starts.append(full)
+            }
+        }
+        return starts
+    }
+
+    private static func generateUnlockedStarts(pool: [Candidate], count: Int) -> [[Int]] {
         var firstByDex: [Int: Int] = [:]
         for (i, c) in pool.enumerated() where !c.isAlternateMoveset {
             if firstByDex[c.dex] == nil { firstByDex[c.dex] = i }
@@ -619,7 +758,8 @@ nonisolated enum TeamOptimizer {
         switchNet: SwitchPolicyNet?,
         voluntarySwitching: Bool,
         optimalShields: Bool,
-        prefilter: PrefilterData?
+        prefilter: PrefilterData?,
+        lockedCount: Int = 0
     ) async -> OptimizedTeam {
         var current = start
         var currentScore = evalSync(
@@ -635,8 +775,10 @@ nonisolated enum TeamOptimizer {
 
         while !Task.isCancelled {
             // All valid single-swap neighbors (different species or different moveset).
+            // Locked positions (the user's pinned Pokémon, always the first
+            // `lockedCount` slots — see `generateStarts`) are never swapped.
             var swaps: [[Int]] = []
-            for position in 0..<3 {
+            for position in lockedCount..<3 {
                 let others = (0..<3).filter { $0 != position }.map { pool[current[$0]] }
                 for ci in 0..<pool.count {
                     if current.contains(ci) { continue }
@@ -707,6 +849,20 @@ nonisolated enum TeamOptimizer {
                 break
             }
         }
+
+        // Free the lead/switch/closer order for display — locking only pins
+        // which 3 species are chosen, not which one leads. Cheap: 6 orderings.
+        var bestOrder = current
+        var bestOrderScore = currentScore
+        for perm in orderPermutations(current) where perm != current {
+            let sc = evalSync(
+                team: perm, pool: pool, metaField: metaField, movesById: movesById,
+                shieldNet: shieldNet, switchNet: switchNet,
+                voluntarySwitching: voluntarySwitching, optimalShields: optimalShields)
+            if sc > bestOrderScore { bestOrderScore = sc; bestOrder = perm }
+        }
+        current = bestOrder
+        currentScore = bestOrderScore
 
         // Win/loss/tie breakdown vs meta field for display.
         var wins = 0, losses = 0, ties = 0
@@ -781,10 +937,13 @@ nonisolated enum TeamOptimizer {
 
     // MARK: - Helpers
 
-    static func distinct(_ a: Candidate, _ b: Candidate) -> Bool {
-        if a.dex == b.dex { return false }
-        if let fa = a.familyId, let fb = b.familyId, fa == fb { return false }
-        return true
+    static func distinct(_ a: Candidate, _ b: Candidate) -> Bool { teamCandidatesDistinct(a, b) }
+
+    /// The 6 orderings of a 3-member team (lead/switch/closer permutations).
+    private static func orderPermutations(_ team: [Int]) -> [[Int]] {
+        guard team.count == 3 else { return [team] }
+        let a = team[0], b = team[1], c = team[2]
+        return [[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]]
     }
 
     private static func movesetKey(_ fast: String, _ c1: String, _ c2: String) -> String {
@@ -818,24 +977,14 @@ nonisolated enum TeamOptimizer {
             familyId: r.species.family?.id,
             dex: r.species.dex,
             combatant: combatant, stats: stats,
+            isMegaEvolution: r.species.isMegaEvolution,
             isAlternateMoveset: isAlternate))
     }
 
     private static func makeTeam(
         _ members: [Candidate], movesById: [String: Move]
     ) -> [BattlePokemon]? {
-        ThreeVThreeBattle.makeTeam(
-            members.map(\.combatant), stats: members.map(\.stats), movesById: movesById)
+        makeBattleTeam(members, movesById: movesById)
     }
 
-    private static func resolve(
-        speciesId: String, pokemonById: [String: Pokemon]
-    ) -> (species: Pokemon, shadow: Bool)? {
-        var species = pokemonById[speciesId]
-        if species == nil, speciesId.hasSuffix("_shadow") {
-            species = pokemonById[String(speciesId.dropLast("_shadow".count))]
-        }
-        guard let species else { return nil }
-        return (species, species.isShadow || speciesId.hasSuffix("_shadow"))
-    }
 }

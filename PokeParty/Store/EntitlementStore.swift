@@ -26,11 +26,11 @@ final class EntitlementStore {
         Bundle.main.url(forResource: "embedded", withExtension: "provisionprofile") != nil
 
     /// Whether the pro features are currently unlocked.
-    #if DEBUG
+//    #if DEBUG
     private(set) var isUnlocked = true
-    #else
-    private(set) var isUnlocked = Self.isNonAppStoreBuild
-    #endif
+//    #else
+//    private(set) var isUnlocked = Self.isNonAppStoreBuild
+//    #endif
     /// The StoreKit product — nil until `load()` completes.
     private(set) var product: Product?
     /// True while a purchase sheet is being presented.

@@ -17,17 +17,45 @@ struct TeamBuilderView: View {
     var hiddenCups: HiddenCupsStore
     @State private var searchText = ""
 
+    /// A bench entry offered as an addable team member — either its own
+    /// species, or (when Megas are in play) one of its Mega Evolutions,
+    /// since mega-evolving keeps the same IVs/moves as the owned Pokémon.
+    private struct BenchOption: Identifiable {
+        let entry: BenchEntry
+        let megaForm: Pokemon?
+        var speciesId: String { megaForm?.speciesId ?? entry.speciesId }
+        var id: String { "\(entry.id)-\(speciesId)" }
+    }
+
     /// Bench entries rated for the team's current league (CP cap) and not
-    /// already on the team.
-    private var benchResults: [BenchEntry] {
+    /// already on the team, plus a Mega-form option for each bench entry
+    /// whose species can mega evolve, when the current format allows Megas
+    /// (its own cup, or the "Show Mega Evolutions" setting).
+    private var benchResults: [BenchOption] {
         let league = League(cpCap: store.format.cp)
-        return bench.entries.filter { $0.league == league && !model.contains(speciesId: $0.speciesId) }
+        let allowsMega = store.format.allowsMegaEvolution || store.showMegaEvolutions
+        return bench.entries
+            .filter { $0.league == league }
+            .flatMap { entry -> [BenchOption] in
+                var options: [BenchOption] = []
+                if !model.contains(speciesId: entry.speciesId) {
+                    options.append(BenchOption(entry: entry, megaForm: nil))
+                }
+                if allowsMega {
+                    for mega in store.megaEvolutions(for: entry.speciesId)
+                    where !model.contains(speciesId: mega.speciesId) {
+                        options.append(BenchOption(entry: entry, megaForm: mega))
+                    }
+                }
+                return options
+            }
     }
 
     /// Released Pokémon matching the search, excluding those already on the team.
+    /// Includes Mega Evolutions when the current format allows them.
     private var searchResults: [Pokemon] {
         let query = searchText.trimmingCharacters(in: .whitespaces)
-        return store.allPokemon.filter { pokemon in
+        return store.eligiblePokemon(for: store.format).filter { pokemon in
             if model.contains(speciesId: pokemon.speciesId) { return false }
             guard !query.isEmpty else { return true }
             return pokemon.speciesName.localizedCaseInsensitiveContains(query)
@@ -38,14 +66,15 @@ struct TeamBuilderView: View {
         List {
             if !benchResults.isEmpty && searchText.isEmpty {
                 Section("From Your Bench") {
-                    ForEach(benchResults) { entry in
+                    ForEach(benchResults) { option in
+                        let entry = option.entry
                         Button {
-                            model.add(entry.asTeamMember())
+                            model.add(entry.asTeamMember(speciesId: option.megaForm?.speciesId))
                         } label: {
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 4) {
-                                        Text(benchDisplayName(entry))
+                                        Text(benchDisplayName(option))
                                             .font(.body.weight(.medium))
                                             .lineLimit(1)
                                         if entry.shadow { ShadowBadge() }
@@ -67,7 +96,7 @@ struct TeamBuilderView: View {
                                     }
                                 }
                                 Spacer()
-                                if let sp = store.pokemonById[entry.speciesId] {
+                                if let sp = option.megaForm ?? store.pokemonById[entry.speciesId] {
                                     TypeBadgeRow(types: sp.displayTypes)
                                 }
                             }
@@ -125,7 +154,9 @@ struct TeamBuilderView: View {
         #endif
     }
 
-    private func benchDisplayName(_ entry: BenchEntry) -> String {
+    private func benchDisplayName(_ option: BenchOption) -> String {
+        if let mega = option.megaForm { return mega.speciesName }
+        let entry = option.entry
         if !entry.nickname.isEmpty { return entry.nickname }
         return store.pokemonById[entry.speciesId]?.speciesName ?? entry.speciesId
     }

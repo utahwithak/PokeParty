@@ -51,6 +51,7 @@ nonisolated enum MatchupSimulator {
             types: c.species.types,
             shadow: c.shadow,
             hasDisguise: c.species.hasDisguise,
+            hasGulpMissile: c.species.hasGulpMissile,
             stats: stats,
             fastMove: BattleMove(from: fastMoveData),
             chargedMoves: chargedData.map(BattleMove.init)
@@ -67,10 +68,11 @@ nonisolated enum MatchupSimulator {
         _ b: Combatant, statsB: BattlePokemon.Stats,
         movesById: [String: Move],
         shieldsA: Int, shieldsB: Int,
+        startEnergyA: Int = 0, startEnergyB: Int = 0,
         shieldNet: ShieldPolicyNet? = nil
     ) -> (a: Int, b: Int)? {
-        guard let pa = makeBattlePokemon(a, stats: statsA, movesById: movesById, shields: shieldsA),
-              let pb = makeBattlePokemon(b, stats: statsB, movesById: movesById, shields: shieldsB)
+        guard let pa = makeBattlePokemon(a, stats: statsA, movesById: movesById, shields: shieldsA, startEnergy: startEnergyA),
+              let pb = makeBattlePokemon(b, stats: statsB, movesById: movesById, shields: shieldsB, startEnergy: startEnergyB)
         else { return nil }
         let battle = Battle(pa, pb)
         if let shieldNet { battle.useLearnedShieldPolicy(shieldNet) }

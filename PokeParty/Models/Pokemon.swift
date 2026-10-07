@@ -42,9 +42,50 @@ nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
         tags?.contains("shadoweligible") ?? false
     }
 
+    /// Whether this species carries a given gamemaster tag (e.g. "mega",
+    /// "include1500", "duplicate1500") — used by cup eligibility filters.
+    func hasTag(_ tag: String) -> Bool {
+        tags?.contains(tag) ?? false
+    }
+
+    /// PvPoke's `getEvolutionStage()` (`GameMaster.js`/`Pokemon.js`), used by
+    /// cup `evolution` filters (e.g. Little Cup's "unevolved with an
+    /// evolution ahead of it"): 0 = no family at all, 1 = base of a
+    /// multi-stage line, 2 = a middle stage (has both a parent and further
+    /// evolutions), 3 = a final stage (has a parent, no further evolutions).
+    var evolutionStage: Int {
+        guard let family else { return 0 }
+        let hasEvolutions = !(family.evolutions?.isEmpty ?? true)
+        let hasParent = family.parent != nil
+        if hasEvolutions, !hasParent { return 1 }
+        if hasEvolutions, hasParent { return 2 }
+        if !hasEvolutions, hasParent { return 3 }
+        return 0
+    }
+
+    /// A Mega Evolution — banned from standard GO Battle League formats
+    /// (Great/Ultra/Master), only legal in dedicated Mega cups.
+    var isMegaEvolution: Bool {
+        tags?.contains("mega") ?? false
+    }
+
+    /// The Mega Evolution(s) of this species (e.g. Charizard → Mega Charizard
+    /// X/Y), or empty if it has none. Mega entries share their base form's
+    /// dex number but don't link back to it via `family` the way regular
+    /// evolutions do, so dex number is the reliable match.
+    static func megaEvolutions(ofDex dex: Int, pokemonById: [String: Pokemon]) -> [Pokemon] {
+        pokemonById.values.filter { $0.dex == dex && $0.isMegaEvolution }
+    }
+
     /// Mimikyu's Disguise: a one-time block of the first charged move.
     var hasDisguise: Bool {
         formChange?.effect == "protect"
+    }
+
+    /// Cramorant's Gulp Missile: using Surf or Dive catches prey, and an
+    /// unshielded charged hit while holding it fires a counterattack.
+    var hasGulpMissile: Bool {
+        speciesId == "cramorant"
     }
 
     /// Special availability of a move outside the normal TM pool.
@@ -73,6 +114,20 @@ nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
         if eliteMoves?.contains(moveId) == true { return .elite }
         if legacyMoves?.contains(moveId) == true { return .legacy }
         return nil
+    }
+
+    /// Resolves a ranking-entry species id to its species + shadow flag.
+    /// Shadow Pokémon are their own gamemaster entries (tagged "shadow");
+    /// falls back to stripping a "_shadow" suffix if the entry is ever missing.
+    static func resolve(
+        speciesId: String, pokemonById: [String: Pokemon]
+    ) -> (species: Pokemon, shadow: Bool)? {
+        var species = pokemonById[speciesId]
+        if species == nil, speciesId.hasSuffix("_shadow") {
+            species = pokemonById[String(speciesId.dropLast("_shadow".count))]
+        }
+        guard let species else { return nil }
+        return (species, species.isShadow || speciesId.hasSuffix("_shadow"))
     }
 
     struct BaseStats: Decodable, Hashable {

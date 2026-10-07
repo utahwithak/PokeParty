@@ -16,8 +16,11 @@ struct TeamFinderView: View {
     var store: RankingsStore
     var model: TeamFinderModel
     var teamBuilder: TeamBuilderModel
+    var bench: BenchStore
     var hiddenCups: HiddenCupsStore
     @Binding var selection: SidebarSelection?
+    @State private var showingLockedPicker = false
+    @State private var showingStrongAgainstPicker = false
 
     private var visibleCupFormats: [RankingFormat] {
         store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
@@ -73,6 +76,8 @@ struct TeamFinderView: View {
             }
 
             if model.method == .aiOptimizer {
+                lockedPokemonSection
+                strongAgainstSection
                 optimizerSection
             } else if model.method != .gradeCheck {
                 tournamentFieldSection
@@ -139,6 +144,19 @@ struct TeamFinderView: View {
                     }
                 }
             }
+
+            if !model.savedOptimizerRuns.runs.isEmpty {
+                Section("Saved AI Optimizer runs") {
+                    ForEach(model.savedOptimizerRuns.runs) { run in
+                        SavedOptimizerRunRow(run: run) {
+                            model.load(run)
+                        } onDelete: {
+                            model.savedOptimizerRuns.delete(run)
+                        }
+                        .disabled(model.isRunning)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Party Finder")
@@ -176,6 +194,96 @@ struct TeamFinderView: View {
         }
     }
 
+    private var lockedPokemonSection: some View {
+        Section {
+            ForEach(model.lockedMembers) { member in
+                HStack(spacing: 10) {
+                    Text(store.name(forSpeciesId: member.speciesId))
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                    Spacer()
+                    Button {
+                        model.unlockMember(member)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .disabled(model.isRunning)
+
+            if model.lockedMembers.count < TeamFinderModel.maxLockedMembers {
+                Button {
+                    showingLockedPicker = true
+                } label: {
+                    Label("Lock a Pokémon", systemImage: "lock")
+                }
+                .disabled(model.isRunning)
+                .popover(isPresented: $showingLockedPicker) {
+                    LockedPokemonPickerView(
+                        store: store, bench: bench, format: model.format,
+                        excludingSpeciesIds: Set(model.lockedMembers.map(\.speciesId)),
+                        onSelect: { member in
+                            model.lockMember(member)
+                            showingLockedPicker = false
+                        })
+                }
+            }
+        } header: {
+            Text("Locked Pokémon (\(model.lockedMembers.count)/\(TeamFinderModel.maxLockedMembers))")
+        } footer: {
+            Text("The optimizer builds every team around these, searching for the best partner(s) and lead/switch/closer order.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var strongAgainstSection: some View {
+        Section {
+            ForEach(model.strongAgainstMembers) { member in
+                HStack(spacing: 10) {
+                    Text(store.name(forSpeciesId: member.speciesId))
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                    Spacer()
+                    Button {
+                        model.removeStrongAgainst(member)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .disabled(model.isRunning)
+
+            if model.strongAgainstMembers.count < TeamFinderModel.maxStrongAgainstMembers {
+                Button {
+                    showingStrongAgainstPicker = true
+                } label: {
+                    Label("Add a Pokémon", systemImage: "shield")
+                }
+                .disabled(model.isRunning)
+                .popover(isPresented: $showingStrongAgainstPicker) {
+                    LockedPokemonPickerView(
+                        store: store, bench: bench, format: model.format,
+                        excludingSpeciesIds: Set(model.strongAgainstMembers.map(\.speciesId)),
+                        onSelect: { member in
+                            model.addStrongAgainst(member)
+                            showingStrongAgainstPicker = false
+                        })
+                }
+            }
+        } header: {
+            Text("Strong Against (\(model.strongAgainstMembers.count)/\(TeamFinderModel.maxStrongAgainstMembers))")
+        } footer: {
+            Text("Every hill-climbed team is also weighted against these as extra opponent threats, so results favor teams with a good answer to them — without forcing any of them onto the team itself.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private var optimizerSection: some View {
         Section("Optimizer") {
             VStack(alignment: .leading, spacing: 4) {
@@ -190,6 +298,22 @@ struct TeamFinderView: View {
                 }
                 .disabled(model.isRunning)
                 Text("\(model.restarts) hill-climbs from diverse starting teams")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Slider(
+                    value: Binding(
+                        get: { Double(model.metaSize) },
+                        set: { model.metaSize = Int($0) }),
+                    in: TeamFinderModel.metaSizeRange,
+                    step: TeamFinderModel.metaSizeStep
+                ) {
+                    Text("Meta field size")
+                }
+                .disabled(model.isRunning)
+                Text("\(model.metaSize) top-ranked opponent threats to hill-climb against (auto-scales with pool size; more threats is a more representative field but costs one extra battle per swap per threat)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -306,6 +430,37 @@ private struct SavedTournamentRow: View {
     }
 }
 
+/// One saved AI Optimizer run: configuration summary + when it climbed.
+private struct SavedOptimizerRunRow: View {
+    let run: SavedOptimizerRun
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack {
+            Button(action: onOpen) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(run.formatTitle)
+                        .font(.subheadline.weight(.medium))
+                    Text("Top \(run.poolSize) pool · \(run.restarts) restarts · \(run.date.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+
+            Spacer()
+
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete this saved run")
+        }
+    }
+}
+
 /// Detail column: the live tournament leaderboard (which doubles as the
 /// final results once the run completes).
 struct TeamFinderResultsView: View {
@@ -328,6 +483,7 @@ struct TeamFinderResultsView: View {
                     format: model.resultsFormat,
                     poolSize: model.resultsPoolSize,
                     movesById: store.movesById,
+                    store: store,
                     model: model,
                     openInBuilder: { openInTeamBuilder($0.members.map(\.member)) })
             } else if let standings = model.standings {
@@ -367,5 +523,118 @@ struct TeamFinderResultsView: View {
         }
         teamBuilder.setTeam(members)
         selection = .teamBuilder
+    }
+}
+
+/// Popover content for locking a Pokémon into every AI Optimizer team: a
+/// search field filters both the bench (for the finder's league) and the
+/// full roster, so the user can lock either an owned Pokémon (with its real
+/// IVs/moves) or any meta pick. A plain `TextField` is used instead of
+/// `.searchable` since this view has no navigation container to host a
+/// search field in on macOS.
+private struct LockedPokemonPickerView: View {
+    var store: RankingsStore
+    var bench: BenchStore
+    var format: RankingFormat
+    var excludingSpeciesIds: Set<String>
+    var onSelect: (TeamMember) -> Void
+
+    @State private var searchText = ""
+
+    private var league: League { League(cpCap: format.cp) }
+
+    private var benchResults: [BenchEntry] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        return bench.entries.filter { entry in
+            guard entry.league == league, !excludingSpeciesIds.contains(entry.speciesId) else { return false }
+            guard !query.isEmpty else { return true }
+            let name = store.pokemonById[entry.speciesId]?.speciesName ?? entry.speciesId
+            return name.localizedCaseInsensitiveContains(query)
+                || (!entry.nickname.isEmpty && entry.nickname.localizedCaseInsensitiveContains(query))
+        }
+    }
+
+    private var allResults: [Pokemon] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        return store.eligiblePokemon(for: format).filter { pokemon in
+            guard !excludingSpeciesIds.contains(pokemon.speciesId) else { return false }
+            guard !query.isEmpty else { return true }
+            return pokemon.speciesName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TextField("Search Pokémon", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(8)
+            Divider()
+            List {
+                if !benchResults.isEmpty {
+                    Section("From Your Bench") {
+                        ForEach(benchResults) { entry in
+                            benchRow(entry)
+                        }
+                    }
+                }
+                Section("All Pokémon") {
+                    ForEach(Array(allResults.prefix(50))) { pokemon in
+                        allRow(pokemon)
+                    }
+                }
+            }
+            .overlay {
+                if benchResults.isEmpty && allResults.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
+                }
+            }
+        }
+        .frame(minWidth: 300, idealWidth: 320, minHeight: 360, idealHeight: 440)
+    }
+
+    private func benchRow(_ entry: BenchEntry) -> some View {
+        Button {
+            onSelect(entry.asTeamMember())
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(entry.nickname.isEmpty
+                             ? (store.pokemonById[entry.speciesId]?.speciesName ?? entry.speciesId)
+                             : entry.nickname)
+                            .font(.body.weight(.medium))
+                            .lineLimit(1)
+                        if entry.shadow { ShadowBadge() }
+                    }
+                    Text(entry.ivs.map { "IVs \($0.atk)/\($0.def)/\($0.hp)" } ?? "Optimal IVs")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let sp = store.pokemonById[entry.speciesId] {
+                    TypeBadgeRow(types: sp.displayTypes)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func allRow(_ pokemon: Pokemon) -> some View {
+        Button {
+            if let member = store.makeMember(speciesId: pokemon.speciesId) {
+                onSelect(member)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Text(pokemon.speciesName)
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
+                Spacer()
+                TypeBadgeRow(types: pokemon.displayTypes)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

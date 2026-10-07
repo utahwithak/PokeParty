@@ -12,7 +12,7 @@ import Foundation
 /// - `score` is the headline 0–100 ranking score shown in lists.
 /// - `rating` is the average battle rating (0–1000).
 /// - Matchup/counter `rating` is a per-opponent battle rating where 500 is even.
-struct RankingEntry: Decodable, Identifiable, Hashable {
+struct RankingEntry: Codable, Identifiable, Hashable {
     let speciesId: String
     let speciesName: String
     let rating: Double
@@ -36,7 +36,7 @@ struct RankingEntry: Decodable, Identifiable, Hashable {
     var switchesScore: Double? { (scores?.count ?? 0) > 2 ? scores?[2] : nil }
 
     /// A battle outcome against a specific opponent.
-    struct Matchup: Decodable, Identifiable, Hashable {
+    struct Matchup: Codable, Identifiable, Hashable {
         let opponent: String
         let rating: Int
 
@@ -47,11 +47,11 @@ struct RankingEntry: Decodable, Identifiable, Hashable {
     }
 
     /// Recommended moves with simulated usage weights.
-    struct Moves: Decodable, Hashable {
+    struct Moves: Codable, Hashable {
         let fastMoves: [Usage]
         let chargedMoves: [Usage]
 
-        struct Usage: Decodable, Identifiable, Hashable {
+        struct Usage: Codable, Identifiable, Hashable {
             let moveId: String
             /// Simulated usage weight. Absent for a few moves, so optional.
             let uses: Double?
@@ -60,7 +60,7 @@ struct RankingEntry: Decodable, Identifiable, Hashable {
     }
 
     /// The IV-optimized stat product for the league's CP cap.
-    struct Stats: Decodable, Hashable {
+    struct Stats: Codable, Hashable {
         let product: Double?
         let atk: Double
         let def: Double

@@ -34,11 +34,38 @@
 
 import Foundation
 
+/// Candidates that can be checked for team-compatibility (no shared species
+/// or family) and assembled into a battle-ready lineup — shared by
+/// `TeamFinder.Candidate` and `TeamOptimizer.Candidate`, which otherwise
+/// carry different bookkeeping (alternate-moveset flags, switches score, …).
+nonisolated protocol TeamCandidate {
+    var dex: Int { get }
+    var familyId: String? { get }
+    var combatant: MatchupSimulator.Combatant { get }
+    var stats: BattlePokemon.Stats { get }
+    /// True for Mega Evolutions — only one may appear on a team at a time.
+    var isMegaEvolution: Bool { get }
+}
+
+/// Whether two candidates may share a team (no same species or family, and
+/// no more than one Mega Evolution).
+nonisolated func teamCandidatesDistinct<T: TeamCandidate>(_ a: T, _ b: T) -> Bool {
+    if a.dex == b.dex { return false }
+    if let fa = a.familyId, let fb = b.familyId, fa == fb { return false }
+    if a.isMegaEvolution && b.isMegaEvolution { return false }
+    return true
+}
+
+/// Fresh `BattlePokemon`s for the members — the 3v3 engine mutates its teams.
+nonisolated func makeBattleTeam<T: TeamCandidate>(_ members: [T], movesById: [String: Move]) -> [BattlePokemon]? {
+    ThreeVThreeBattle.makeTeam(members.map(\.combatant), stats: members.map(\.stats), movesById: movesById)
+}
+
 nonisolated enum TeamFinder {
 
     /// A meta Pokémon eligible for suggested teams, prepared for battle once so
     /// every 3v3 can reuse its stats without touching the IV optimizer.
-    struct Candidate: Sendable {
+    struct Candidate: TeamCandidate, Sendable {
         /// Ready to load into the Team Builder.
         let member: TeamMember
         let speciesName: String
@@ -48,6 +75,7 @@ nonisolated enum TeamFinder {
         let dex: Int
         let combatant: MatchupSimulator.Combatant
         let stats: BattlePokemon.Stats
+        var isMegaEvolution: Bool = false
         /// PvPoke "switches" category score from the ranking data (feeds the
         /// Safety grade in `GradeFinder`); nil falls back to PvPoke's default.
         var switchesScore: Double? = nil
@@ -383,10 +411,34 @@ nonisolated enum TeamFinder {
 
     /// Whether two candidates may share a team (no same species or family).
     /// Internal so `GradeFinder` enumerates the same trios.
-    static func distinct(_ a: Candidate, _ b: Candidate) -> Bool {
-        if a.dex == b.dex { return false }
-        if let fa = a.familyId, let fb = b.familyId, fa == fb { return false }
-        return true
+    static func distinct(_ a: Candidate, _ b: Candidate) -> Bool { teamCandidatesDistinct(a, b) }
+
+    /// Randomly samples up to `size` distinct valid trios (species/family
+    /// disjoint, like any real team) from `pool` via rejection sampling.
+    /// Returns fewer than `size` only when the pool is too small to have that
+    /// many unique combinations. Shared by `TeamOptimizer`'s broad-field
+    /// validation and `MetaFieldTester`'s generated opponent field.
+    static func randomField<T: TeamCandidate>(pool: [T], size: Int) -> [[Int]] {
+        guard pool.count >= 3, size > 0 else { return [] }
+        var field: [[Int]] = []
+        var used = Set<String>()
+        let maxAttempts = size * 20
+        var attempts = 0
+        while field.count < size && attempts < maxAttempts {
+            attempts += 1
+            let i = Int.random(in: 0..<pool.count)
+            var j = Int.random(in: 0..<pool.count)
+            while j == i { j = Int.random(in: 0..<pool.count) }
+            var k = Int.random(in: 0..<pool.count)
+            while k == i || k == j { k = Int.random(in: 0..<pool.count) }
+            guard teamCandidatesDistinct(pool[i], pool[j]), teamCandidatesDistinct(pool[i], pool[k]),
+                  teamCandidatesDistinct(pool[j], pool[k])
+            else { continue }
+            let key = [i, j, k].sorted().map(String.init).joined(separator: "+")
+            guard used.insert(key).inserted else { continue }
+            field.append([i, j, k])
+        }
+        return field
     }
 
     // MARK: - Seeding
@@ -449,11 +501,14 @@ nonisolated enum TeamFinder {
         precondition(n < 1024, "trio packing supports pools up to 1023")
 
         // Pairwise compatibility (no shared species/family), computed once.
-        var compatible = Array(repeating: Array(repeating: false, count: n), count: n)
+        // Flattened to a single [Bool] (n up to 1023) instead of n nested
+        // arrays — avoids n separate heap allocations and keeps the rows
+        // this task group scans contiguous in memory.
+        var compatible = [Bool](repeating: false, count: n * n)
         for i in 0..<n {
             for j in (i + 1)..<n where distinct(pool[i], pool[j]) {
-                compatible[i][j] = true
-                compatible[j][i] = true
+                compatible[i * n + j] = true
+                compatible[j * n + i] = true
             }
         }
 
@@ -464,13 +519,13 @@ nonisolated enum TeamFinder {
                 group.addTask {
                     var local: [(score: Int, packed: UInt32)] = []
                     let rowI = matrix[i]
-                    for j in (i + 1)..<n where compatible[i][j] {
+                    for j in (i + 1)..<n where compatible[i * n + j] {
                         if Task.isCancelled { return [] }
                         let rowJ = matrix[j]
                         // Best-of-pair rating vs every pool mon, reused for all k.
                         var pairRow = rowI
                         for m in 0..<n where rowJ[m] > pairRow[m] { pairRow[m] = rowJ[m] }
-                        for k in (j + 1)..<n where compatible[i][k] && compatible[j][k] {
+                        for k in (j + 1)..<n where compatible[i * n + k] && compatible[j * n + k] {
                             let rowK = matrix[k]
                             var sum = 0
                             for m in 0..<n where m != i && m != j && m != k {
@@ -531,7 +586,6 @@ nonisolated enum TeamFinder {
 
     /// Fresh `BattlePokemon`s per battle — the 3v3 engine mutates its teams.
     private static func makeTeam(_ members: [Candidate], movesById: [String: Move]) -> [BattlePokemon]? {
-        ThreeVThreeBattle.makeTeam(
-            members.map(\.combatant), stats: members.map(\.stats), movesById: movesById)
+        makeBattleTeam(members, movesById: movesById)
     }
 }

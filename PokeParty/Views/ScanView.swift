@@ -193,7 +193,11 @@ struct ScanLiveView: View {
                     .monospacedDigit()
             }
 
-            if let hit = model.bestRankHit(store: store) {
+            // Gated on `hasResolvedIVs` — without it, `bestRankHit` would
+            // rank the neutral 15/15/15 default as though it were a real
+            // reading, showing a hundo's rank for a Pokémon whose IVs are
+            // actually still unknown.
+            if model.hasResolvedIVs, let hit = model.bestRankHit(store: store) {
                 let asEvolved = live.speciesId.flatMap { store.pokemonById[$0]?.speciesName } != hit.speciesName
                 Text("Best rank: #\(hit.rank) — \(hit.league.title) League\(asEvolved ? " as \(hit.speciesName)" : "")")
                     .font(.caption.weight(.medium))
@@ -201,9 +205,11 @@ struct ScanLiveView: View {
                     .monospacedDigit()
             }
 
-            Text("Tap a rank in the grid to stage this Pokémon for your bench.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if model.hasResolvedIVs {
+                Text("Tap a rank in the grid to stage this Pokémon for your bench.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -291,6 +297,18 @@ struct ScanGridView: View {
         return (staged.speciesId, league)
     }
 
+    /// The staged pick's species data, for the Shadow toggle's eligibility check.
+    private var stagedSpecies: Pokemon? {
+        model.staged.flatMap { store.pokemonById[$0.speciesId] }
+    }
+
+    private var shadowBinding: Binding<Bool> {
+        Binding(
+            get: { model.staged?.shadow ?? false },
+            set: { model.staged?.shadow = $0 }
+        )
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -299,6 +317,19 @@ struct ScanGridView: View {
                         "No Pokémon Detected",
                         systemImage: "camera.viewfinder",
                         description: Text("Show a Pokémon in iPhone Mirroring, then wait for the next scan.")
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                } else if !model.hasResolvedIVs {
+                    // The species is known but nothing has pinned down its
+                    // IVs yet — ranking `model.currentIVs` here would rank
+                    // its neutral 15/15/15 default as though it were a real
+                    // hundo, so this shows a distinct empty state instead of
+                    // the grid until bars or CP-narrowed candidates resolve.
+                    ContentUnavailableView(
+                        "IVs Not Yet Determined",
+                        systemImage: "chart.bar",
+                        description: Text("Show the appraisal screen for bar readings, or wait for CP-based candidates to narrow down.")
                     )
                     .frame(maxWidth: .infinity)
                     .padding(.top, 40)
@@ -333,8 +364,11 @@ struct ScanGridView: View {
 
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(staged.speciesName).font(.body.weight(.medium))
-                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(staged.speciesName).font(.body.weight(.medium))
+                                .lineLimit(1)
+                            if staged.shadow { ShadowBadge() }
+                        }
                         Text("\(staged.league.title) League · captured \(staged.capturedDate.formatted(date: .abbreviated, time: .shortened))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -352,6 +386,12 @@ struct ScanGridView: View {
                 Text("Adjust if the scan misread these before adding.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+
+                if let sp = stagedSpecies, sp.isShadow || sp.isShadowEligible {
+                    Toggle("Shadow", isOn: shadowBinding)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
 
                 if let duplicate = model.duplicateWarning {
                     duplicateWarningBanner(duplicate)

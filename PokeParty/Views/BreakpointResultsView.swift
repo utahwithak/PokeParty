@@ -29,10 +29,11 @@ struct BreakpointResultsView: View {
         .inlineNavigationTitle()
     }
 
-    /// Re-runs the analysis whenever the subject, its moveset, or the league changes.
+    /// Re-runs the analysis whenever the subject, its moveset, the league, or
+    /// the target rank changes.
     private var analysisKey: String {
         guard let m = model.member else { return "" }
-        return "\(model.format.id)|\(m.speciesId)|\(m.fastMoveId)|\(m.chargedMoveIds.joined(separator: ","))"
+        return "\(model.format.id)|\(m.speciesId)|\(m.fastMoveId)|\(m.chargedMoveIds.joined(separator: ","))|\(model.targetRank)"
     }
 
     private var resultsList: some View {
@@ -43,6 +44,9 @@ struct BreakpointResultsView: View {
             }
             if let report = model.report {
                 headerSection(report)
+                if let rankComparison = model.rankComparison {
+                    rankComparisonSection(rankComparison, leagueTitle: report.leagueTitle)
+                }
                 minimumSection(report)
                 levelSection(report)
                 ForEach(report.insights) { insight in
@@ -114,6 +118,45 @@ struct BreakpointResultsView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.vertical, 4)
+        }
+    }
+
+    private func rankComparisonSection(
+        _ comparison: BreakpointAnalyzer.RankComparison, leagueTitle: String
+    ) -> some View {
+        Section("As Rank \(comparison.rank) of \(comparison.totalCombos.formatted())") {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(spreadText(comparison.ivs)) at level \(comparison.level.formatted()) · CP \(comparison.cp) · \(String(format: "%.1f", comparison.percent))% IV")
+                    .font(.callout.weight(.medium))
+                Text("The real IV combination for this rank in \(leagueTitle), at its own best level under the CP cap — not necessarily 15/15/15.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
+
+            ForEach(comparison.outcomes) { outcome in
+                rankOutcomeRow(outcome)
+            }
+        }
+    }
+
+    private func rankOutcomeRow(_ outcome: BreakpointAnalyzer.RankComparison.OpponentOutcome) -> some View {
+        HStack {
+            Text("vs \(outcome.opponentName)")
+            Spacer()
+            HStack(spacing: 10) {
+                ForEach(Array(zip(BreakpointAnalyzer.shieldScenarios, outcome.outcomes)), id: \.0) { shields, result in
+                    HStack(spacing: 4) {
+                        Label("\(shields)", systemImage: "shield.fill")
+                            .labelStyle(.iconOnly)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(result.rawValue)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(color(for: result))
+                    }
+                }
+            }
         }
     }
 

@@ -47,10 +47,68 @@ final class TeamFinderModel {
     /// switchable to any core league or active cup).
     var format: RankingFormat = .great
     /// How many of the format's top-ranked Pokémon form the candidate pool.
-    var poolSize: Int = 15
+    var poolSize: Int = 15 {
+        didSet { metaSize = Self.defaultMetaSize(forPoolSize: poolSize) }
+    }
     static let poolSizes = [10, 15, 20, 25, 50, 75, 100, 125, 150, 200, 250]
 
+    /// How many of the pool's top-ranked species become AI Optimizer opponent
+    /// threats — the curated field the hill-climb scores candidate teams
+    /// against (see `TeamOptimizer.buildMetaField`). Auto-scales with
+    /// `poolSize` (via `defaultMetaSize`) whenever the pool changes, but can
+    /// still be dialed in manually afterward: a bigger field is more
+    /// representative of the pool but costs one extra battle per swap
+    /// evaluation per added threat, so it isn't simply set equal to `poolSize`.
+    var metaSize: Int = 15
+    static let metaSizeRange = 5.0...100.0
+    static let metaSizeStep = 5.0
+
+    /// Default `metaSize` for a given `poolSize`: scales at half the pool,
+    /// floored at 15 (today's fixed default) and capped at 60 to bound the
+    /// hill-climb's per-step battle cost even for very large pools.
+    static func defaultMetaSize(forPoolSize poolSize: Int) -> Int {
+        min(max(poolSize / 2, 15), 60)
+    }
+
     var method: Method = .tournament
+
+    /// Pokémon the AI Optimizer must include on every team it searches (0–2).
+    /// The hill-climb pins these to fixed slots and only searches for the best
+    /// partner(s) — the final lead/switch/closer order is still optimized
+    /// freely across all three members.
+    private(set) var lockedMembers: [TeamMember] = []
+    static let maxLockedMembers = 2
+
+    func lockMember(_ member: TeamMember) {
+        guard lockedMembers.count < Self.maxLockedMembers,
+              !lockedMembers.contains(where: { $0.speciesId == member.speciesId })
+        else { return }
+        lockedMembers.append(member)
+    }
+
+    func unlockMember(_ member: TeamMember) {
+        lockedMembers.removeAll { $0.id == member.id }
+    }
+
+    /// Pokémon the AI Optimizer should weight teams strongly against (0–4).
+    /// Unlike `lockedMembers`, these don't join the searched team's slots —
+    /// they're added to the meta field as extra opponent threats (see
+    /// `TeamOptimizer.findTeams`), each weighted equal to the single
+    /// top-ranked automatic threat so they aren't diluted away by a large
+    /// meta field size.
+    private(set) var strongAgainstMembers: [TeamMember] = []
+    static let maxStrongAgainstMembers = 4
+
+    func addStrongAgainst(_ member: TeamMember) {
+        guard strongAgainstMembers.count < Self.maxStrongAgainstMembers,
+              !strongAgainstMembers.contains(where: { $0.speciesId == member.speciesId })
+        else { return }
+        strongAgainstMembers.append(member)
+    }
+
+    func removeStrongAgainst(_ member: TeamMember) {
+        strongAgainstMembers.removeAll { $0.id == member.id }
+    }
 
     /// How many coverage-seeded teams enter the round robin (slider-driven;
     /// the tournament fights fieldSize·(fieldSize−1)/2 battles).
@@ -103,6 +161,8 @@ final class TeamFinderModel {
 
     /// Completed runs, persisted across launches.
     let savedTournaments = SavedTournamentsStore()
+    /// Completed AI Optimizer runs, persisted across launches.
+    let savedOptimizerRuns = SavedOptimizerRunsStore()
 
     private(set) var phase: Phase = .idle
     /// Seeding progress, 0…1 — the pairwise 1v1 matrix + field shortlist
@@ -118,10 +178,16 @@ final class TeamFinderModel {
     /// Live optimizer results (nil until first climber converges). Populated
     /// progressively and stays set after the run completes or is cancelled.
     private(set) var optimizerResults: TeamOptimizer.Results?
-    /// The exact candidate pool the last AI Optimizer run was built from —
-    /// kept so a broad-field validation pass can reconstruct battle teams
-    /// using the pool indices in `optimizerResults`.
-    private var optimizerPool: [TeamOptimizer.Candidate] = []
+    /// The AI Optimizer config that produced `optimizerResults` — whether from
+    /// a run just completed or a saved run just reloaded. `TeamOptimizer.buildPool`
+    /// is a pure function of these plus the format's rankings, so a broad-field
+    /// validation pass rebuilds the exact same pool on demand from this recipe
+    /// instead of keeping the (potentially large) pool itself in memory.
+    private(set) var resultsExploreAlternateMovesets = false
+    private(set) var resultsLockedMembers: [TeamMember] = []
+    /// The "strong against" picks the current `optimizerResults` were
+    /// hill-climbed against — display only (see `SavedOptimizerRun.strongAgainstMembers`).
+    private(set) var resultsStrongAgainstMembers: [TeamMember] = []
     /// Live broad-field validation results (nil until a validation pass has
     /// been started). Populated progressively and stays set after the pass
     /// completes or is cancelled.
@@ -166,6 +232,32 @@ final class TeamFinderModel {
         phase = .done
     }
 
+    /// Shows a previously saved AI Optimizer run in the results list. Sets
+    /// `method` to `.aiOptimizer` so `canValidateAgainstBroadField` (which
+    /// gates on it) reflects what's actually on screen even if the picker was
+    /// left on something else — the pool needed for that pass is rebuilt on
+    /// demand from `resultsExploreAlternateMovesets`/`resultsLockedMembers`,
+    /// so a reloaded run validates exactly like a freshly completed one.
+    func load(_ run: SavedOptimizerRun) {
+        guard !isRunning else { return }
+        method = .aiOptimizer
+        gradedTeams = nil
+        standings = nil
+        broadFieldResults = nil
+        resultsFormat = run.format
+        resultsPoolSize = run.poolSize
+        resultsExploreAlternateMovesets = run.exploreAlternateMovesets
+        resultsLockedMembers = run.lockedMembers
+        resultsStrongAgainstMembers = run.strongAgainstMembers
+        broadFieldSize = run.broadFieldSize
+        optimizerResults = TeamOptimizer.Results(
+            teams: run.teams,
+            completedClimbers: run.teams.count,
+            totalClimbers: run.teams.count,
+            isComplete: true)
+        phase = .done
+    }
+
     /// Loads the chosen format's rankings and runs the tournament.
     func run(using store: RankingsStore) {
         searchTask?.cancel()
@@ -181,7 +273,11 @@ final class TeamFinderModel {
         let pokemonById = store.pokemonById
         let method = method
         let restarts = restarts
+        let metaSize = metaSize
         let exploreAlternateMovesets = exploreAlternateMovesets
+        let lockedMembers = lockedMembers
+        let strongAgainstMembers = strongAgainstMembers
+        let broadFieldSize = broadFieldSize
 
         phase = .loadingRankings
         progress = 0
@@ -189,7 +285,6 @@ final class TeamFinderModel {
         standings = nil
         gradedTeams = nil
         optimizerResults = nil
-        optimizerPool = []
         broadFieldResults = nil
         isValidatingBroadField = false
         resultsFormat = nil
@@ -229,15 +324,26 @@ final class TeamFinderModel {
             }
 
             if method == .aiOptimizer {
-                optimizerPool = TeamOptimizer.buildCandidates(
-                    entries: entries, poolSize: poolSize, cpCap: format.cp,
-                    pokemonById: pokemonById, exploreAlternateMovesets: exploreAlternateMovesets)
+                // TeamOptimizer.findTeams builds its own pool internally (via
+                // TeamOptimizer.buildPool/buildCandidates, a *species-scanned*
+                // stopping rule) from `poolSize` below — not from the `pool`
+                // this function built above (TeamFinderModel.buildPool, a
+                // *successful-candidate-count* stopping rule). Recording the
+                // actual `poolSize` setting here, not `pool.count`, is what
+                // lets `validateAgainstBroadField` reproduce that same pool later.
+                resultsPoolSize = poolSize
+                resultsExploreAlternateMovesets = exploreAlternateMovesets
+                resultsLockedMembers = lockedMembers
+                resultsStrongAgainstMembers = strongAgainstMembers
                 let final = await TeamOptimizer.findTeams(
                     entries: entries,
                     poolSize: poolSize,
                     cpCap: format.cp,
                     pokemonById: pokemonById,
                     movesById: movesById,
+                    lockedMembers: lockedMembers,
+                    strongAgainstMembers: strongAgainstMembers,
+                    metaSize: metaSize,
                     restarts: restarts,
                     learnedShields: learnedShields,
                     learnedSwitches: learnedSwitches,
@@ -252,9 +358,32 @@ final class TeamFinderModel {
                             withAnimation(.spring(duration: 0.6)) { self.optimizerResults = snapshot }
                         }
                     })
-                if Task.isCancelled { return }
+                // Note: `final.isComplete` is *not* a signal that the run
+                // wasn't cancelled — `TeamOptimizer.findTeams` only checks
+                // cancellation before the climbers' task group starts; once
+                // climbing begins it always drains the group and returns
+                // `isComplete: true` with whatever climbers converged before
+                // being cut off. So a cancelled run's `final.teams` here is
+                // already a fully valid set of hill-climbed results (each
+                // team converged on its own), not a partial/unreliable
+                // snapshot — unlike the round-robin below, there's no reason
+                // to discard it just because Cancel was pressed.
+                if final.teams.isEmpty {
+                    if !Task.isCancelled, !lockedMembers.isEmpty {
+                        phase = .failed("No valid partners found for the locked Pokémon in this pool — try a larger pool or different picks.")
+                    }
+                    return
+                }
                 withAnimation(.spring(duration: 0.6)) { optimizerResults = final }
                 phase = .done
+
+                savedOptimizerRuns.save(SavedOptimizerRun(
+                    date: .now,
+                    formatTitle: format.title, cup: format.cup, cp: format.cp,
+                    poolSize: poolSize, metaSize: metaSize, restarts: restarts,
+                    exploreAlternateMovesets: exploreAlternateMovesets, lockedMembers: lockedMembers,
+                    strongAgainstMembers: strongAgainstMembers,
+                    teams: final.teams, broadFieldSize: broadFieldSize))
                 return
             }
 
@@ -314,24 +443,45 @@ final class TeamFinderModel {
         }
     }
 
-    /// True once an AI Optimizer run has finished and left a pool + results
-    /// behind to validate against a broader random field.
+    /// True once an AI Optimizer run has finished (fresh or reloaded from
+    /// `savedOptimizerRuns`) and left results behind to validate against a
+    /// broader random field. Gates on `optimizerResults.isComplete` rather
+    /// than `isRunning`/`phase`: the optimizer's final results and `phase =
+    /// .done` land via two separate, unordered MainActor hops (the engine's
+    /// last `onResults` callback vs. `run(using:)`'s post-await write), so
+    /// checking `phase` here could transiently — or, absent another state
+    /// change to force a re-render, durably — read stale. `isComplete` is set
+    /// atomically with the results it's read alongside, and already gates
+    /// this whole section one level up (see `results.isComplete` in
+    /// `OptimizerResultsView.body`), so tying to it instead removes the race
+    /// entirely.
     var canValidateAgainstBroadField: Bool {
-        method == .aiOptimizer && !isRunning && !optimizerPool.isEmpty
+        method == .aiOptimizer
+            && (optimizerResults?.isComplete ?? false)
             && !(optimizerResults?.teams.isEmpty ?? true)
     }
 
     /// Battles every current AI Optimizer result against `broadFieldSize`
-    /// randomly sampled meta-team opponents drawn from the same pool the
-    /// optimizer ran against — a much larger (if noisier) sample than the
-    /// curated field used during hill-climbing, to check which result
-    /// actually holds up best across the metagame.
-    func validateAgainstBroadField(movesById: [String: Move]) {
-        guard canValidateAgainstBroadField, let results = optimizerResults else { return }
+    /// randomly sampled meta-team opponents — a much larger (if noisier)
+    /// sample than the curated field used during hill-climbing, to check
+    /// which result actually holds up best across the metagame. Rebuilds the
+    /// candidate pool from `resultsFormat`/`resultsPoolSize`/
+    /// `resultsExploreAlternateMovesets`/`resultsLockedMembers` on every call
+    /// instead of keeping it around from run time — `TeamOptimizer.buildPool`
+    /// is a pure function of those plus the format's rankings, so this
+    /// reproduces the exact pool `optimizerResults` was built from whether
+    /// that run just finished or was just reloaded from a saved run.
+    func validateAgainstBroadField(using store: RankingsStore) {
+        guard canValidateAgainstBroadField, let results = optimizerResults,
+              let format = resultsFormat else { return }
         validateTask?.cancel()
 
         let teams = results.teams
-        let pool = optimizerPool
+        let poolSize = resultsPoolSize
+        let exploreAlternateMovesets = resultsExploreAlternateMovesets
+        let lockedMembers = resultsLockedMembers
+        let pokemonById = store.pokemonById
+        let movesById = store.movesById
         let fieldSize = broadFieldSize
         let learnedShields = learnedShields
         let learnedSwitches = learnedSwitches
@@ -342,6 +492,20 @@ final class TeamFinderModel {
         broadFieldResults = nil
 
         validateTask = Task {
+            let entries: [RankingEntry]
+            do {
+                entries = try await DataService.shared.rankings(for: format)
+            } catch {
+                if !Task.isCancelled { isValidatingBroadField = false }
+                return
+            }
+            if Task.isCancelled { return }
+
+            let pool = TeamOptimizer.buildPool(
+                entries: entries, poolSize: poolSize, cpCap: format.cp,
+                pokemonById: pokemonById, exploreAlternateMovesets: exploreAlternateMovesets,
+                lockedMembers: lockedMembers).pool
+
             let final = await TeamOptimizer.evaluateBroadField(
                 teams: teams, pool: pool, movesById: movesById, fieldSize: fieldSize,
                 learnedShields: learnedShields, learnedSwitches: learnedSwitches,
@@ -374,7 +538,7 @@ final class TeamFinderModel {
         for entry in entries {
             guard pool.count < poolSize else { break }
             guard entry.moveset.count >= 2,
-                  let r = resolve(speciesId: entry.speciesId, pokemonById: pokemonById)
+                  let r = RankingsStore.resolve(speciesId: entry.speciesId, pokemonById: pokemonById)
             else { continue }
             let combatant = MatchupSimulator.Combatant(
                 species: r.species, shadow: r.shadow,
@@ -399,6 +563,7 @@ final class TeamFinderModel {
                 dex: r.species.dex,
                 combatant: combatant,
                 stats: stats,
+                isMegaEvolution: r.species.isMegaEvolution,
                 switchesScore: entry.switchesScore))
         }
         return pool
@@ -406,59 +571,75 @@ final class TeamFinderModel {
 
     /// Builds a `Candidate` pool from the player's bench entries for a given CP cap.
     /// IVs are used when present (with Best Buddy level cap if flagged); otherwise
-    /// optimal stats are computed from the IV optimizer.
+    /// optimal stats are computed from the IV optimizer. When `includeMegaEvolutions`
+    /// is set, each bench entry also contributes a candidate for every Mega
+    /// Evolution of its species (e.g. an owned Charizard also offers Mega
+    /// Charizard X/Y) — mega-evolving doesn't change a Pokémon's own IVs, just
+    /// applies the Mega form's stat multipliers, so the entry's IVs/moves carry
+    /// over unchanged. `teamCandidatesDistinct` already keeps a base form and
+    /// its Mega from sharing a team (same dex number).
     static func buildBenchPool(
-        entries: [BenchEntry], cpCap: Int, pokemonById: [String: Pokemon]
+        entries: [BenchEntry], cpCap: Int, pokemonById: [String: Pokemon],
+        includeMegaEvolutions: Bool = false
     ) -> [TeamFinder.Candidate] {
-        entries.compactMap { entry in
-            guard let r = resolve(speciesId: entry.speciesId, pokemonById: pokemonById) else { return nil }
-            let combatant = MatchupSimulator.Combatant(
-                species: r.species, shadow: entry.shadow,
-                fastMoveId: entry.fastMoveId,
-                chargedMoveIds: entry.chargedMoveIds)
-            let levelCap: Double = entry.isBestBuddy ? 51 : 50
-            let stats: BattlePokemon.Stats
-            if let ivs = entry.ivs,
-               let s = IVCalculator.stats(
-                   baseAtk: r.species.baseStats.atk,
-                   baseDef: r.species.baseStats.def,
-                   baseHp: r.species.baseStats.hp,
-                   ivs: ivs, cpCap: cpCap, levelCap: levelCap) {
-                stats = BattlePokemon.Stats(atk: s.atk, def: s.def, hp: s.hp)
-            } else if let s = MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap, levelCap: levelCap) {
-                stats = s
-            } else {
-                return nil
+        entries.flatMap { entry -> [TeamFinder.Candidate] in
+            guard let r = RankingsStore.resolve(speciesId: entry.speciesId, pokemonById: pokemonById) else { return [] }
+            var candidates: [TeamFinder.Candidate] = []
+            if let c = benchCandidate(entry: entry, species: r.species, cpCap: cpCap) {
+                candidates.append(c)
             }
-            let member = TeamMember(
-                speciesId: r.species.speciesId,
-                fastMoveId: entry.fastMoveId,
-                chargedMoveIds: entry.chargedMoveIds,
-                shadow: entry.shadow,
-                ivs: entry.ivs,
-                isBestBuddy: entry.isBestBuddy)
-            return TeamFinder.Candidate(
-                member: member,
-                speciesName: r.species.speciesName,
-                types: r.species.types.filter { $0 != "none" },
-                shadow: entry.shadow,
-                familyId: r.species.family?.id,
-                dex: r.species.dex,
-                combatant: combatant,
-                stats: stats)
+            if includeMegaEvolutions {
+                for mega in Pokemon.megaEvolutions(ofDex: r.species.dex, pokemonById: pokemonById) {
+                    if let c = benchCandidate(entry: entry, species: mega, cpCap: cpCap) {
+                        candidates.append(c)
+                    }
+                }
+            }
+            return candidates
         }
     }
 
-    /// Resolves a ranking-entry species id to its species + shadow flag.
-    /// (Mirrors RankingsStore's private resolver.)
-    private static func resolve(
-        speciesId: String, pokemonById: [String: Pokemon]
-    ) -> (species: Pokemon, shadow: Bool)? {
-        var species = pokemonById[speciesId]
-        if species == nil, speciesId.hasSuffix("_shadow") {
-            species = pokemonById[String(speciesId.dropLast("_shadow".count))]
+    /// One bench entry's candidate for a given species — normally the entry's
+    /// own species, or a Mega Evolution of it when building the Mega-form
+    /// option (see `buildBenchPool`).
+    private static func benchCandidate(
+        entry: BenchEntry, species: Pokemon, cpCap: Int
+    ) -> TeamFinder.Candidate? {
+        let combatant = MatchupSimulator.Combatant(
+            species: species, shadow: entry.shadow,
+            fastMoveId: entry.fastMoveId,
+            chargedMoveIds: entry.chargedMoveIds)
+        let levelCap: Double = entry.isBestBuddy ? 51 : 50
+        let stats: BattlePokemon.Stats
+        if let ivs = entry.ivs,
+           let s = IVCalculator.stats(
+               baseAtk: species.baseStats.atk,
+               baseDef: species.baseStats.def,
+               baseHp: species.baseStats.hp,
+               ivs: ivs, cpCap: cpCap, levelCap: levelCap) {
+            stats = BattlePokemon.Stats(atk: s.atk, def: s.def, hp: s.hp)
+        } else if let s = MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap, levelCap: levelCap) {
+            stats = s
+        } else {
+            return nil
         }
-        guard let species else { return nil }
-        return (species, species.isShadow || speciesId.hasSuffix("_shadow"))
+        let member = TeamMember(
+            speciesId: species.speciesId,
+            fastMoveId: entry.fastMoveId,
+            chargedMoveIds: entry.chargedMoveIds,
+            shadow: entry.shadow,
+            ivs: entry.ivs,
+            isBestBuddy: entry.isBestBuddy)
+        return TeamFinder.Candidate(
+            member: member,
+            speciesName: species.speciesName,
+            types: species.types.filter { $0 != "none" },
+            shadow: entry.shadow,
+            familyId: species.family?.id,
+            dex: species.dex,
+            combatant: combatant,
+            stats: stats,
+            isMegaEvolution: species.isMegaEvolution)
     }
+
 }

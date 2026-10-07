@@ -21,6 +21,54 @@ enum SidebarSelection: Hashable {
     /// captures the iPhone Mirroring window via ScreenCaptureKit.
     case scan
     #endif
+
+    /// Stable string key for persisting the selected tab across launches.
+    /// A cup format's `RankingFormat` isn't itself storable (it's decoded
+    /// fresh from the gamemaster each launch), so formats persist by their
+    /// `id` and are re-resolved against the loaded cup list on restore.
+    var persistenceKey: String {
+        switch self {
+        case .format(let format): return "format:\(format.id)"
+        case .rankChecker: return "rankChecker"
+        case .teamBuilder: return "teamBuilder"
+        case .partyFinder: return "partyFinder"
+        case .matchup: return "matchup"
+        case .breakpoints: return "breakpoints"
+        case .bench: return "bench"
+        #if os(macOS)
+        case .scan: return "scan"
+        #endif
+        }
+    }
+
+    /// Reconstructs a selection from a persisted `persistenceKey`. `cupFormats`
+    /// should be the store's currently loaded cups — needed to resolve a
+    /// saved cup selection; core leagues resolve without it. Returns `nil`
+    /// if the key is unrecognized or names a cup that's no longer active.
+    static func restored(from key: String, cupFormats: [RankingFormat]) -> SidebarSelection? {
+        if let id = key.dropFirstIfPresent("format:") {
+            return (RankingFormat.coreLeagues + cupFormats).first { $0.id == id }.map { .format($0) }
+        }
+        switch key {
+        case "rankChecker": return .rankChecker
+        case "teamBuilder": return .teamBuilder
+        case "partyFinder": return .partyFinder
+        case "matchup": return .matchup
+        case "breakpoints": return .breakpoints
+        case "bench": return .bench
+        #if os(macOS)
+        case "scan": return .scan
+        #endif
+        default: return nil
+        }
+    }
+}
+
+private extension String {
+    /// Returns everything after `prefix` if present, else `nil`.
+    func dropFirstIfPresent(_ prefix: String) -> String? {
+        hasPrefix(prefix) ? String(dropFirst(prefix.count)) : nil
+    }
 }
 
 /// Sidebar listing tools, the core PvP leagues, and active cups (e.g. Summer Cup).
@@ -93,6 +141,19 @@ struct LeagueSidebar: View {
                     Label("Settings", systemImage: "gearshape.fill")
                 }
                 .buttonStyle(.plain)
+
+                if case .building(let formatTitle) = store.localRankingBuilder.phase {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Updating local rankings…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ProgressView(value: store.localRankingBuilder.progress)
+                            .labelsHidden()
+                        Text(formatTitle)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
             }
         }
         .navigationTitle("PokeParty")

@@ -111,15 +111,17 @@ final class BenchStore {
         return entry
     }
 
-    /// Creates and adds a bench entry from a scan result: known IVs and the
-    /// date it was caught, for a specific league (or unclassified if nil).
+    /// Creates and adds a bench entry from a scan result: known IVs, the
+    /// date it was caught, and whether the scan was marked Shadow, for a
+    /// specific league (or unclassified if nil).
     @discardableResult
     func addFromScan(
-        speciesId: String, ivs: IVs, capturedDate: Date, league: League?, store: RankingsStore
+        speciesId: String, ivs: IVs, capturedDate: Date, shadow: Bool, league: League?, store: RankingsStore
     ) -> BenchEntry {
         var entry = addFromRankings(speciesId: speciesId, store: store, league: league)
         entry.ivs = ivs
         entry.capturedDate = capturedDate
+        entry.shadow = shadow
         update(entry)
         return entry
     }
@@ -149,21 +151,17 @@ final class BenchStore {
     // MARK: - Disk
 
     private static var defaultFileURL: URL {
-        let dir = URL.applicationSupportDirectory
-            .appendingPathComponent("PokeParty", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("Bench.json")
+        JSONFileStore.defaultFileURL(filename: "Bench.json")
     }
 
     private static func load(from url: URL) -> [BenchEntry] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        return (try? JSONDecoder().decode([BenchEntry].self, from: data)) ?? []
+        JSONFileStore.load(from: url)
     }
 
     private func persist() {
-        guard let data = try? JSONEncoder().encode(entries) else { return }
+        guard let data = JSONFileStore.encode(entries) else { return }
         cloud.set(data, forKey: Self.cloudKey)
         cloud.synchronize()
-        try? data.write(to: fileURL, options: .atomic)
+        JSONFileStore.write(data, to: fileURL)
     }
 }

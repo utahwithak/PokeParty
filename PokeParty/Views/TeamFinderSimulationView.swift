@@ -142,6 +142,7 @@ struct OptimizerResultsView: View {
     let format: RankingFormat?
     let poolSize: Int
     let movesById: [String: Move]
+    let store: RankingsStore
     let model: TeamFinderModel
     let openInBuilder: (TeamOptimizer.OptimizedTeam) -> Void
 
@@ -208,7 +209,7 @@ struct OptimizerResultsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Re-validate") { model.validateAgainstBroadField(movesById: movesById) }
+                Button("Re-validate") { model.validateAgainstBroadField(using: store) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
@@ -218,7 +219,7 @@ struct OptimizerResultsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Validate vs Full Meta") { model.validateAgainstBroadField(movesById: movesById) }
+                Button("Validate vs Full Meta") { model.validateAgainstBroadField(using: store) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }

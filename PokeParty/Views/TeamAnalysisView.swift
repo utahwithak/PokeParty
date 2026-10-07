@@ -95,46 +95,8 @@ struct TeamAnalysisSections: View {
             .foregroundStyle(.secondary)
 
             ForEach(analysis.threats) { threat in
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Text(threat.speciesName)
-                                .font(.subheadline.weight(.medium))
-                                .lineLimit(1)
-                            if threat.shadow { ShadowBadge() }
-                        }
-                        TypeBadgeRow(types: threat.types)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    ForEach(Array(threat.ratings.enumerated()), id: \.offset) { _, rating in
-                        ratingChip(rating)
-                    }
-                }
-                .padding(.vertical, 2)
+                ThreatRow(threat: threat)
             }
-        }
-    }
-
-    /// A compact colored cell for a single battle rating, from the threat's
-    /// perspective (so high = bad for your team → red).
-    private func ratingChip(_ rating: Int) -> some View {
-        Text("\(rating)")
-            .font(.caption.weight(.semibold).monospacedDigit())
-            .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.3), radius: 0.5, y: 0.5)
-            .frame(width: 56, height: 22)
-            .background(chipColor(rating), in: RoundedRectangle(cornerRadius: 5))
-    }
-
-    /// Threat rating → cell color (threat's perspective, so high = bad for you →
-    /// red). Uses four saturated bands so white text stays legible on every cell.
-    private func chipColor(_ rating: Int) -> Color {
-        switch rating {
-        case 750...:     return Color(red: 0.75, green: 0.22, blue: 0.17)  // strong loss
-        case 501..<750:  return Color(red: 0.84, green: 0.37, blue: 0.31)  // close loss
-        case 251...500:  return Color(red: 0.30, green: 0.69, blue: 0.35)  // close win
-        default:         return Color(red: 0.18, green: 0.60, blue: 0.27)  // strong win
         }
     }
 
@@ -229,6 +191,59 @@ struct GradeCard: View {
         case .c: return .yellow
         case .d: return .orange
         case .f: return .red
+        }
+    }
+}
+
+/// One threat's name/types + a rating chip per team member. Shared by the
+/// Team Builder's Top Threats table and "Test Against Meta"'s switch/stay
+/// section (filtered there to opposing leads actually encountered in that run).
+struct ThreatRow: View {
+    let threat: ThreatEntry
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(threat.speciesName)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                    if threat.shadow { ShadowBadge() }
+                }
+                TypeBadgeRow(types: threat.types)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            ForEach(Array(threat.ratings.enumerated()), id: \.offset) { _, rating in
+                ThreatRatingChip(rating: rating)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// A compact colored cell for a single battle rating, from the threat's
+/// perspective (so high = bad for your team → red).
+struct ThreatRatingChip: View {
+    let rating: Int
+
+    var body: some View {
+        Text("\(rating)")
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.3), radius: 0.5, y: 0.5)
+            .frame(width: 56, height: 22)
+            .background(color, in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    /// Threat rating → cell color (threat's perspective, so high = bad for you →
+    /// red). Uses four saturated bands so white text stays legible on every cell.
+    private var color: Color {
+        switch rating {
+        case 750...:     return Color(red: 0.75, green: 0.22, blue: 0.17)  // strong loss
+        case 501..<750:  return Color(red: 0.84, green: 0.37, blue: 0.31)  // close loss
+        case 251...500:  return Color(red: 0.30, green: 0.69, blue: 0.35)  // close win
+        default:         return Color(red: 0.18, green: 0.60, blue: 0.27)  // strong win
         }
     }
 }

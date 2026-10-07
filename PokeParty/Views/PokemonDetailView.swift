@@ -446,7 +446,7 @@ private struct MoveSelectorRow: View {
                     } else {
                         MoveStat(label: "NRG", value: "\(move.energy)", color: Theme.moveEnergy,
                                  help: "Energy cost — energy required to fire this charged move.")
-                        if let countText = countText(for: move) {
+                        if let countText = move.chargeCounts(fastEnergyGain: fastEnergyGain) {
                             MoveStat(label: "COUNT", value: countText, color: Theme.moveDuration,
                                      help: "Count — fast moves needed to reach this move on each of the next 5 throws, carrying leftover energy between them.")
                         }
@@ -493,28 +493,10 @@ private struct MoveSelectorRow: View {
         return name
     }
 
-    /// Fast-move counts to fire this charged move on each of the next 5 throws,
-    /// carrying leftover energy between throws. "Straight N" when every throw is
-    /// the same, otherwise a dash-separated series like "5 - 4 - 4 - 4 - 4".
-    private func countText(for move: Move) -> String? {
-        guard !move.isFast, let gain = fastEnergyGain, gain > 0, move.energy > 0 else { return nil }
-        var stored = 0
-        var counts: [Int] = []
-        for _ in 0..<5 {
-            let needed = max(0, move.energy - stored)
-            let fastMoves = Int((Double(needed) / Double(gain)).rounded(.up))
-            counts.append(fastMoves)
-            stored += fastMoves * gain - move.energy
-        }
-        if let first = counts.first, counts.allSatisfy({ $0 == first }) {
-            return "Straight \(first)"
-        }
-        return counts.map(String.init).joined(separator: " - ")
-    }
 }
 
 /// A small colored chip showing one move statistic.
-private struct MoveStat: View {
+struct MoveStat: View {
     let label: String
     let value: String
     let color: Color

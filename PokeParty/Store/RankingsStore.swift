@@ -24,8 +24,20 @@ final class RankingsStore {
     var format: RankingFormat = .great {
         didSet {
             guard format != oldValue else { return }
-            Task { await loadRankings() }
+            reloadRankings()
         }
+    }
+
+    /// The in-flight rankings load, if any — cancelled and replaced on every
+    /// `format`/`rankingSource` change so a slow, superseded request can
+    /// never overwrite what a later, faster one already displayed (e.g.
+    /// clicking through leagues quickly, or a PvPoke fallback resolving
+    /// after the local ranking it was standing in for already loaded).
+    private var loadTask: Task<Void, Never>?
+
+    private func reloadRankings() {
+        loadTask?.cancel()
+        loadTask = Task { await loadRankings() }
     }
 
     var searchText: String = ""
@@ -35,16 +47,84 @@ final class RankingsStore {
             rankBySpeciesId = Dictionary(
                 uniqueKeysWithValues: entries.enumerated().map { ($1.speciesId, $0 + 1) }
             )
+            entryBySpeciesId = Dictionary(uniqueKeysWithValues: entries.map { ($0.speciesId, $0) })
         }
     }
     /// 1-based overall rank for each species in the current league.
     private(set) var rankBySpeciesId: [String: Int] = [:]
+    /// O(1) index for `entry(id:)`, kept in sync with `entries`.
+    private(set) var entryBySpeciesId: [String: RankingEntry] = [:]
     private(set) var pokemonById: [String: Pokemon] = [:]
     private(set) var movesById: [String: Move] = [:]
-    /// All Pokémon, dex-sorted, for the Rank Checker's search.
+    /// All Pokémon, dex-sorted, for the Rank Checker's search. Excludes Mega
+    /// Evolutions, which are banned outside the dedicated Mega cups — use
+    /// `eligiblePokemon(for:)` where the current format matters (e.g. the
+    /// Team Builder's add palette).
     private(set) var allPokemon: [Pokemon] = []
+    /// `allPokemon` plus Mega Evolutions, dex-sorted, for formats that allow
+    /// them (see `RankingFormat.allowsMegaEvolution`).
+    private(set) var allPokemonIncludingMegas: [Pokemon] = []
     /// Active limited cups (e.g. Summer Cup) with published rankings.
     private(set) var cupFormats: [RankingFormat] = []
+    /// Every cup's eligibility rules — `MetaPool`'s filter input, not just
+    /// the currently-active `cupFormats`.
+    private(set) var cups: [Cup] = []
+    /// Species banned from Great/Ultra League regardless of cup filters.
+    private(set) var greatLeagueIneligible: [String] = []
+    /// Every released Pokémon INCLUDING shadow-tagged entries (unlike
+    /// `allPokemon`/`allPokemonIncludingMegas`, which drop shadows since
+    /// those are represented via a toggle, not separate picker rows) — the
+    /// local Ranker needs shadows as their own distinct pool members, same
+    /// as PvPoke's own rankings do.
+    private(set) var allPokemonIncludingShadows: [Pokemon] = []
+    /// A hash of the currently-loaded gamemaster data — `LocalRankingBuilder`
+    /// compares this against each cached local ranking to detect staleness.
+    private(set) var gameMasterHash: String = ""
+
+    /// Where the displayed ranking ORDER comes from — PvPoke's own
+    /// precomputed list, or the locally-computed `Ranker`. Persisted
+    /// locally, same inline pattern as `showMegaEvolutions`.
+    enum RankingSource: String {
+        case pvpoke
+        case local
+    }
+    var rankingSource: RankingSource = RankingSource(
+        rawValue: UserDefaults.standard.string(forKey: RankingsStore.rankingSourceKey) ?? ""
+    ) ?? .pvpoke {
+        didSet {
+            guard rankingSource != oldValue else { return }
+            UserDefaults.standard.set(rankingSource.rawValue, forKey: RankingsStore.rankingSourceKey)
+            Task { await loadRankings() }
+        }
+    }
+    private static let rankingSourceKey = "RankingSource"
+
+    /// Keeps the 3 core leagues' local rankings warm in the background,
+    /// regardless of `rankingSource` — see `LocalRankingBuilder`.
+    let localRankingBuilder = LocalRankingBuilder()
+
+    init() {
+        // A background build can finish (or get skipped because another one
+        // was already running) well after `loadRankings()` last checked —
+        // without this, the currently-viewed format could be stuck showing
+        // PvPoke's fallback rankings even once its local version is ready,
+        // or never get its on-demand build re-queued after being dropped.
+        localRankingBuilder.onIdle = { [weak self] in
+            guard let self, self.rankingSource == .local else { return }
+            Task { await self.loadRankings() }
+        }
+    }
+
+    /// User preference (Settings): let Mega Evolutions be picked in any
+    /// format/tool, not just a dedicated Mega cup — lets players compare or
+    /// build with Megas even when no Mega cup is active. Persisted locally.
+    var showMegaEvolutions: Bool = UserDefaults.standard.bool(forKey: RankingsStore.showMegaEvolutionsKey) {
+        didSet {
+            guard showMegaEvolutions != oldValue else { return }
+            UserDefaults.standard.set(showMegaEvolutions, forKey: RankingsStore.showMegaEvolutionsKey)
+        }
+    }
+    private static let showMegaEvolutionsKey = "ShowMegaEvolutions"
 
     /// Per-format cache so switching back to a format is instant.
     private var rankingsCache: [RankingFormat: [RankingEntry]] = [:]
@@ -98,15 +178,22 @@ final class RankingsStore {
     private func loadGameMasterIfNeeded(policy: DataService.LoadPolicy = .cache) async {
         guard !gameMasterLoaded else { return }
         do {
-            let gm = try await service.gameMaster(policy: policy)
+            let (gm, rawData) = try await service.gameMasterWithRawData(policy: policy)
             pokemonById = Dictionary(gm.pokemon.map { ($0.speciesId, $0) }, uniquingKeysWith: { first, _ in first })
             movesById = Dictionary(gm.moves.map { ($0.moveId, $0) }, uniquingKeysWith: { first, _ in first })
-            allPokemon = gm.pokemon
+            allPokemonIncludingMegas = gm.pokemon
                 .filter { $0.released != false && !($0.tags?.contains("shadow") ?? false) }
                 .sorted { ($0.dex, $0.speciesName) < ($1.dex, $1.speciesName) }
+            allPokemon = allPokemonIncludingMegas.filter { !$0.isMegaEvolution }
+            allPokemonIncludingShadows = gm.pokemon.filter { $0.released != false }
             cupFormats = (gm.formats ?? []).filter { !$0.isCoreLeague && $0.hasRankings && $0.showFormat == true }
+            cups = gm.cups ?? []
+            greatLeagueIneligible = gm.greatLeagueIneligible ?? []
+            gameMasterHash = LocalRankingBuilder.hash(of: rawData)
             buildFamilyGraph()
             gameMasterLoaded = true
+
+            localRankingBuilder.rebuildCoreLeaguesIfStale(context: gameMasterContext)
         } catch {
             phase = .failed(error.localizedDescription)
         }
@@ -114,6 +201,17 @@ final class RankingsStore {
 
     private func loadRankings(policy: DataService.LoadPolicy = .cache) async {
         guard gameMasterLoaded else { return }
+
+        if rankingSource == .local {
+            if let local = localRankingBuilder.cachedEntries(formatId: format.id, gameMasterHash: gameMasterHash) {
+                entries = local
+                phase = .loaded
+                return
+            }
+            // Not ready yet — kick a background build and fall through to
+            // PvPoke's rankings so the UI never blocks on it.
+            localRankingBuilder.buildIfStale(format: format, context: gameMasterContext)
+        }
 
         if let cached = rankingsCache[format] {
             entries = cached
@@ -132,6 +230,11 @@ final class RankingsStore {
         }
     }
 
+    private var gameMasterContext: LocalRankingBuilder.GameMasterContext {
+        .init(hash: gameMasterHash, allPokemon: allPokemonIncludingShadows,
+              greatLeagueIneligible: greatLeagueIneligible, cups: cups, movesById: movesById)
+    }
+
     /// Rankings for an arbitrary format, sharing the browser's per-format cache
     /// (used by tools pinned to one league, like Breakpoints).
     func rankings(for format: RankingFormat) async throws -> [RankingEntry] {
@@ -144,11 +247,50 @@ final class RankingsStore {
     // MARK: - Lookups
 
     func entry(id: RankingEntry.ID) -> RankingEntry? {
-        entries.first { $0.id == id }
+        entryBySpeciesId[id]
     }
 
     func pokemon(for entry: RankingEntry) -> Pokemon? {
         pokemonById[entry.speciesId]
+    }
+
+    /// The roster to offer for a given format: includes Mega Evolutions when
+    /// that format's cup allows them, or when the user's turned on "Show
+    /// Mega Evolutions" in Settings regardless of format.
+    func eligiblePokemon(for format: RankingFormat) -> [Pokemon] {
+        format.allowsMegaEvolution ? allPokemonIncludingMegas : pokemonForPicker
+    }
+
+    /// `allPokemon`, plus Mega Evolutions when "Show Mega Evolutions" is on —
+    /// for tools (Rank Checker, 1v1 Simulator, Breakpoints, Bench) that pick
+    /// a Pokémon without a specific format/cup in play.
+    var pokemonForPicker: [Pokemon] {
+        showMegaEvolutions ? allPokemonIncludingMegas : allPokemon
+    }
+
+    /// The Mega Evolution(s) available for an owned species (e.g. a bench
+    /// entry), or empty if it has none.
+    func megaEvolutions(for speciesId: String) -> [Pokemon] {
+        guard let dex = pokemonById[speciesId]?.dex else { return [] }
+        return Pokemon.megaEvolutions(ofDex: dex, pokemonById: pokemonById)
+    }
+
+    /// Builds a team member for a species, defaulting to its recommended
+    /// moveset (from the current league's rankings) or its first available
+    /// moves. Shared by `TeamBuilderModel` and `MatchupModel`.
+    func makeMember(speciesId: String) -> TeamMember? {
+        guard let species = pokemonById[speciesId] else { return nil }
+        if let entry = entry(id: speciesId), entry.moveset.count >= 2 {
+            return TeamMember(speciesId: speciesId,
+                              fastMoveId: entry.moveset[0],
+                              chargedMoveIds: Array(entry.moveset[1...].prefix(2)),
+                              shadow: species.isShadow)
+        }
+        guard let fast = species.fastMoves.first else { return nil }
+        return TeamMember(speciesId: speciesId,
+                          fastMoveId: fast,
+                          chargedMoveIds: Array(species.chargedMoves.prefix(2)),
+                          shadow: species.isShadow)
     }
 
     func move(id: String) -> Move? {
@@ -231,14 +373,7 @@ final class RankingsStore {
     nonisolated static func resolve(
         speciesId: String, pokemonById: [String: Pokemon]
     ) -> (species: Pokemon, shadow: Bool)? {
-        // Shadow Pokémon are their own gamemaster entries (tagged "shadow");
-        // fall back to stripping a "_shadow" suffix if the entry is ever missing.
-        var species = pokemonById[speciesId]
-        if species == nil, speciesId.hasSuffix("_shadow") {
-            species = pokemonById[String(speciesId.dropLast("_shadow".count))]
-        }
-        guard let species else { return nil }
-        return (species, species.isShadow || speciesId.hasSuffix("_shadow"))
+        Pokemon.resolve(speciesId: speciesId, pokemonById: pokemonById)
     }
 
     /// Builds a combatant from a ranking entry's recommended moveset.
@@ -342,5 +477,29 @@ final class RankingsStore {
         else { return nil }
 
         return MatchupReplay(log: log, scenario: sol)
+    }
+
+    /// Each team member's battle rating against `opponentId`'s recommended
+    /// moveset, at 1 shield each side (the same default the Team Builder's
+    /// threat scoring uses). nil for a member whose stats/moves can't be
+    /// resolved, or if the opponent itself has no rankings/moveset data.
+    func teamRatings(for members: [TeamMember], against opponentId: String) -> [Int?] {
+        guard let oppEntry = entry(id: opponentId),
+              let oppCombatant = Self.combatant(for: oppEntry, pokemonById: pokemonById),
+              let oppStats = MatchupSimulator.optimalStats(for: oppCombatant, cpCap: format.cp)
+        else { return members.map { _ in nil } }
+        let cpCap = format.cp
+        return members.map { member in
+            guard let species = pokemonById[member.speciesId], !member.chargedMoveIds.isEmpty else { return nil }
+            let combatant = MatchupSimulator.Combatant(
+                species: species, shadow: member.shadow,
+                fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
+            let stats = entry(id: member.speciesId)?.stats.map { BattlePokemon.Stats(atk: $0.atk, def: $0.def, hp: Int($0.hp)) }
+                ?? MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap)
+            guard let stats else { return nil }
+            return MatchupSimulator.rate(
+                combatant, statsA: stats, oppCombatant, statsB: oppStats,
+                movesById: movesById, shieldsA: 1, shieldsB: 1)?.a
+        }
     }
 }

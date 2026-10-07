@@ -103,7 +103,8 @@ final class BenchFinderModel {
                 entries: entries, poolSize: Self.metaPoolSize,
                 cpCap: format.cp, pokemonById: pokemonById)
             let benchCandidates = TeamFinderModel.buildBenchPool(
-                entries: benchEntries, cpCap: format.cp, pokemonById: pokemonById)
+                entries: benchEntries, cpCap: format.cp, pokemonById: pokemonById,
+                includeMegaEvolutions: format.allowsMegaEvolution || store.showMegaEvolutions)
 
             guard !metaCandidates.isEmpty else {
                 phase = .failed("Could not load meta rankings for \(league.title) League.")

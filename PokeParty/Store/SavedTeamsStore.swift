@@ -59,14 +59,15 @@ final class SavedTeamsStore {
         teams = saved
     }
 
-    /// Saves the members under `name`, replacing an existing team of the same name.
-    func save(name: String, members: [TeamMember]) {
+    /// Saves the members under `name` for the given format, replacing an
+    /// existing team of the same name saved for that same format.
+    func save(name: String, members: [TeamMember], cup: String, cp: Int) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !members.isEmpty else { return }
-        if let index = teams.firstIndex(where: { $0.name == trimmed }) {
+        if let index = teams.firstIndex(where: { $0.name == trimmed && $0.cup == cup && $0.cp == cp }) {
             teams[index].members = members
         } else {
-            teams.append(Team(name: trimmed, members: members))
+            teams.append(Team(name: trimmed, members: members, cup: cup, cp: cp))
         }
         persist()
     }
@@ -76,24 +77,25 @@ final class SavedTeamsStore {
         persist()
     }
 
+    /// Saved teams for the given format only.
+    func teams(for format: RankingFormat) -> [Team] {
+        teams.filter { $0.matches(format) }
+    }
+
     // MARK: - Disk
 
     private static var defaultFileURL: URL {
-        let directory = URL.applicationSupportDirectory
-            .appendingPathComponent("PokeParty", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("SavedTeams.json")
+        JSONFileStore.defaultFileURL(filename: "SavedTeams.json")
     }
 
     private static func load(from url: URL) -> [Team] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        return (try? JSONDecoder().decode([Team].self, from: data)) ?? []
+        JSONFileStore.load(from: url)
     }
 
     private func persist() {
-        guard let data = try? JSONEncoder().encode(teams) else { return }
+        guard let data = JSONFileStore.encode(teams) else { return }
         cloud.set(data, forKey: Self.cloudKey)
         cloud.synchronize()
-        try? data.write(to: fileURL, options: .atomic)
+        JSONFileStore.write(data, to: fileURL)
     }
 }

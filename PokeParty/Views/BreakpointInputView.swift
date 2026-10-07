@@ -15,8 +15,8 @@ struct BreakpointInputView: View {
 
     private var searchResults: [Pokemon] {
         let query = searchText.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return store.allPokemon }
-        return store.allPokemon.filter { $0.speciesName.localizedCaseInsensitiveContains(query) }
+        guard !query.isEmpty else { return store.pokemonForPicker }
+        return store.pokemonForPicker.filter { $0.speciesName.localizedCaseInsensitiveContains(query) }
     }
 
     var body: some View {
@@ -33,6 +33,20 @@ struct BreakpointInputView: View {
                     }
                 }
                 .labelsHidden()
+            }
+            Section("Compare as Rank") {
+                Picker("Compare as Rank", selection: Binding(
+                    get: { model.targetRank },
+                    set: { model.setTargetRank($0) }
+                )) {
+                    ForEach(BreakpointModel.rankTiers, id: \.self) { rank in
+                        Text("Rank \(rank)").tag(rank)
+                    }
+                }
+                .labelsHidden()
+                Text("Uses that rank's actual IV combination (its own optimal level under the CP cap) instead of assuming 15/15/15.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Tap a Pokémon to analyze") {
                 ForEach(searchResults) { pokemon in

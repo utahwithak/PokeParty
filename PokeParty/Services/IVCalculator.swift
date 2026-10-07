@@ -340,3 +340,27 @@ nonisolated enum IVCalculator {
         )
     }
 }
+
+/// MainActor-only memoization for `IVCalculator.rank`, which sweeps all 4096
+/// IV combinations per call — expensive enough that recomputing it for every
+/// cell on every SwiftUI re-render of a rank grid (e.g. while a live scan
+/// ticks every 1-2s) is wasted work whenever the inputs haven't changed.
+/// Safe to keep as simple mutable state because every caller is a SwiftUI
+/// view body (always MainActor); code that ranks off-main-actor (e.g.
+/// BenchView's background sort-cache task) calls `IVCalculator.rank` directly.
+@MainActor
+enum IVRankCache {
+    private static var storage: [String: IVCalculator.RankResult?] = [:]
+
+    static func rank(
+        baseAtk: Int, baseDef: Int, baseHp: Int, cpCap: Int, ivs: IVs,
+        levelCap: Double = IVCalculator.defaultLevelCap
+    ) -> IVCalculator.RankResult? {
+        let key = "\(baseAtk),\(baseDef),\(baseHp),\(cpCap),\(ivs.atk),\(ivs.def),\(ivs.hp),\(levelCap)"
+        if let cached = storage[key] { return cached }
+        let result = IVCalculator.rank(
+            baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, cpCap: cpCap, ivs: ivs, levelCap: levelCap)
+        storage[key] = result
+        return result
+    }
+}

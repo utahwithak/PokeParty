@@ -67,19 +67,15 @@ final class SavedTournamentsStore {
     // MARK: - Disk
 
     private static var defaultFileURL: URL {
-        let directory = URL.applicationSupportDirectory
-            .appendingPathComponent("PokeParty", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("SavedTournaments.json")
+        JSONFileStore.defaultFileURL(filename: "SavedTournaments.json")
     }
 
     private static func load(from url: URL) -> [SavedTournament] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        return (try? JSONDecoder().decode([SavedTournament].self, from: data)) ?? []
+        JSONFileStore.load(from: url)
     }
 
     private func persist() {
-        guard let data = try? JSONEncoder().encode(runs) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        guard let data = JSONFileStore.encode(runs) else { return }
+        JSONFileStore.write(data, to: fileURL)
     }
 }

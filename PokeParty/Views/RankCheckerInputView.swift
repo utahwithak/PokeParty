@@ -13,8 +13,8 @@ struct RankCheckerInputView: View {
 
     private var results: [Pokemon] {
         let query = model.searchText.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return store.allPokemon }
-        return store.allPokemon.filter { $0.speciesName.localizedCaseInsensitiveContains(query) }
+        guard !query.isEmpty else { return store.pokemonForPicker }
+        return store.pokemonForPicker.filter { $0.speciesName.localizedCaseInsensitiveContains(query) }
     }
 
     var body: some View {

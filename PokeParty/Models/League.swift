@@ -73,6 +73,10 @@ nonisolated struct RankingFormat: Decodable, Hashable, Identifiable {
         }
     }
 
+    /// Whether this format's rules make Mega Evolutions eligible (the "mega"
+    /// cup family: Mega Great/Ultra/Master League).
+    var allowsMegaEvolution: Bool { cup == "mega" }
+
     static let great = RankingFormat(title: "Great League", cup: "all", cp: 1500, hideRankings: false, showFormat: true)
     static let ultra = RankingFormat(title: "Ultra League", cup: "all", cp: 2500, hideRankings: false, showFormat: true)
     static let master = RankingFormat(title: "Master League", cup: "all", cp: 10000, hideRankings: false, showFormat: true)

@@ -72,6 +72,7 @@ final class ScanModel {
         var league: League
         var ivs: IVs
         var capturedDate: Date
+        var shadow: Bool = false
     }
 
     // MARK: - State
@@ -119,12 +120,27 @@ final class ScanModel {
 
     /// The best currently-known IV spread: bar readings when complete,
     /// otherwise the top guessed candidate, otherwise a neutral default.
+    /// Callers that show this to the user (rank/percent displays, history)
+    /// should check `hasResolvedIVs` first — the neutral default exists so
+    /// staging/editing always has *some* value to bind to, not because it's
+    /// a safe guess to display as though it were real.
     var currentIVs: IVs {
         guard case .found(let live) = liveStatus else { return IVs(atk: 15, def: 15, hp: 15) }
         if let atk = live.barIVs?.atk, let def = live.barIVs?.def, let hp = live.barIVs?.hp {
             return IVs(atk: atk, def: def, hp: hp)
         }
         return live.candidates.first?.ivs ?? IVs(atk: 15, def: 15, hp: 15)
+    }
+
+    /// Whether `currentIVs` reflects an actual reading — full bars, or at
+    /// least one CP/HP-narrowed candidate — rather than the neutral
+    /// 15/15/15 placeholder. A detail screen with no appraisal bars and no
+    /// candidates narrowed down would otherwise silently display as a
+    /// hundo (#1, 100%) with nothing to back it up.
+    var hasResolvedIVs: Bool {
+        guard case .found(let live) = liveStatus else { return false }
+        if live.barIVs?.atk != nil, live.barIVs?.def != nil, live.barIVs?.hp != nil { return true }
+        return live.candidates.first != nil
     }
 
     var currentSpeciesId: String? {
@@ -137,13 +153,37 @@ final class ScanModel {
     private let scanner = ScreenScanner()
     private var liveTask: Task<Void, Never>?
 
-    /// Starts the continuous capture → OCR loop. Safe to call repeatedly;
-    /// no-ops if already running.
+    /// One frame's OCR + bar reading, compared against the previous frame's
+    /// to gate `liveStatus` updates on agreement rather than any single
+    /// frame. A blurry or mid-swipe transitional frame reads *something*
+    /// almost every time; requiring consecutive matching reads before
+    /// treating a change as real means one bad frame can't flip the
+    /// displayed Pokémon, trigger a false auto-advance, or spam history.
+    private struct FrameReading: Equatable {
+        var rawName: String
+        var speciesId: String?
+        var cp: Int?
+        var level: Double?
+        var maxHP: Int?
+        var barIVs: BarIVs?
+    }
+
+    private var pendingReading: FrameReading?
+    private var pendingStreak = 0
+    private var missStreak = 0
+    /// Consecutive matching (or failing) frames required before committing
+    /// a change. At the ~3fps the frame stream runs, this adds well under
+    /// a second of latency versus the old fixed-delay poll, while filtering
+    /// out the transitional frame every swipe produces.
+    private static let requiredStreak = 2
+
+    /// Starts the continuous frame-stream → OCR loop. Safe to call
+    /// repeatedly; no-ops if already running.
     func startScanning(store: RankingsStore) {
         guard liveTask == nil else { return }
         // Gate on the CoreGraphics screen-recording permission check. On macOS 15+
         // SCK can still fail even when this returns true (a process restart is
-        // sometimes needed after first grant); performOneScan handles that by
+        // sometimes needed after first grant); runFrameLoop handles that by
         // stopping the loop so the OS dialog can't re-trigger automatically.
         guard CGPreflightScreenCaptureAccess() else {
             CGRequestScreenCaptureAccess()
@@ -151,11 +191,13 @@ final class ScanModel {
             return
         }
         liveStatus = .scanning
+        pendingReading = nil
+        pendingStreak = 0
+        missStreak = 0
         liveTask = Task { [weak self] in
-            while !Task.isCancelled {
-                let delay = await self?.performOneScan(store: store) ?? Self.idleScanInterval
-                try? await Task.sleep(for: .seconds(delay))
-            }
+            guard let self else { return }
+            await self.runFrameLoop(store: store)
+            self.liveTask = nil
         }
     }
 
@@ -164,28 +206,70 @@ final class ScanModel {
         liveTask = nil
     }
 
-    /// While actively chasing the next advance (auto-advance on, not paused
-    /// or stopped) the loop re-scans quickly so a just-fired swipe or a
-    /// still-settling read gets picked up almost immediately; otherwise
-    /// (idle, paused, stopped, or erroring) there's nothing new to catch yet.
-    private static let activeScanInterval: TimeInterval = 1.0
-    private static let idleScanInterval: TimeInterval = 4.5
+    /// Consumes frames from `ScreenScanner`'s stream until cancelled or a
+    /// fatal error. The mirroring window not existing yet is treated as
+    /// recoverable — rather than making the user tap Retry once they open
+    /// it, this waits a couple of seconds and tries again.
+    private func runFrameLoop(store: RankingsStore) async {
+        while !Task.isCancelled {
+            do {
+                let frames = try await scanner.startFrameStream()
+                liveStatus = .scanning
+                for try await image in frames {
+                    await processFrame(image, store: store)
+                }
+                return // Stream ended normally (deliberate stop).
+            } catch ScanError.windowNotFound {
+                liveStatus = .error(ScanError.windowNotFound.localizedDescription)
+                try? await Task.sleep(for: .seconds(2))
+            } catch is CancellationError {
+                return
+            } catch let error as ScanError {
+                liveStatus = .error(error.localizedDescription)
+                return
+            } catch {
+                // Unexpected system error — most likely SCK access denied (on macOS 15+
+                // the process sometimes needs a restart after first permission grant).
+                // Stop outright so the OS dialog can't re-trigger automatically.
+                liveStatus = .error("Screen Recording access failed. If you just granted permission, restart PokeParty — then tap Retry.")
+                return
+            }
+        }
+    }
 
-    /// Runs one capture → OCR → advance cycle. Returns how long the loop
-    /// should wait before the next one.
-    @discardableResult
-    private func performOneScan(store: RankingsStore) async -> TimeInterval {
+    /// Runs OCR + bar reading on one streamed frame and, once the reading
+    /// has agreed with itself for `requiredStreak` consecutive frames,
+    /// commits it: updates `liveStatus`, records history, and considers
+    /// auto-advance.
+    private func processFrame(_ image: CGImage, store: RankingsStore) async {
         do {
-            let image = try await scanner.capturePhoneMirroringFrame()
             let observations = try await scanner.recognizeText(in: image)
-
             guard let info = await scanner.extractPokemonInfo(from: observations) else {
-                liveStatus = .error(ScanError.parseFailure.localizedDescription)
-                return Self.idleScanInterval
+                registerMiss()
+                return
             }
 
             let speciesId = fuzzyMatch(info.name, in: store.pokemonById)
             let barIVs = await scanner.extractBarIVs(from: observations, image: image)
+            let reading = FrameReading(
+                rawName: info.name, speciesId: speciesId, cp: info.cp,
+                level: info.level, maxHP: info.maxHP, barIVs: barIVs)
+
+            missStreak = 0
+            if reading == pendingReading {
+                pendingStreak += 1
+            } else {
+                pendingReading = reading
+                pendingStreak = 1
+            }
+            // `==`, not `>=`: this block fires exactly once when a reading
+            // first becomes stable. With `>=` it re-fired on every later
+            // frame that still matched the same committed reading — while
+            // sitting on an already-advanced Pokémon, each of those re-fired
+            // `handleAutoAdvance`, so a swipe could go out again before the
+            // first one's animation even finished (a double-swipe that skips
+            // the next Pokémon in the box).
+            guard pendingStreak == Self.requiredStreak else { return }
 
             let candidates = speciesId.map {
                 computeCandidates(speciesId: $0, cp: info.cp, level: info.level, maxHP: info.maxHP, barIVs: barIVs, store: store)
@@ -197,23 +281,23 @@ final class ScanModel {
             ))
             recordHistory(store: store)
             await handleAutoAdvance(store: store)
-            // Still actively trying to advance (not paused/stopped above) —
-            // keep polling fast so a not-yet-determined read (species or IVs
-            // still resolving) is retried right away instead of blind-swiping
-            // on a stale scan.
-            return (autoAdvance && autoAdvancePausedReason == nil) ? Self.activeScanInterval : Self.idleScanInterval
-        } catch let error as ScanError {
-            // Transient: no mirroring window or parse failure — keep looping.
-            liveStatus = .error(error.localizedDescription)
-            return Self.idleScanInterval
         } catch {
-            // Unexpected system error — most likely SCK access denied (on macOS 15+
-            // the process sometimes needs a restart after first permission grant).
-            // Stop the loop immediately so the OS dialog can't re-trigger.
-            stopScanning()
-            liveStatus = .error("Screen Recording access failed. If you just granted permission, restart PokeParty — then tap Retry.")
-            return Self.idleScanInterval
+            // Vision choked on this particular frame — rare, and no reason
+            // to tear down the whole stream over it; treat like any other miss.
+            registerMiss()
         }
+    }
+
+    /// After `requiredStreak` consecutive frames fail to read a Pokémon at
+    /// all, surfaces the parse-failure error — but not on the first miss,
+    /// since that's exactly what every swipe transition looks like for a
+    /// frame or two.
+    private func registerMiss() {
+        pendingReading = nil
+        pendingStreak = 0
+        missStreak += 1
+        guard missStreak >= Self.requiredStreak else { return }
+        liveStatus = .error(ScanError.parseFailure.localizedDescription)
     }
 
     /// If auto-advance is on, swipes to the next Pokémon — but only once the
@@ -265,7 +349,7 @@ final class ScanModel {
     /// text (e.g. "Show off this Pokémon with a Catch") that fails to match
     /// any real Pokémon, and that shouldn't get logged as a scan at all.
     private func recordHistory(store: RankingsStore) {
-        guard case .found(let live) = liveStatus, let speciesId = live.speciesId else { return }
+        guard case .found(let live) = liveStatus, let speciesId = live.speciesId, hasResolvedIVs else { return }
         let ivs = currentIVs
         if let last = history.first, last.speciesId == speciesId, last.ivs == ivs { return }
         let name = store.pokemonById[speciesId]?.speciesName ?? live.rawName
@@ -325,10 +409,23 @@ final class ScanModel {
     func bestRankHit(store: RankingsStore) -> RankHit? {
         guard case .found(let live) = liveStatus, let sid = live.speciesId else { return nil }
         let ivs = currentIVs
+        let level = determinedLevel(store: store)
+        let cpm = level.flatMap { IVCalculator.cpm(forLevel: $0) }
         var best: RankHit?
         for pokemon in store.family(for: sid, excludingPreEvolutions: true) {
+            // The optimal-build rank below assumes the Pokémon could be
+            // leveled down to whatever fits a league's cap — but a scan
+            // reports an actual, fixed CP. Skip leagues the Pokémon is
+            // really over cap for right now, mirroring the eligibility
+            // check IVLeagueGridView uses for its red-X cells.
+            let nowCP = cpm.map {
+                IVCalculator.cp(
+                    baseAtk: pokemon.baseStats.atk, baseDef: pokemon.baseStats.def, baseHp: pokemon.baseStats.hp,
+                    ivs: ivs, cpm: $0)
+            }
             for league in [CheckLeague.great, .ultra, .master] {
-                guard let result = IVCalculator.rank(
+                if let nowCP, nowCP > league.cap { continue }
+                guard let result = IVRankCache.rank(
                     baseAtk: pokemon.baseStats.atk, baseDef: pokemon.baseStats.def, baseHp: pokemon.baseStats.hp,
                     cpCap: league.cap, ivs: ivs
                 ) else { continue }
@@ -347,7 +444,11 @@ final class ScanModel {
         guard case .found(let live) = liveStatus, let sid = live.speciesId,
               let species = store.pokemonById[sid] else { return nil }
 
-        if let maxHP = live.maxHP {
+        // Only reverse-solve from maxHP when the HP IV is an actual
+        // reading — `currentIVs.hp` falls back to a neutral 15 when
+        // nothing's resolved, and solving against that fake value
+        // produces a level that looks exact but isn't backed by anything.
+        if hasResolvedIVs, let maxHP = live.maxHP {
             let baseHpPlusIV = Double(species.baseStats.hp + currentIVs.hp)
             var matches: [Double] = []
             for (index, cpm) in IVCalculator.cpms.enumerated() {
@@ -373,7 +474,8 @@ final class ScanModel {
         guard let league = League(rawValue: checkLeague.cap) else { return }
         staged = StagedPick(
             speciesId: pokemon.speciesId, speciesName: pokemon.speciesName,
-            league: league, ivs: currentIVs, capturedDate: .now)
+            league: league, ivs: currentIVs, capturedDate: .now,
+            shadow: pokemon.isShadow)
         duplicateWarning = nil
     }
 
@@ -397,7 +499,7 @@ final class ScanModel {
         }
         let entry = bench.addFromScan(
             speciesId: staged.speciesId, ivs: staged.ivs, capturedDate: staged.capturedDate,
-            league: staged.league, store: store)
+            shadow: staged.shadow, league: staged.league, store: store)
         self.staged = nil
         duplicateWarning = nil
         return entry.id
@@ -427,6 +529,26 @@ final class ScanModel {
             return possibleHpIVs(baseHp: species.baseStats.hp, maxHP: maxHP, level: level)
         }()
 
+        // `combo.cp` (from `rankedCombos`) is each combo's CP at ITS OWN
+        // best level under the Master cap — in practice close to level 51
+        // — not at the Pokémon's actual current level. A freshly-caught
+        // level-8 Wooper's CP143 has nothing to do with what that same IV
+        // spread would be at level 51, so comparing against `combo.cp`
+        // directly rejects nearly everything regardless of the true IVs.
+        // Recomputing CP at the observed level fixes that; without a known
+        // level there's no comparable CP to compute at all, so this signal
+        // just doesn't apply rather than comparing the wrong thing.
+        let observedCpm: Double? = level.flatMap { IVCalculator.cpm(forLevel: $0) }
+
+        // Only report candidates when at least one narrowing signal was
+        // actually applied — with no bars, no HP+level match, and no
+        // CP+level match, every one of the 4096 combos would trivially
+        // pass every `if let` check below, silently returning the global
+        // top-20 by stat product with zero evidence behind them.
+        guard hpIVs != nil || (cp != nil && observedCpm != nil)
+            || barIVs?.atk != nil || barIVs?.def != nil || barIVs?.hp != nil
+        else { return [] }
+
         // The Attack/Defense/HP fill bars give all three IVs directly (each
         // bar's fill fraction is that stat's IV / 15) — by far the strongest
         // signal, since CP alone can't distinguish atk/def IVs at all.
@@ -434,7 +556,12 @@ final class ScanModel {
         var candidates: [IVCandidate] = []
         for (index, combo) in combos.enumerated() {
             if let hpIVs, !hpIVs.contains(combo.ivs.hp) { continue }
-            if let cp, abs(combo.cp - cp) > 3 { continue }
+            if let cp, let observedCpm {
+                let atLevelCP = IVCalculator.cp(
+                    baseAtk: species.baseStats.atk, baseDef: species.baseStats.def, baseHp: species.baseStats.hp,
+                    ivs: combo.ivs, cpm: observedCpm)
+                if abs(atLevelCP - cp) > 3 { continue }
+            }
             if let barAtk = barIVs?.atk, abs(combo.ivs.atk - barAtk) > 1 { continue }
             if let barDef = barIVs?.def, abs(combo.ivs.def - barDef) > 1 { continue }
             if let barHp  = barIVs?.hp,  abs(combo.ivs.hp  - barHp)  > 1 { continue }
@@ -459,14 +586,27 @@ final class ScanModel {
         return result.isEmpty ? nil : result
     }
 
+    /// `normalized(pokemon.speciesName)` per species id, rebuilt only when the
+    /// game master's Pokémon set changes size — `fuzzyMatch` runs on every
+    /// ~1-2s scan tick, so refolding/diacritic-stripping every species name
+    /// from scratch each time was needless repeated work against a set that
+    /// only ever loads once per launch.
+    private var normalizedNameCache: [String: String] = [:]
+
+    private func normalizedNames(for pokemonById: [String: Pokemon]) -> [String: String] {
+        if normalizedNameCache.count != pokemonById.count {
+            normalizedNameCache = pokemonById.mapValues { normalized($0.speciesName) }
+        }
+        return normalizedNameCache
+    }
+
     /// Fuzzy-matches a raw OCR string against every species name in the game master.
     /// Score 3 = exact, 2 = prefix, 1 = substring; returns the highest-scoring species id.
     private func fuzzyMatch(_ raw: String, in pokemonById: [String: Pokemon]) -> String? {
         let needle = normalized(raw)
         guard !needle.isEmpty else { return nil }
         var best: (id: String, score: Int)? = nil
-        for (id, pokemon) in pokemonById {
-            let hay = normalized(pokemon.speciesName)
+        for (id, hay) in normalizedNames(for: pokemonById) {
             let score: Int
             if      hay == needle                                      { score = 3 }
             else if hay.hasPrefix(needle) || needle.hasPrefix(hay)     { score = 2 }
@@ -482,10 +622,16 @@ final class ScanModel {
     /// text uses the accented form ("Flabébé"). "é" (U+00E9) and "e" aren't
     /// the same Unicode scalar, so without folding, an otherwise-exact match
     /// silently fails every scoring tier and the species goes unmatched.
+    ///
+    /// The gender symbols get a *leading* space, not a bare letter — the
+    /// game master spells Nidoran's forms out as "Nidoran Male"/"Nidoran
+    /// Female", and mapping "♂" straight to "m" fuses it onto the previous
+    /// word ("Nidoranm") with no token boundary, so it can never prefix-
+    /// match "nidoran male" no matter how cleanly OCR reads the symbol.
     private func normalized(_ s: String) -> String {
         s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
-            .replacingOccurrences(of: "♀", with: "f")
-            .replacingOccurrences(of: "♂", with: "m")
+            .replacingOccurrences(of: "♀", with: " f")
+            .replacingOccurrences(of: "♂", with: " m")
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: " ")

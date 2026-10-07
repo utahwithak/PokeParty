@@ -10,11 +10,15 @@ but a snapshot that's many months stale defeats the point. Refresh before
 each release:
 
 ```sh
-curl -o PokeParty/Resources/seed_gamemaster.json https://pvpoke.com/data/gamemaster.json
-curl -o PokeParty/Resources/seed_rankings_1500.json https://pvpoke.com/data/rankings/all/overall/rankings-1500.json
-curl -o PokeParty/Resources/seed_rankings_2500.json https://pvpoke.com/data/rankings/all/overall/rankings-2500.json
-curl -o PokeParty/Resources/seed_rankings_10000.json https://pvpoke.com/data/rankings/all/overall/rankings-10000.json
+BASE=https://raw.githubusercontent.com/pvpoke/pvpoke/master/src/data
+curl -o PokeParty/Resources/seed_gamemaster.json "$BASE/gamemaster.json"
+curl -o PokeParty/Resources/seed_rankings_1500.json "$BASE/rankings/all/overall/rankings-1500.json"
+curl -o PokeParty/Resources/seed_rankings_2500.json "$BASE/rankings/all/overall/rankings-2500.json"
+curl -o PokeParty/Resources/seed_rankings_10000.json "$BASE/rankings/all/overall/rankings-10000.json"
 ```
+
+(Sourced from PvPoke's GitHub repo, not the live site — see `DataService.swift`'s
+header comment for why.)
 
 Cups (limited-time formats) aren't bundled since they rotate — a stale one
 would be actively misleading, so those stay live-fetch-only.

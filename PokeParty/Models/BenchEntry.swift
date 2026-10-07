@@ -33,9 +33,11 @@ struct BenchEntry: Identifiable, Hashable, Codable {
     var capturedDate: Date? = nil
 
     /// Converts this bench entry into a team member, carrying IVs and Best Buddy flag.
-    func asTeamMember() -> TeamMember {
+    /// `speciesId` overrides the member's species — used to add a Mega
+    /// Evolution of this owned Pokémon, which keeps the same IVs and moves.
+    func asTeamMember(speciesId: String? = nil) -> TeamMember {
         TeamMember(
-            speciesId: speciesId,
+            speciesId: speciesId ?? self.speciesId,
             fastMoveId: fastMoveId,
             chargedMoveIds: chargedMoveIds,
             shadow: shadow,

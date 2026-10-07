@@ -54,6 +54,18 @@ nonisolated struct TeamBattleLog: Sendable, Hashable {
         let log: BattleLog
         /// Shield-scenario distribution for this segment (when optimal shields were used).
         let shieldScenario: ShieldSearch.Solution?
+        /// Side (0 = team A, 1 = team B) that spent this boundary voluntarily switching
+        /// instead of attacking, if any. Faint-forced replacements leave this nil — the
+        /// fainted Pokémon already spent its turn dying, so there's no extra tempo cost.
+        let voluntarySwitchSide: Int?
+        /// Energy the opponent's active Pokémon banked for free while `voluntarySwitchSide`
+        /// spent its turn switching (the tempo cost of a voluntary switch). 0 when
+        /// `voluntarySwitchSide` is nil.
+        let switchTempoEnergy: Int
+        /// Damage those same free fast moves dealt to the Pokémon that just switched
+        /// in (clamped so it can't faint before its segment even starts). 0 when
+        /// `voluntarySwitchSide` is nil.
+        let switchTempoDamage: Int
     }
     let segments: [Segment]
     let result: TeamBattleResult
@@ -114,8 +126,9 @@ nonisolated struct ThreeVThreeBattle {
     /// reach at least this rating: it spends our own switch clock even though the
     /// target can't escape, so only a dominant answer is worth it.
     private static let counterSwitchDominance = 650
-    /// Tempo cost of switching: the side that stays gets this many free fast moves of
-    /// energy while the other spends its turn switching.
+    /// Tempo cost of switching: the side that stays gets this many free fast moves —
+    /// energy for itself, and real fast-move damage against whichever Pokémon just
+    /// switched in — while the other spends its turn switching.
     private static let switchTempoFastMoves = 3
     /// A catch swap must bring in a backup that beats this rating — dodging one
     /// super-effective move isn't worth 30s locked into a losing matchup.
@@ -160,10 +173,12 @@ nonisolated struct ThreeVThreeBattle {
         for i in teamA.indices {
             teamA[i].startHp = 0; teamA[i].startEnergy = 0
             teamA[i].startStatBuffs = [0, 0]; teamA[i].startDisguiseConsumed = false
+            teamA[i].startGulpMissileForm = .none
         }
         for i in teamB.indices {
             teamB[i].startHp = 0; teamB[i].startEnergy = 0
             teamB[i].startStatBuffs = [0, 0]; teamB[i].startDisguiseConsumed = false
+            teamB[i].startGulpMissileForm = .none
         }
 
         var teamAShields = shieldsA
@@ -193,6 +208,13 @@ nonisolated struct ThreeVThreeBattle {
         while segment < maxSegments {
             segment += 1
 
+            // Which side (if any) voluntarily switched into this segment, and the
+            // tempo cost it paid (see the "Tempo cost" block below) — carried through
+            // to the recorded segment so the UI can show the turn's cost.
+            var voluntarySwitchSide: Int?
+            var switchTempoEnergy = 0
+            var switchTempoDamage = 0
+
             // Voluntary switching at the boundary (turn-0 safe-swap + counter-switch
             // vs the revealed opponent). Both sides decide simultaneously from the
             // current on-field mons; the switch timer prevents thrashing.
@@ -221,14 +243,17 @@ nonisolated struct ThreeVThreeBattle {
                 var bSwitched = bTarget != nil
                 // Counterswap: a side that just switched is locked for the switch
                 // timer, so the other side (if off cooldown) re-evaluates against the
-                // newly revealed mon and may punish with a dominant answer the locked
+                // newly revealed mon. This can mean escaping a matchup that only
+                // turned bad because of what the opponent just revealed (the earlier
+                // voluntary-switch check above only saw the opponent's old mon), or
+                // punishing an even/winning matchup with a dominant answer the locked
                 // mon can't escape. (Approximates deciding a turn or two in.)
                 if aSwitched != bSwitched {
                     if aSwitched, bCanSwitch, let c = resolvedSwitchTarget(
                         side: 1, team: teamB, fainted: faintedB, active: activeB,
                         opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields,
                         time: globalTime, opponentLocked: true, mandatory: false, heuristic: {
-                            counterSwitchTarget(
+                            reactiveSwitchTarget(
                                 team: teamB, fainted: faintedB, active: activeB,
                                 opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields)
                         }) {
@@ -237,19 +262,34 @@ nonisolated struct ThreeVThreeBattle {
                         side: 0, team: teamA, fainted: faintedA, active: activeA,
                         opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields,
                         time: globalTime, opponentLocked: true, mandatory: false, heuristic: {
-                            counterSwitchTarget(
+                            reactiveSwitchTarget(
                                 team: teamA, fainted: faintedA, active: activeA,
                                 opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields)
                         }) {
                         activeA = c; lastSwitchA = globalTime; entrancesA.append(c); aSwitched = true
                     }
                 }
-                // Tempo cost: if exactly one side switched, the other gets free energy.
+                // Tempo cost: if exactly one side switched, the other gets free fast
+                // moves — energy for itself, and real damage against whoever just
+                // switched in (it's still on the field for those turns; switching
+                // doesn't dodge them). The switch-in's HP is floored at 1 rather than
+                // cascading into a pre-battle faint replacement — modeling that chain
+                // isn't worth it for a case this exotic.
                 if aSwitched != bSwitched {
                     if aSwitched {
-                        teamB[activeB].startEnergy = min(100, teamB[activeB].startEnergy + teamB[activeB].fastMove.energyGain * Self.switchTempoFastMoves)
+                        let before = teamB[activeB].startEnergy
+                        teamB[activeB].startEnergy = min(100, before + teamB[activeB].fastMove.energyGain * Self.switchTempoFastMoves)
+                        voluntarySwitchSide = 0
+                        switchTempoEnergy = teamB[activeB].startEnergy - before
+                        switchTempoDamage = Self.tempoDamage(staying: teamB[activeB], switchedIn: teamA[activeA])
+                        teamA[activeA].startHp = max(1, Self.carriedHp(teamA[activeA]) - switchTempoDamage)
                     } else {
-                        teamA[activeA].startEnergy = min(100, teamA[activeA].startEnergy + teamA[activeA].fastMove.energyGain * Self.switchTempoFastMoves)
+                        let before = teamA[activeA].startEnergy
+                        teamA[activeA].startEnergy = min(100, before + teamA[activeA].fastMove.energyGain * Self.switchTempoFastMoves)
+                        voluntarySwitchSide = 1
+                        switchTempoEnergy = teamA[activeA].startEnergy - before
+                        switchTempoDamage = Self.tempoDamage(staying: teamA[activeA], switchedIn: teamB[activeB])
+                        teamB[activeB].startHp = max(1, Self.carriedHp(teamB[activeB]) - switchTempoDamage)
                     }
                 }
             }
@@ -324,7 +364,10 @@ nonisolated struct ThreeVThreeBattle {
             globalTime = battle.time
             if record {
                 segments.append(.init(indexA: activeA, indexB: activeB,
-                                      log: battle.makeLog(), shieldScenario: shieldSolution))
+                                      log: battle.makeLog(), shieldScenario: shieldSolution,
+                                      voluntarySwitchSide: voluntarySwitchSide,
+                                      switchTempoEnergy: switchTempoEnergy,
+                                      switchTempoDamage: switchTempoDamage))
             }
 
             // Carry each combatant's state forward from the battle's internal copies.
@@ -334,12 +377,14 @@ nonisolated struct ThreeVThreeBattle {
             teamA[activeA].startEnergy = postA.energy
             teamA[activeA].startStatBuffs = postA.statBuffs
             teamA[activeA].startDisguiseConsumed = postA.hasDisguise && !postA.disguiseActive
+            teamA[activeA].startGulpMissileForm = postA.gulpMissileForm
             teamAShields = postA.shields
             teamB[activeB].hp = postB.hp
             teamB[activeB].startHp = max(0, postB.hp)
             teamB[activeB].startEnergy = postB.energy
             teamB[activeB].startStatBuffs = postB.statBuffs
             teamB[activeB].startDisguiseConsumed = postB.hasDisguise && !postB.disguiseActive
+            teamB[activeB].startGulpMissileForm = postB.gulpMissileForm
             teamBShields = postB.shields
 
             let aFainted = postA.hp <= 0
@@ -451,6 +496,24 @@ nonisolated struct ThreeVThreeBattle {
             if r > bestRating && r > 500 { bestRating = r; bestIndex = i }
         }
         return bestIndex
+    }
+
+    /// Reactive check run against a newly revealed opponent (one that just voluntarily
+    /// switched in). First checks whether the reveal has put us in a losing matchup we
+    /// should simply escape — the earlier boundary check only saw the opponent's old
+    /// mon, so a now-bad matchup hasn't been evaluated yet. Failing that, falls back to
+    /// `counterSwitchTarget` to consider punishing the switch-locked opponent from an
+    /// even or winning position.
+    private func reactiveSwitchTarget(
+        team: [BattlePokemon], fainted: Set<Int>, active: Int,
+        opponent: BattlePokemon, teamShields: Int, opponentShields: Int
+    ) -> Int? {
+        if let t = voluntarySwitchTarget(team: team, fainted: fainted, active: active,
+                                         opponent: opponent, teamShields: teamShields,
+                                         opponentShields: opponentShields) { return t }
+        return counterSwitchTarget(team: team, fainted: fainted, active: active,
+                                   opponent: opponent, teamShields: teamShields,
+                                   opponentShields: opponentShields)
     }
 
     /// Counterswap check against an opponent that just voluntarily switched in and is
@@ -616,6 +679,17 @@ nonisolated struct ThreeVThreeBattle {
     /// A mon's carried HP between segments (`startHp == 0` means it never fought → full).
     private static func carriedHp(_ p: BattlePokemon) -> Int {
         p.startHp > 0 ? min(p.startHp, p.stats.hp) : p.stats.hp
+    }
+
+    /// Total damage `staying`'s fast move deals to `switchedIn` over the tempo
+    /// window (`switchTempoFastMoves` hits), using each side's carried stat-buff
+    /// stage — the same state `Battle.reset` would load for their next segment.
+    private static func tempoDamage(staying: BattlePokemon, switchedIn: BattlePokemon) -> Int {
+        var attacker = staying
+        attacker.statBuffs = attacker.startStatBuffs
+        var defender = switchedIn
+        defender.statBuffs = defender.startStatBuffs
+        return DamageCalculator.damage(attacker, defender, attacker.fastMove) * switchTempoFastMoves
     }
 
     /// Chooses which Pokémon a team brings in next. For `.bestMatchup`, each alive

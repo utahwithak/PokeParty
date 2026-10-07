@@ -70,16 +70,9 @@ final class TeamBuilderModel {
     /// Sets (or clears, with `nil`) a charged-move slot (0 = first, 1 = second).
     func setChargedMove(_ id: String?, slot: Int, at index: Int) {
         guard members.indices.contains(index) else { return }
-        var charged = members[index].chargedMoveIds
-        if let id {
-            // Don't allow the same move in both charged slots.
-            if charged.enumerated().contains(where: { $0.offset != slot && $0.element == id }) { return }
-            if slot < charged.count { charged[slot] = id } else { charged.append(id) }
-        } else if slot < charged.count {
-            charged.remove(at: slot)
-        }
-        guard !charged.isEmpty, charged != members[index].chargedMoveIds else { return }
-        members[index].chargedMoveIds = charged
+        let before = members[index]
+        members[index].setChargedMove(id, slot: slot)
+        guard members[index] != before else { return }
         invalidate()
     }
 
@@ -106,18 +99,7 @@ final class TeamBuilderModel {
     /// Builds a team member for a species, defaulting to its recommended moveset
     /// (from the current league's rankings) or its first available moves.
     func makeMember(speciesId: String, store: RankingsStore) -> TeamMember? {
-        guard let species = store.pokemonById[speciesId] else { return nil }
-        if let entry = store.entry(id: speciesId), entry.moveset.count >= 2 {
-            return TeamMember(speciesId: speciesId,
-                              fastMoveId: entry.moveset[0],
-                              chargedMoveIds: Array(entry.moveset[1...].prefix(2)),
-                              shadow: species.isShadow)
-        }
-        guard let fast = species.fastMoves.first else { return nil }
-        return TeamMember(speciesId: speciesId,
-                          fastMoveId: fast,
-                          chargedMoveIds: Array(species.chargedMoves.prefix(2)),
-                          shadow: species.isShadow)
+        store.makeMember(speciesId: speciesId)
     }
 
     // MARK: - Analysis
@@ -234,7 +216,8 @@ final class TeamBuilderModel {
 
     /// Builds combatants + stats for a set of members. Members with specific IVs
     /// (from the player's bench) use those IVs; others use optimal / ranked stats.
-    private static func buildTeam(
+    /// Internal so `TeamMetaTestModel` can reuse the same resolution logic.
+    static func buildTeam(
         _ members: [TeamMember], store: RankingsStore
     ) -> (combatants: [MatchupSimulator.Combatant], stats: [BattlePokemon.Stats])? {
         let cap = store.format.cp
@@ -287,7 +270,7 @@ final class TeamBuilderModel {
     ) -> [MetaCandidate] {
         entries.enumerated().compactMap { index, entry in
             guard entry.moveset.count >= 2,
-                  let r = resolve(speciesId: entry.speciesId, pokemonById: pokemonById)
+                  let r = RankingsStore.resolve(speciesId: entry.speciesId, pokemonById: pokemonById)
             else { return nil }
             let stats = entry.stats.map {
                 BattlePokemon.Stats(atk: $0.atk, def: $0.def, hp: Int($0.hp))
@@ -304,16 +287,4 @@ final class TeamBuilderModel {
         }
     }
 
-    /// Resolves a ranking-entry species id to its species + shadow flag.
-    /// (Mirrors RankingsStore's private resolver.)
-    private static func resolve(
-        speciesId: String, pokemonById: [String: Pokemon]
-    ) -> (species: Pokemon, shadow: Bool)? {
-        var species = pokemonById[speciesId]
-        if species == nil, speciesId.hasSuffix("_shadow") {
-            species = pokemonById[String(speciesId.dropLast("_shadow".count))]
-        }
-        guard let species else { return nil }
-        return (species, species.isShadow || speciesId.hasSuffix("_shadow"))
-    }
 }

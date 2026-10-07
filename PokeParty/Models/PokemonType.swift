@@ -62,7 +62,7 @@ enum Theme {
     static let moveDuration = Color(hex: 0x87a600)
 
     // Battle outcomes
-    static let win = Color(hex: 0x17de4b)
+    static let win = Color(hex: 0x1a7f37)
     static let loss = Color(hex: 0xff5858)
     static let shield = Color(hex: 0xdf46e5)
 

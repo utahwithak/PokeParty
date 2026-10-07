@@ -8,7 +8,12 @@
 import Foundation
 import SwiftData
 
-/// Loads Pokémon, move and ranking data from pvpoke.com.
+/// Loads Pokémon, move and ranking data from PvPoke's data files.
+///
+/// Sourced from PvPoke's own GitHub repo (`raw.githubusercontent.com`) rather
+/// than the live `pvpoke.com` site — same schema (the repo is what the site
+/// deploys from), but backed by GitHub's CDN instead of a single web server,
+/// and pinned to a ref we control instead of "whatever's live right now."
 ///
 /// PvPoke's data changes only every few months, so blobs are persisted via
 /// `ResourceCache` (SwiftData, in Application Support). A long freshness window
@@ -24,6 +29,11 @@ actor DataService {
         let moves: [Move]
         /// Currently active formats/cups (e.g. Summer Cup).
         let formats: [RankingFormat]?
+        /// Every cup's eligibility rules (include/exclude filters) — the
+        /// local `MetaPool` eligibility filter, not just the active formats.
+        let cups: [Cup]?
+        /// Species banned from Great/Ultra League regardless of cup filters.
+        let greatLeagueIneligible: [String]?
     }
 
     enum DataError: LocalizedError {
@@ -40,7 +50,7 @@ actor DataService {
         case reload      // ignore cache; force a full download
     }
 
-    private let baseURL = URL(string: "https://pvpoke.com/data/")!
+    private let baseURL = URL(string: "https://raw.githubusercontent.com/pvpoke/pvpoke/master/src/data/")!
     private let maxCacheAge: TimeInterval = 60 * 60 * 24 * 7 // 7 days
     private let session: URLSession
     private let decoder = JSONDecoder()
@@ -77,11 +87,20 @@ actor DataService {
     // MARK: - Public API
 
     func gameMaster(policy: LoadPolicy = .cache) async throws -> GameMaster {
-        try await load(path: "gamemaster.json", as: GameMaster.self, policy: policy)
+        try await load(path: "gamemaster.json", as: GameMaster.self, policy: policy).value
+    }
+
+    /// Same as `gameMaster(policy:)`, plus the raw bytes it was decoded
+    /// from — used to derive `LocalRankingBuilder`'s staleness hash, which
+    /// needs to be a stable function of the underlying data, not of
+    /// whichever `Codable` fields this app happens to read from it today.
+    func gameMasterWithRawData(policy: LoadPolicy = .cache) async throws -> (gameMaster: GameMaster, data: Data) {
+        let (value, data) = try await load(path: "gamemaster.json", as: GameMaster.self, policy: policy)
+        return (value, data)
     }
 
     func rankings(for format: RankingFormat, policy: LoadPolicy = .cache) async throws -> [RankingEntry] {
-        try await load(path: "rankings/\(format.cup)/overall/rankings-\(format.cp).json", as: [RankingEntry].self, policy: policy)
+        try await load(path: "rankings/\(format.cup)/overall/rankings-\(format.cp).json", as: [RankingEntry].self, policy: policy).value
     }
 
     /// Wipe the persistent cache so the next load downloads everything fresh.
@@ -91,7 +110,7 @@ actor DataService {
 
     // MARK: - Loading & caching
 
-    private func load<T: Decodable>(path: String, as type: T.Type, policy: LoadPolicy = .cache) async throws -> T {
+    private func load<T: Decodable>(path: String, as type: T.Type, policy: LoadPolicy = .cache) async throws -> (value: T, data: Data) {
         if !hasSeeded {
             await seedBundledDataIfNeeded()
             hasSeeded = true
@@ -101,7 +120,7 @@ actor DataService {
         // 1. Fresh cache wins outright — no network (skipped when revalidating/reloading).
         if policy == .cache, let cached, Date().timeIntervalSince(cached.fetchedAt) < maxCacheAge,
            let value = try? decoder.decode(type, from: cached.data) {
-            return value
+            return (value, cached.data)
         }
 
         // 2. Revalidate / fetch. A full reload omits the validator to force a 200.
@@ -118,18 +137,18 @@ actor DataService {
             if http.statusCode == 304, let cached,
                let value = try? decoder.decode(type, from: cached.data) {
                 await cache?.touch(path: path)
-                return value
+                return (value, cached.data)
             }
 
             guard (200..<300).contains(http.statusCode) else { throw DataError.unavailable }
             let value = try decoder.decode(type, from: data)
             let etag = http.value(forHTTPHeaderField: "Etag")
             await cache?.save(path: path, data: data, etag: etag)
-            return value
+            return (value, data)
         } catch {
             // 3. Offline / failed — fall back to any stale cache.
             if let cached, let value = try? decoder.decode(type, from: cached.data) {
-                return value
+                return (value, cached.data)
             }
             throw error
         }

@@ -19,6 +19,17 @@ nonisolated struct BattlePokemon {
     let hasDisguise: Bool
     /// Whether the Disguise is still up this battle.
     var disguiseActive: Bool = false
+    /// Has Cramorant's Gulp Missile.
+    let hasGulpMissile: Bool
+    /// Which prey Cramorant is currently holding (set by using Surf/Dive,
+    /// cleared after firing a counterattack or when the 3v3 orchestrator
+    /// starts a fresh segment — Gulp Missile's form resets on switch-out).
+    enum GulpMissileForm { case none, gulping, gorging }
+    var gulpMissileForm: GulpMissileForm = .none
+    /// Gulp Missile form carried into the next `reset()` — like `startHp`/
+    /// `startStatBuffs`, this only changes on switch-out, not on every
+    /// segment boundary the 3v3 orchestrator plays through.
+    var startGulpMissileForm: GulpMissileForm = .none
 
     // Permanent stats (effective at the chosen level/IVs).
     struct Stats: Hashable, Sendable { var atk: Double; var def: Double; var hp: Int }
@@ -69,7 +80,7 @@ nonisolated struct BattlePokemon {
     private var typeEffectivenessCache: [Double] = []
 
     init(speciesId: String, speciesName: String, types: [String], shadow: Bool,
-         hasDisguise: Bool = false,
+         hasDisguise: Bool = false, hasGulpMissile: Bool = false,
          stats: Stats, fastMove: BattleMove, chargedMoves: [BattleMove]) {
         self.speciesId = speciesId
         self.speciesName = speciesName
@@ -77,6 +88,7 @@ nonisolated struct BattlePokemon {
         self.typeIndices = self.types.map(TypeChart.index(of:)).filter { $0 >= 0 }
         self.shadow = shadow
         self.hasDisguise = hasDisguise
+        self.hasGulpMissile = hasGulpMissile
         self.stats = stats
         self.fastMove = fastMove
         self.chargedMoves = chargedMoves
@@ -159,6 +171,7 @@ nonisolated struct BattlePokemon {
         hasActed = false
         faintSource = .none
         disguiseActive = hasDisguise && !startDisguiseConsumed
+        gulpMissileForm = startGulpMissileForm
         // Reset probabilistic buff meters so ShieldSearch reruns are deterministic.
         for i in chargedMoves.indices
             where chargedMoves[i].buffApplyChance > 0 && chargedMoves[i].buffApplyChance < 1 {

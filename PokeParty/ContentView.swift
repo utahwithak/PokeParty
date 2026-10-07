@@ -25,6 +25,8 @@ struct ContentView: View {
     @State private var scanModel = ScanModel()
     #endif
 
+    private static let selectionDefaultsKey = "PokeParty.selectedTab"
+
     var body: some View {
         NavigationSplitView {
             LeagueSidebar(store: store, hiddenCups: hiddenCups, selection: $selection)
@@ -46,14 +48,31 @@ struct ContentView: View {
         // would push most row content off the left edge of the phone screen.
         .frame(minWidth: 1040, minHeight: 600)
         #endif
-        .task { await store.load() }
+        .task {
+            await store.load()
+            restoreSavedSelection()
+        }
         .task { await entitlements.load() }
         .onChange(of: selection) { _, new in
             if let new, case .format(let format) = new {
                 store.format = format
                 selectedEntryID = nil
             }
+            if let new {
+                UserDefaults.standard.set(new.persistenceKey, forKey: Self.selectionDefaultsKey)
+            }
         }
+    }
+
+    /// Restores the tab selected at the end of the previous launch, once the
+    /// gamemaster (and any active cups) have loaded — a saved cup selection
+    /// can't resolve until then. No-ops if nothing was saved or it no longer
+    /// resolves (e.g. a cup that's since ended).
+    private func restoreSavedSelection() {
+        guard let key = UserDefaults.standard.string(forKey: Self.selectionDefaultsKey),
+              let restored = SidebarSelection.restored(from: key, cupFormats: store.cupFormats)
+        else { return }
+        selection = restored
     }
 
     @ViewBuilder
@@ -67,7 +86,7 @@ struct ContentView: View {
             TeamBuilderView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
         case .partyFinder:
             if entitlements.isUnlocked {
-                TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, hiddenCups: hiddenCups, selection: $selection)
+                TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, bench: bench, hiddenCups: hiddenCups, selection: $selection)
             } else {
                 PaywallView()
             }

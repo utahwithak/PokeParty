@@ -128,10 +128,11 @@ nonisolated enum GradeFinder {
         await withTaskGroup(of: [GradedTeam].self) { [raw, soft, compatible] group in
             for i in 0..<n {
                 group.addTask {
-                    gradeTrios(lead: i, n: n, pool: pool,
-                               raw: raw, soft: soft, compatible: compatible,
+                    gradeTrios(lead: i, memberCount: n, threatCount: n, members: pool,
+                               ratings: raw, softRatings: soft, compatible: compatible,
                                bulk: bulk, consistency: consistency, safety: safety,
-                               famKey: famKey, speciesIds: speciesIds,
+                               memberFamKey: famKey, memberSpeciesIds: speciesIds,
+                               threatFamKey: famKey, threatSpeciesIds: speciesIds,
                                bulkGoal: bulkGoal, maxResults: maxResults)
                 }
             }
@@ -154,14 +155,23 @@ nonisolated enum GradeFinder {
         return a.id < b.id
     }
 
-    /// Grades every trio led by pool index `i` (j, k > i), returning its local
-    /// best-`maxResults` (a bounded selection so the sweep never materializes
-    /// millions of teams).
+    /// Grades every trio led by `members` index `lead` (j, k > lead), scored
+    /// against `threats` — a separate field of candidates (the bench finder's
+    /// meta pool) or, when `members`/`threats` are the same array (the
+    /// meta-pool grade check), effectively self-scored (a candidate can never
+    /// end up as its own threat: same species id always fails the id check
+    /// below, so this needs no separate self-exclusion). `ratings`/
+    /// `softRatings` are `threatCount × memberCount` matrices (row = threat
+    /// index, column = member index, row stride = `memberCount`); square in
+    /// the self-scored case, rectangular for the bench finder. Returns the
+    /// local best-`maxResults` (a bounded selection so the sweep never
+    /// materializes millions of teams).
     private static func gradeTrios(
-        lead i: Int, n: Int, pool: [TeamFinder.Candidate],
-        raw: [Int], soft: [Double], compatible: [Bool],
+        lead: Int, memberCount: Int, threatCount: Int, members: [TeamFinder.Candidate],
+        ratings: [Int], softRatings: [Double], compatible: [Bool],
         bulk: [Double], consistency: [Double], safety: [Double],
-        famKey: [String?], speciesIds: [String],
+        memberFamKey: [String?], memberSpeciesIds: [String],
+        threatFamKey: [String?], threatSpeciesIds: [String],
         bulkGoal: Double, maxResults: Int
     ) -> [GradedTeam] {
         var local: [GradedTeam] = []
@@ -182,9 +192,10 @@ nonisolated enum GradeFinder {
         var selRaw = [Int](repeating: 0, count: 6)
         var selFam = [String?](repeating: nil, count: 6)
 
-        for j in (i + 1)..<n where compatible[i * n + j] {
+        let i = lead
+        for j in (i + 1)..<memberCount where compatible[i * memberCount + j] {
             if Task.isCancelled { return [] }
-            for k in (j + 1)..<n where compatible[i * n + k] && compatible[j * n + k] {
+            for k in (j + 1)..<memberCount where compatible[i * memberCount + k] && compatible[j * memberCount + k] {
                 let bulkValue = (bulk[i] + bulk[j] + bulk[k]) / 3
                 let consistencyValue = (consistency[i] + consistency[j] + consistency[k]) / 3
                 let safetyValue = (safety[i] + safety[j] + safety[k]) / 3
@@ -196,15 +207,15 @@ nonisolated enum GradeFinder {
                 // Coverage: top-6 distinct-family threats by softened score.
                 var selCount = 0
                 var minIndex = 0
-                for t in 0..<n where t != i && t != j && t != k {
-                    let s = soft[t * n + i] + soft[t * n + j] + soft[t * n + k]
+                for t in 0..<threatCount {
+                    let s = softRatings[t * memberCount + i] + softRatings[t * memberCount + j] + softRatings[t * memberCount + k]
                     if selCount == 6 && s <= selScore[minIndex] { continue }
-                    let sid = speciesIds[t]
-                    if sid == speciesIds[i] || sid == speciesIds[j] || sid == speciesIds[k] { continue }
+                    let sid = threatSpeciesIds[t]
+                    if sid == memberSpeciesIds[i] || sid == memberSpeciesIds[j] || sid == memberSpeciesIds[k] { continue }
                     // Matches TeamAnalyzer: integer mean of the raw per-member ratings.
-                    let avgRaw = (raw[t * n + i] + raw[t * n + j] + raw[t * n + k]) / 3
+                    let avgRaw = (ratings[t * memberCount + i] + ratings[t * memberCount + j] + ratings[t * memberCount + k]) / 3
 
-                    if let fam = famKey[t],
+                    if let fam = threatFamKey[t],
                        let existing = (0..<selCount).first(where: { selFam[$0] == fam }) {
                         if s > selScore[existing] {
                             selScore[existing] = s
@@ -213,12 +224,12 @@ nonisolated enum GradeFinder {
                     } else if selCount < 6 {
                         selScore[selCount] = s
                         selRaw[selCount] = avgRaw
-                        selFam[selCount] = famKey[t]
+                        selFam[selCount] = threatFamKey[t]
                         selCount += 1
                     } else {
                         selScore[minIndex] = s
                         selRaw[minIndex] = avgRaw
-                        selFam[minIndex] = famKey[t]
+                        selFam[minIndex] = threatFamKey[t]
                     }
                     if selCount == 6 {
                         minIndex = 0
@@ -240,7 +251,7 @@ nonisolated enum GradeFinder {
 
                 local.append(GradedTeam(
                     members: [i, j, k].map { idx in
-                        let c = pool[idx]
+                        let c = members[idx]
                         return TeamFinder.RankedTeam.Member(
                             member: c.member, speciesName: c.speciesName,
                             types: c.types, shadow: c.shadow)
@@ -328,14 +339,12 @@ nonisolated enum GradeFinder {
         await withTaskGroup(of: [GradedTeam].self) { [rawMB, softMB, compatible] group in
             for lead in 0..<b {
                 group.addTask {
-                    gradeBenchTrios(
-                        lead: lead, b: b, metaCount: m, bench: bench,
-                        rawMB: rawMB, softMB: softMB, compatible: compatible,
-                        bulkValues: bulkValues, consistencyValues: consistencyValues,
-                        safetyValues: safetyValues,
-                        benchFamKey: benchFamKey, benchSpeciesIds: benchSpeciesIds,
-                        metaFamKey: metaFamKey, metaSpeciesIds: metaSpeciesIds,
-                        bulkGoal: bulkGoal, maxResults: maxResults)
+                    gradeTrios(lead: lead, memberCount: b, threatCount: m, members: bench,
+                               ratings: rawMB, softRatings: softMB, compatible: compatible,
+                               bulk: bulkValues, consistency: consistencyValues, safety: safetyValues,
+                               memberFamKey: benchFamKey, memberSpeciesIds: benchSpeciesIds,
+                               threatFamKey: metaFamKey, threatSpeciesIds: metaSpeciesIds,
+                               bulkGoal: bulkGoal, maxResults: maxResults)
                 }
             }
             for await part in group {
@@ -387,107 +396,6 @@ nonisolated enum GradeFinder {
             }
         }
         return matrix
-    }
-
-    /// Grades all bench trios led by bench index `lead` against the meta field.
-    private static func gradeBenchTrios(
-        lead: Int, b: Int, metaCount: Int, bench: [TeamFinder.Candidate],
-        rawMB: [Int], softMB: [Double], compatible: [Bool],
-        bulkValues: [Double], consistencyValues: [Double], safetyValues: [Double],
-        benchFamKey: [String?], benchSpeciesIds: [String],
-        metaFamKey: [String?], metaSpeciesIds: [String],
-        bulkGoal: Double, maxResults: Int
-    ) -> [GradedTeam] {
-        var local: [GradedTeam] = []
-        var cutoff = -Double.infinity
-        func trimLocal() {
-            local.sort(by: orderedBefore)
-            local.removeLast(local.count - maxResults)
-            cutoff = local[maxResults - 1].minGradeFraction
-        }
-
-        var selScore = [Double](repeating: 0, count: 6)
-        var selRaw = [Int](repeating: 0, count: 6)
-        var selFam = [String?](repeating: nil, count: 6)
-
-        let bi = lead
-        for bj in (bi + 1)..<b where compatible[bi * b + bj] {
-            if Task.isCancelled { return [] }
-            for bk in (bj + 1)..<b where compatible[bi * b + bk] && compatible[bj * b + bk] {
-                let bulkValue = (bulkValues[bi] + bulkValues[bj] + bulkValues[bk]) / 3
-                let consistencyValue = (consistencyValues[bi] + consistencyValues[bj] + consistencyValues[bk]) / 3
-                let safetyValue = (safetyValues[bi] + safetyValues[bj] + safetyValues[bk]) / 3
-                let cheapMin = min(bulkValue / bulkGoal,
-                                   consistencyValue / consistencyGoal,
-                                   safetyValue / safetyGoal)
-                if cheapMin <= cutoff { continue }
-
-                var selCount = 0
-                var minIndex = 0
-                for t in 0..<metaCount {
-                    let s = softMB[t * b + bi] + softMB[t * b + bj] + softMB[t * b + bk]
-                    if selCount == 6 && s <= selScore[minIndex] { continue }
-                    let sid = metaSpeciesIds[t]
-                    if sid == benchSpeciesIds[bi] || sid == benchSpeciesIds[bj] || sid == benchSpeciesIds[bk] { continue }
-                    let avgRaw = (rawMB[t * b + bi] + rawMB[t * b + bj] + rawMB[t * b + bk]) / 3
-
-                    if let fam = metaFamKey[t],
-                       let existing = (0..<selCount).first(where: { selFam[$0] == fam }) {
-                        if s > selScore[existing] {
-                            selScore[existing] = s
-                            selRaw[existing] = avgRaw
-                        }
-                    } else if selCount < 6 {
-                        selScore[selCount] = s
-                        selRaw[selCount] = avgRaw
-                        selFam[selCount] = metaFamKey[t]
-                        selCount += 1
-                    } else {
-                        selScore[minIndex] = s
-                        selRaw[minIndex] = avgRaw
-                        selFam[minIndex] = metaFamKey[t]
-                    }
-                    if selCount == 6 {
-                        minIndex = 0
-                        for si in 1..<6 where selScore[si] < selScore[minIndex] { minIndex = si }
-                    }
-                }
-
-                let threatScore: Int
-                if selCount == 0 {
-                    threatScore = 500
-                } else {
-                    var sum = 0
-                    for si in 0..<selCount { sum += selRaw[si] }
-                    threatScore = Int((Double(sum) / Double(selCount)).rounded())
-                }
-                let coverageValue = 1200 - Double(threatScore)
-                let minFraction = min(cheapMin, coverageValue / coverageGoal)
-                if minFraction <= cutoff { continue }
-
-                local.append(GradedTeam(
-                    members: [bi, bj, bk].map { idx in
-                        let c = bench[idx]
-                        return TeamFinder.RankedTeam.Member(
-                            member: c.member, speciesName: c.speciesName,
-                            types: c.types, shadow: c.shadow)
-                    },
-                    poolIndices: [bi, bj, bk],
-                    coverage: LetterGrade.grade(value: coverageValue, goal: coverageGoal),
-                    bulk: LetterGrade.grade(value: bulkValue, goal: bulkGoal),
-                    safety: LetterGrade.grade(value: safetyValue, goal: safetyGoal),
-                    consistency: LetterGrade.grade(value: consistencyValue, goal: consistencyGoal),
-                    threatScore: threatScore,
-                    coverageValue: coverageValue,
-                    bulkValue: bulkValue,
-                    safetyValue: safetyValue,
-                    consistencyValue: consistencyValue,
-                    minGradeFraction: minFraction))
-                if local.count >= maxResults * 2 { trimLocal() }
-            }
-        }
-        if local.count > maxResults { trimLocal() }
-        return local
     }
 
     /// One fast 1v1 per unordered pair at 1 shield each fills both directions.

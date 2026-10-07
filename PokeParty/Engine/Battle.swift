@@ -158,7 +158,7 @@ nonisolated final class Battle {
         // Move eligible queued actions into this turn's action list.
         var i = 0
         while i < queuedActions.count {
-            let action = queuedActions[i]
+            var action = queuedActions[i]
             var valid = false
             if action.type == .fast {
                 let timeSinceActivated = (turns - action.turn) * 500
@@ -183,20 +183,20 @@ nonisolated final class Battle {
 
         turnActions.sort { $0.priority > $1.priority }
 
-        for action in turnActions {
-            let ai = action.actor
+        for i in turnActions.indices {
+            let ai = turnActions[i].actor
             let di = ai == 0 ? 1 : 0
-            switch action.type {
+            switch turnActions[i].type {
             case .fast:
-                action.valid = pokemon[di].hp >= 1 && !(pokemon[ai].hp < 1 && pokemon[ai].faintSource == .charged)
+                turnActions[i].valid = pokemon[di].hp >= 1 && !(pokemon[ai].hp < 1 && pokemon[ai].faintSource == .charged)
             case .charged:
-                let move = pokemon[ai].chargedMoves[action.value]
-                action.valid = pokemon[ai].energy >= move.energy
-                if usePriority && pokemon[ai].hp <= 0 && pokemon[ai].faintSource == .charged { action.valid = false }
+                let move = pokemon[ai].chargedMoves[turnActions[i].value]
+                turnActions[i].valid = pokemon[ai].energy >= move.energy
+                if usePriority && pokemon[ai].hp <= 0 && pokemon[ai].faintSource == .charged { turnActions[i].valid = false }
                 // Prevent a charged move on the same turn a lethal fast move lands.
                 var lethalFastMove = false
                 var opponentChargedMoveThisTurn = false
-                for other in turnActions where other.actor != action.actor {
+                for other in turnActions where other.actor != ai {
                     if other.type == .fast {
                         if (pokemon[di].cooldown == 0 && pokemon[ai].hp <= pokemon[di].fastMove.damage) || pokemon[ai].hp < 1 {
                             lethalFastMove = true
@@ -205,11 +205,11 @@ nonisolated final class Battle {
                         opponentChargedMoveThisTurn = true
                     }
                 }
-                if lethalFastMove && !opponentChargedMoveThisTurn { action.valid = false }
+                if lethalFastMove && !opponentChargedMoveThisTurn { turnActions[i].valid = false }
             case .wait:
-                action.valid = true
+                turnActions[i].valid = true
             }
-            processAction(action)
+            processAction(&turnActions[i])
         }
 
         previousTurnActions = turnActions
@@ -241,17 +241,15 @@ nonisolated final class Battle {
 
         let di = i == 0 ? 1 : 0
         var action = ActionLogic.decideAction(self, pokemon[i], pokemon[di])
-        if action == nil {
-            action = TimelineAction(type: .fast, actor: i, turn: turns, value: 0, priority: pokemon[i].priority)
-        }
-        if let action, action.type == .charged {
+            ?? TimelineAction(type: .fast, actor: i, turn: turns, value: 0, priority: pokemon[i].priority)
+        if action.type == .charged {
             action.priority += 10
             if pokemon[i].stats.atk > pokemon[di].stats.atk { action.priority += 1 }
         }
         return action
     }
 
-    private func processAction(_ action: TimelineAction) {
+    private func processAction(_ action: inout TimelineAction) {
         guard action.valid && !action.processed else { return }
         action.processed = true
 
@@ -288,6 +286,14 @@ nonisolated final class Battle {
             pokemon[ai].energy -= move.energy
             if usePriority && roundChargedMoveUsed > 0 && !roundShieldUsed { time += chargedMinigameTime }
 
+            // Cramorant catches prey on Surf/Dive: Gulping (Arrokuda) above half
+            // HP, Gorging (Pikachu) at or below — regardless of whether it's shielded.
+            if pokemon[ai].hasGulpMissile, pokemon[ai].gulpMissileForm == .none,
+               move.moveId == "SURF" || move.moveId == "DIVE" {
+                let hpFraction = Double(pokemon[ai].hp) / Double(pokemon[ai].stats.hp)
+                pokemon[ai].gulpMissileForm = hpFraction > 0.5 ? .gulping : .gorging
+            }
+
             if pokemon[di].shields > 0 {
                 var useShield = true
                 let shieldDecision = ActionLogic.wouldShield(self, pokemon[ai], pokemon[di], move)
@@ -314,6 +320,17 @@ nonisolated final class Battle {
                             useShield = shieldDecision.value
                         }
                     }
+                }
+
+                // Cramorant: defer to wouldShield's own Gulp Missile awareness
+                // (its damage-ratio thresholds live there only, so tuning them
+                // can't drift out of sync with this override), overriding a
+                // forced-true decision above (PvPoke's Battle.js order).
+                if pokemon[di].hasGulpMissile, pokemon[di].gulpMissileForm != .none {
+                    useShield = shieldDecision.value
+                }
+                if pokemon[ai].hasGulpMissile {
+                    useShield = shieldDecision.value
                 }
 
                 // M8: let an external search force the decision for this shield
@@ -346,6 +363,22 @@ nonisolated final class Battle {
                 pokemon[di].statBuffs[1] = max(pokemon[di].statBuffs[1] - 1, -4)
                 roundShieldUsed = true
                 if roundChargedMoveUsed == 0 { time += chargedMinigameTime }
+            }
+
+            // Cramorant's Gulp Missile: an unshielded charged hit while holding
+            // prey fires a fixed counterattack (15% of the attacker's max HP)
+            // and a guaranteed debuff, then Cramorant drops its catch.
+            if !defenderUsedShield, pokemon[di].hasGulpMissile, pokemon[di].gulpMissileForm != .none {
+                let form = pokemon[di].gulpMissileForm
+                let counterDamage = Int((0.15 * Double(pokemon[ai].stats.hp)).rounded(.down)) + 1
+                pokemon[ai].hp = max(0, pokemon[ai].hp - counterDamage)
+                if pokemon[ai].hp <= 0 { pokemon[ai].faintSource = .charged }
+                if form == .gulping {
+                    pokemon[ai].statBuffs[1] = max(pokemon[ai].statBuffs[1] - 1, -4)   // Arrokuda: Defense -1
+                } else {
+                    pokemon[ai].statBuffs[0] = max(pokemon[ai].statBuffs[0] - 2, -4)   // Pikachu: Attack -2
+                }
+                pokemon[di].gulpMissileForm = .none
             }
         } else {
             pokemon[ai].energy = min(100, pokemon[ai].energy + move.energyGain)

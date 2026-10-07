@@ -41,6 +41,9 @@ struct BenchView: View {
     @State private var cacheTask: Task<Void, Never>?
     @State private var benchFinder = BenchFinderModel()
     @State private var showingBenchResults = false
+    /// Set when a swipe-to-delete is tapped; cleared once the confirmation
+    /// dialog is answered either way.
+    @State private var pendingDelete: BenchEntry?
 
     /// Entries for `league` matching the current search, in the chosen sort
     /// order. `nil` returns the unclassified bucket.
@@ -115,7 +118,7 @@ struct BenchView: View {
     private var addableResults: [Pokemon] {
         guard !searchText.isEmpty else { return [] }
         let q = searchText.trimmingCharacters(in: .whitespaces)
-        return store.allPokemon.filter { p in
+        return store.pokemonForPicker.filter { p in
             !bench.contains(speciesId: p.speciesId, league: addLeague) &&
             p.speciesName.localizedCaseInsensitiveContains(q)
         }
@@ -125,9 +128,22 @@ struct BenchView: View {
         bench.entries.isEmpty && searchText.isEmpty
     }
 
+    /// Per-league (+ unclassified) filtered/sorted entries, computed once per
+    /// body evaluation and shared between the list sections and the "no
+    /// results" check below — `sortedFilteredEntries` re-filters/sorts the
+    /// whole bench, and both call sites previously recomputed it independently.
+    private func computeBuckets() -> (byLeagueId: [Int: [BenchEntry]], unclassified: [BenchEntry]) {
+        var byLeagueId: [Int: [BenchEntry]] = [:]
+        for league in League.allCases {
+            byLeagueId[league.id] = sortedFilteredEntries(for: league)
+        }
+        return (byLeagueId, sortedFilteredEntries(for: nil))
+    }
+
     var body: some View {
+        let buckets = computeBuckets()
         List(selection: $selectedID) {
-            benchSections
+            benchSections(buckets)
             addToBenchSection
         }
         .navigationTitle("My Bench")
@@ -175,6 +191,18 @@ struct BenchView: View {
                 model: benchFinder,
                 onOpenInBuilder: openTeamInBuilder)
         }
+        .confirmationDialog(
+            "Remove \(pendingDelete.map(entryName) ?? "this Pokémon") from your bench?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                guard let entry = pendingDelete else { return }
+                if selectedID == entry.id { selectedID = nil }
+                bench.delete(entry)
+                pendingDelete = nil
+            }
+        }
         .onAppear { refreshSortCache() }
         .onChange(of: bench.entries) { refreshSortCache() }
         .overlay {
@@ -185,8 +213,8 @@ struct BenchView: View {
                     description: Text("Search to add a Pokémon and set its league, IVs and moves.")
                 )
             } else if !searchText.isEmpty
-                        && League.allCases.allSatisfy({ sortedFilteredEntries(for: $0).isEmpty })
-                        && sortedFilteredEntries(for: nil).isEmpty
+                        && buckets.byLeagueId.values.allSatisfy(\.isEmpty)
+                        && buckets.unclassified.isEmpty
                         && addableResults.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             }
@@ -194,13 +222,13 @@ struct BenchView: View {
     }
 
     @ViewBuilder
-    private var benchSections: some View {
+    private func benchSections(_ buckets: (byLeagueId: [Int: [BenchEntry]], unclassified: [BenchEntry])) -> some View {
         ForEach(League.allCases) { league in
-            benchSection(title: league.title + " League", entries: sortedFilteredEntries(for: league))
+            benchSection(title: league.title + " League", entries: buckets.byLeagueId[league.id] ?? [])
         }
         // Fresh scans that could fit several leagues, kept without committing
         // to one yet — see BenchDetailView's league grid to assign one later.
-        benchSection(title: "Unclassified", entries: sortedFilteredEntries(for: nil))
+        benchSection(title: "Unclassified", entries: buckets.unclassified)
     }
 
     @ViewBuilder
@@ -216,8 +244,7 @@ struct BenchView: View {
                         .tag(entry.id)
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
-                                if selectedID == entry.id { selectedID = nil }
-                                bench.delete(entry)
+                                pendingDelete = entry
                             } label: {
                                 Label("Remove", systemImage: "trash")
                             }
@@ -364,6 +391,7 @@ struct BenchDetailView: View {
     @State private var local: BenchEntry?
     @State private var ivRank: IVCalculator.RankResult?
     @State private var rankTask: Task<Void, Never>?
+    @State private var showingDeleteConfirmation = false
 
     private var species: Pokemon? {
         local.flatMap { store.pokemonById[$0.speciesId] }
@@ -414,6 +442,16 @@ struct BenchDetailView: View {
         }
         .onChange(of: rankKey) { _, key in
             computeRank(key: key)
+        }
+        .confirmationDialog(
+            "Remove \(local.map(localDisplayName) ?? "this Pokémon") from your bench?",
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                guard let entry = local else { return }
+                bench.delete(entry)
+            }
         }
     }
 
@@ -704,7 +742,7 @@ struct BenchDetailView: View {
 
     private func deleteButton(entry: BenchEntry) -> some View {
         Button(role: .destructive) {
-            bench.delete(entry)
+            showingDeleteConfirmation = true
         } label: {
             Label("Remove from Bench", systemImage: "trash")
         }
