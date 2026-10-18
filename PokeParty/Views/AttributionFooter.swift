@@ -26,7 +26,7 @@ struct AttributionFooter: View {
             // Rendered as a row rather than the Section's `footer:` slot: on macOS
             // a List footer is laid out with an unbounded width and clips to one
             // line, which `.fixedSize` can't fix. A normal row wraps correctly.
-            Text("PvPoke is open source under the MIT License. PokeParty is an unofficial app and is not affiliated with PvPoke or The Pokémon Company.")
+            Text("PvPoke is open source under the MIT License. PokeParty is an unofficial fan-made tool. It is not affiliated with, endorsed by, or sponsored by PvPoke, Nintendo, Game Freak, The Pokémon Company, or Scopely. Pokémon and Pokémon GO are trademarks of their respective owners.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

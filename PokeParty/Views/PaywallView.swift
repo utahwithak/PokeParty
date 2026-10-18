@@ -2,8 +2,8 @@
 //  PaywallView.swift
 //  PokeParty
 //
-//  Shown in place of Party Finder (and as a prompt near scan buttons) when
-//  the pro unlock hasn't been purchased. Reads EntitlementStore from the
+//  Shown in place of Party Finder (and the Screen Scanner on macOS) when the
+//  pro unlock hasn't been purchased. Reads EntitlementStore from the
 //  environment so no extra parameter threading is needed.
 //
 
@@ -13,12 +13,15 @@ import StoreKit
 struct PaywallView: View {
     @Environment(EntitlementStore.self) private var entitlements
 
-    private let features: [(icon: String, text: String)] = [
-        ("wand.and.stars",      "Party Finder — find the best team from your bench or the PvP meta"),
-        ("brain",               "AI Optimizer — hill-climb movesets against the ranked field"),
-        ("trophy.fill",         "Tournament Simulator — run round-robins and bracket events"),
-        ("camera.viewfinder",   "Screen Scanner — read IVs from iPhone Mirroring automatically"),
-    ]
+    private var features: [(icon: String, text: String)] {
+        var features = [
+            (icon: "wand.and.stars", text: "Party Finder — find the best team from your bench or the PvP meta"),
+        ]
+        #if os(macOS)
+        features.append((icon: "camera.viewfinder", text: "Screen Scanner — read IVs from iPhone Mirroring automatically"))
+        #endif
+        return features
+    }
 
     var body: some View {
         VStack(spacing: 24) {

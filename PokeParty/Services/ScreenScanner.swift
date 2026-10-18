@@ -22,8 +22,7 @@ import Vision
 enum ScanError: LocalizedError {
     case windowNotFound
     case parseFailure
-    case accessibilityDenied
-    case inputSynthesisFailed
+    case ocrUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -31,10 +30,8 @@ enum ScanError: LocalizedError {
             "iPhone Mirroring window not found. Open iPhone Mirroring, navigate to a Pokémon's detail screen, then try again."
         case .parseFailure:
             "Could not read a Pokémon name. Make sure a Pokémon's detail screen is fully visible in iPhone Mirroring."
-        case .accessibilityDenied:
-            "Accessibility permission is required to auto-advance. Grant access in System Settings → Privacy & Security → Accessibility, then try again."
-        case .inputSynthesisFailed:
-            "Couldn't send the swipe gesture to iPhone Mirroring."
+        case .ocrUnavailable:
+            "Text recognition isn't working on this Mac — macOS's on-device text-recognition model looks broken or missing. Test this by selecting text in a photo in Preview or Photos; if that also fails, it's a system issue, not PokeParty. Restarting your Mac or installing the latest macOS update usually fixes it."
         }
     }
 }
@@ -83,17 +80,6 @@ actor ScreenScanner {
         }
     }
 
-    /// The iPhone Mirroring window's current on-screen frame, in the same
-    /// global-display coordinate space `CGEventPost` expects — used to aim
-    /// the auto-advance swipe without capturing a screenshot.
-    private func mirroringWindowFrame() async throws -> CGRect {
-        let content = try await SCShareableContent.current
-        guard let window = findMirroringWindow(in: content) else {
-            throw ScanError.windowNotFound
-        }
-        return window.frame
-    }
-
     /// Frames are throttled to this rate — fast enough that a swipe's
     /// settling animation is caught within a couple of frames, slow enough
     /// that OCR (the actual bottleneck, at ~100-300ms/frame) never
@@ -135,11 +121,10 @@ actor ScreenScanner {
         config.width  = max(Int(window.frame.width  * displayScale), 100)
         config.height = max(Int(window.frame.height * displayScale), 100)
         config.minimumFrameInterval = Self.frameInterval
-        // Without this, moving the real cursor over the mirroring window —
-        // including the drag this same actor posts for auto-advance's own
-        // swipe gesture — composites into the capture and counts as the
-        // display "changing," producing a burst of otherwise-identical
-        // frames that don't actually reflect new content.
+        // Without this, moving the real cursor over the mirroring window
+        // composites into the capture and counts as the display
+        // "changing," producing a burst of otherwise-identical frames that
+        // don't actually reflect new content.
         config.showsCursor = false
         #if DEBUG
         print("[ScreenScanner] Starting frame stream at \(config.width)×\(config.height)px, display scale \(displayScale)×")
@@ -216,82 +201,115 @@ actor ScreenScanner {
         return max(bestScale, 1.0)
     }
 
-    // MARK: - Input synthesis (auto-advance swipe)
-
-    /// Whether this process currently has the Accessibility permission
-    /// needed to post synthetic mouse events into other applications —
-    /// separate from the Screen Recording permission used for capture.
-    /// Passing `prompt: true` shows the system permission dialog (and adds
-    /// the app to the Accessibility list) the first time it's called.
-    func hasAccessibilityAccess(prompt: Bool) -> Bool {
-        AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): prompt] as CFDictionary)
-    }
-
-    /// True when the mouse cursor is currently over the iPhone Mirroring
-    /// window. Each auto-advance swipe relocates the real system cursor (it's
-    /// posted as a genuine drag, not a background event), so auto-advance
-    /// pauses itself once the user's mouse — and presumably attention — has
-    /// moved elsewhere, rather than yanking the cursor back every cycle.
-    func isMouseOverMirroringWindow() async -> Bool {
-        guard let frame = try? await mirroringWindowFrame() else { return false }
-        let location = CGEvent(source: nil)?.location ?? .zero
-        return frame.contains(location)
-    }
-
-    /// Swipes from the mid-right toward the mid-left of the iPhone Mirroring
-    /// window — the gesture Pokémon GO's detail/appraisal screen uses to
-    /// advance to the next Pokémon in the box/list. Vertically centered so
-    /// the drag lands on the card itself rather than a header/status panel
-    /// near the top of the screen, which can swallow the gesture as a tap.
-    func swipeToNextPokemon() async throws {
-        guard hasAccessibilityAccess(prompt: true) else {
-            throw ScanError.accessibilityDenied
-        }
-        let frame = try await mirroringWindowFrame()
-        let y = frame.minY + frame.height * 0.5
-        let start = CGPoint(x: frame.minX + frame.width * 0.85, y: y)
-        let end = CGPoint(x: frame.minX + frame.width * 0.15, y: y)
-        try await postDrag(from: start, to: end)
-    }
-
-    /// Posts a mouseDown at `start`, several interpolated mouseDragged
-    /// events toward `end`, then a mouseUp at `end` — indistinguishable to
-    /// the receiving app from a real trackpad/mouse drag.
-    private func postDrag(from start: CGPoint, to end: CGPoint, steps: Int = 12) async throws {
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
-            throw ScanError.inputSynthesisFailed
-        }
-        func post(_ type: CGEventType, at point: CGPoint) throws {
-            guard let event = CGEvent(
-                mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left
-            ) else {
-                throw ScanError.inputSynthesisFailed
-            }
-            event.post(tap: .cghidEventTap)
-        }
-        try post(.leftMouseDown, at: start)
-        for step in 1...steps {
-            let t = Double(step) / Double(steps)
-            let point = CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t)
-            try post(.leftMouseDragged, at: point)
-            try await Task.sleep(for: .milliseconds(12))
-        }
-        try post(.leftMouseUp, at: end)
-    }
-
     // MARK: - OCR
 
+    /// A Vision text-recognition configuration to try.
+    private struct TextRecognitionConfig: Equatable {
+        var revision: Int
+        var level: VNRequestTextRecognitionLevel
+    }
+
+    /// Configs to try, in order of decreasing capability.
+    ///
+    /// The "accurate" recognition level routes through an on-device neural
+    /// model (the "E5" model, run via the ANE "E5RT" runtime). On some Macs
+    /// that whole pipeline is broken — either the composite model bundle for
+    /// this revision is missing the sub-bundle for this Mac's chip
+    /// ("Unable to find a valid E5... @ GetE5PathFromCompositeBundle"), or
+    /// the bundle resolves fine but inference itself times out / fails
+    /// ("Submit Async failed... Async task... has timed out",
+    /// "e5rt_stream_completion_handler call failed", "CRImageReaderError").
+    /// Which revision is broken varies by machine, so instead of pinning one
+    /// revision we probe and fall back. `.fast` is the escape hatch: it's a
+    /// classic (non-neural) OCR path that doesn't touch E5RT at all, so it
+    /// should keep working even where every "accurate" revision is broken.
+    private static let textConfigFallbacks: [TextRecognitionConfig] = [
+        TextRecognitionConfig(revision: VNRecognizeTextRequestRevision3, level: .accurate),
+        TextRecognitionConfig(revision: VNRecognizeTextRequestRevision2, level: .accurate),
+        TextRecognitionConfig(revision: VNRecognizeTextRequestRevision1, level: .accurate),
+        TextRecognitionConfig(revision: VNRecognizeTextRequestRevision1, level: .fast),
+    ]
+
+    /// The config that last succeeded on this machine, tried first on
+    /// subsequent calls so a live scan session doesn't re-probe every frame.
+    private var workingTextConfig: TextRecognitionConfig?
+
+    /// Set once every fallback config has failed or timed out, meaning
+    /// Vision's on-device text-recognition models are broken on this Mac
+    /// system-wide (not just one revision). Short-circuits later calls so a
+    /// live scan doesn't keep hanging on — and leaking a blocked thread
+    /// per — every subsequent frame once that's already been established.
+    private var ocrConfirmedUnavailable = false
+
+    /// A blocked/hung attempt (see below) is abandoned after this long.
+    private static let ocrAttemptTimeout: Duration = .seconds(4)
+
+    private struct OCRAttemptTimedOut: Error {}
+
     /// Runs Vision text recognition on `image` and returns all text observations.
+    ///
+    /// Tries `textConfigFallbacks` in order (cached winner first), falling
+    /// through to the next on failure, so a broken on-device model on this
+    /// Mac degrades scan quality instead of breaking scanning outright. If
+    /// every fallback fails, gives up for the rest of this scanner's
+    /// lifetime rather than retrying (and potentially re-hanging on) a
+    /// confirmed-broken pipeline on every single frame.
     func recognizeText(in image: CGImage) async throws -> [VNRecognizedTextObservation] {
+        guard !ocrConfirmedUnavailable else { throw ScanError.ocrUnavailable }
+
+        var configs = Self.textConfigFallbacks
+        if let cached = workingTextConfig, let index = configs.firstIndex(of: cached) {
+            configs.remove(at: index)
+            configs.insert(cached, at: 0)
+        }
+
+        for config in configs {
+            do {
+                let results = try await recognizeTextWithTimeout(in: image, using: config)
+                workingTextConfig = config
+                return results
+            } catch {
+                continue
+            }
+        }
+        ocrConfirmedUnavailable = true
+        throw ScanError.ocrUnavailable
+    }
+
+    /// Races a single Vision attempt against a timeout. `VNImageRequestHandler.perform`
+    /// is a synchronous, blocking call — on a Mac with broken on-device
+    /// models it can hang (rather than throw) for a long time ("Async task
+    /// ... has timed out" from Vision's own internal, much longer timeout).
+    /// Running it in a `nonisolated` task keeps that hang off this actor's
+    /// executor, so losing the race doesn't wedge the actor — it just
+    /// abandons that attempt and moves on to the next fallback.
+    private func recognizeTextWithTimeout(
+        in image: CGImage, using config: TextRecognitionConfig
+    ) async throws -> [VNRecognizedTextObservation] {
+        try await withThrowingTaskGroup(of: [VNRecognizedTextObservation].self) { group in
+            group.addTask { try await Self.performVisionRequest(in: image, using: config) }
+            group.addTask {
+                try await Task.sleep(for: Self.ocrAttemptTimeout)
+                throw OCRAttemptTimedOut()
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
+
+    private nonisolated static func performVisionRequest(
+        in image: CGImage, using config: TextRecognitionConfig
+    ) async throws -> [VNRecognizedTextObservation] {
         try await withCheckedThrowingContinuation { cont in
             let request = VNRecognizeTextRequest { req, err in
                 if let err { cont.resume(throwing: err); return }
                 cont.resume(returning: (req.results as? [VNRecognizedTextObservation]) ?? [])
             }
-            request.recognitionLevel = .accurate
+            request.recognitionLevel = config.level
             // Pokémon names aren't English dictionary words — skip language correction.
             request.usesLanguageCorrection = false
             request.recognitionLanguages = ["en-US"]
+            request.revision = config.revision
             do {
                 try VNImageRequestHandler(cgImage: image).perform([request])
             } catch {

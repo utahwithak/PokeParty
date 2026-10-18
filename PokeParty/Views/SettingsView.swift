@@ -135,8 +135,8 @@ struct SettingsView: View {
             Button("Restore Purchases") { restorePurchases() }
         } footer: {
             Text(entitlements.isUnlocked
-                ? "Party Finder, AI Optimizer, Tournament Simulator, and Screen Scanner are unlocked."
-                : "Unlock Party Finder, AI Optimizer, Tournament Simulator, and Screen Scanner. Restore if you've purchased on another device.")
+                ? "Unlocked: \(EntitlementStore.proFeatureList)."
+                : "Unlock \(EntitlementStore.proFeatureList). Restore if you've purchased on another device.")
         }
     }
 

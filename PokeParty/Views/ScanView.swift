@@ -26,7 +26,6 @@ struct ScanLiveView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 statusRow
-                autoAdvanceRow
                 liveContent
                 if !model.history.isEmpty {
                     Divider()
@@ -49,59 +48,6 @@ struct ScanLiveView: View {
             Spacer()
             liveIndicator
         }
-    }
-
-    private var autoAdvanceRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .bottom) {
-                Toggle("Auto-Advance", isOn: Binding(
-                    get: { model.autoAdvance },
-                    set: { model.setAutoAdvance($0) }
-                ))
-                .toggleStyle(.switch)
-                Spacer()
-                Button("Swipe to Next") { model.advanceManually() }
-                    .buttonStyle(.bordered)
-            }
-            // On its own row rather than crammed into the toggle row above —
-            // that squeezed "Swipe to Next" the moment auto-advance was
-            // turned on and this appeared next to it.
-            if model.autoAdvance {
-                HStack(spacing: 6) {
-                    Text("Pause at rank")
-                    TextField("Rank", value: $model.autoAdvanceThreshold, format: .number)
-                        .frame(width: 50)
-                        .textFieldStyle(.roundedBorder)
-                        .labelsHidden()
-                    Text("or better")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            if let reason = model.autoAdvancePausedReason {
-                Label(reason, systemImage: "pause.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            if let error = model.swipeError {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                if model.swipeErrorNeedsAccessibility {
-                    Button("Open Accessibility Settings") { openAccessibilitySettings() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                }
-            }
-        }
-    }
-
-    /// Deep-links straight to Privacy & Security → Accessibility rather than
-    /// leaving the user to hunt for it — the pane's exact location has moved
-    /// around across macOS versions, but this anchor has stayed stable.
-    private func openAccessibilitySettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
-        NSWorkspace.shared.open(url)
     }
 
     @ViewBuilder
@@ -201,7 +147,7 @@ struct ScanLiveView: View {
                 let asEvolved = live.speciesId.flatMap { store.pokemonById[$0]?.speciesName } != hit.speciesName
                 Text("Best rank: #\(hit.rank) — \(hit.league.title) League\(asEvolved ? " as \(hit.speciesName)" : "")")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(hit.rank <= model.autoAdvanceThreshold ? Theme.win : .secondary)
+                    .foregroundStyle(hit.rank <= ScanModel.goodRankThreshold ? Theme.win : .secondary)
                     .monospacedDigit()
             }
 
@@ -256,7 +202,7 @@ struct ScanLiveView: View {
                 let asEvolved = hit.speciesName != entry.speciesName
                 Text("#\(hit.rank) \(hit.league.title)\(asEvolved ? " (\(hit.speciesName))" : "")")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(hit.rank <= model.autoAdvanceThreshold ? Theme.win : .secondary)
+                    .foregroundStyle(hit.rank <= ScanModel.goodRankThreshold ? Theme.win : .secondary)
                     .monospacedDigit()
             }
             Text(entry.date, style: .time)
