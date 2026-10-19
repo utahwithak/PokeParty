@@ -24,6 +24,9 @@ struct ContentView: View {
     #if os(macOS)
     @State private var scanModel = ScanModel()
     #endif
+    #if os(macOS) && BETA_SCAN
+    @State private var autoAdvance = AutoAdvanceModel()
+    #endif
 
     private static let selectionDefaultsKey = "PokeParty.selectedTab"
 
@@ -110,6 +113,14 @@ struct ContentView: View {
                 PaywallView()
             }
         #endif
+        #if os(macOS) && BETA_SCAN
+        case .betaScan:
+            if entitlements.isUnlocked {
+                BetaScanLiveView(store: store, model: scanModel, autoAdvance: autoAdvance)
+            } else {
+                PaywallView()
+            }
+        #endif
         }
     }
 
@@ -159,6 +170,16 @@ struct ContentView: View {
             }
         #if os(macOS)
         case .scan:
+            if entitlements.isUnlocked {
+                ScanGridView(store: store, bench: bench, model: scanModel, onAdded: { benchID in
+                    selectedBenchID = benchID
+                })
+            } else {
+                ContentUnavailableView("", systemImage: "camera.viewfinder")
+            }
+        #endif
+        #if os(macOS) && BETA_SCAN
+        case .betaScan:
             if entitlements.isUnlocked {
                 ScanGridView(store: store, bench: bench, model: scanModel, onAdded: { benchID in
                     selectedBenchID = benchID

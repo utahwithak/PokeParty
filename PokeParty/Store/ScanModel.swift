@@ -128,6 +128,11 @@ final class ScanModel {
     // MARK: - Scanning
 
     private let scanner = ScreenScanner()
+    #if BETA_SCAN
+    /// Called after each newly stable reading is committed — the Beta Scan
+    /// tool hooks auto-advance in here. Compiled out of App Store builds.
+    var onReadingCommitted: (@MainActor () async -> Void)?
+    #endif
     private var liveTask: Task<Void, Never>?
 
     /// One frame's OCR + bar reading, compared against the previous frame's
@@ -252,6 +257,9 @@ final class ScanModel {
                 speciesId: speciesId, candidates: candidates
             ))
             recordHistory(store: store)
+            #if BETA_SCAN
+            await onReadingCommitted?()
+            #endif
         } catch ScanError.ocrUnavailable {
             // Vision's on-device OCR models are confirmed broken on this Mac
             // (every fallback revision/level failed or hung) — retrying on

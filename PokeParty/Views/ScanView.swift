@@ -235,7 +235,10 @@ struct ScanGridView: View {
         guard let id = model.currentSpeciesId else { return [] }
         // A live scan confirms the current stage — you can't devolve, so
         // earlier stages in the line aren't a possible outcome here.
-        return store.family(for: id, excludingPreEvolutions: true)
+        // Each member that can mega evolve is followed by its Mega row(s) —
+        // a Mega keeps the owned Pokémon's IVs, so this shows the CP and
+        // rank it would have after mega evolving.
+        return store.familyIncludingMegas(for: id, excludingPreEvolutions: true)
     }
 
     private var selectedCell: (speciesId: String, league: CheckLeague)? {

@@ -647,7 +647,7 @@ struct BenchDetailView: View {
         IVLeagueGridView(
             // A bench entry is an actual caught Pokémon at a known stage —
             // earlier stages in the line aren't reachable from here either.
-            family: store.family(for: sp.speciesId, excludingPreEvolutions: true),
+            family: store.familyIncludingMegas(for: sp.speciesId, excludingPreEvolutions: true),
             ivs: ivs,
             onSelect: { _, league in
                 local?.league = League(rawValue: league.cap)

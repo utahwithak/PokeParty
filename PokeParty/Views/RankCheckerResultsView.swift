@@ -14,7 +14,7 @@ struct RankCheckerResultsView: View {
 
     private var family: [Pokemon] {
         guard let id = model.selectedSpeciesId else { return [] }
-        return store.family(for: id)
+        return store.familyIncludingMegas(for: id)
     }
 
     var body: some View {

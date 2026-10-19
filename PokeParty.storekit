@@ -1,0 +1,33 @@
+{
+  "identifier" : "A1B2C3D4",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "4.99",
+      "familyShareable" : false,
+      "internalID" : "6F3A1C20",
+      "localizations" : [
+        {
+          "description" : "Unlocks Party Finder and Screen Scanner.",
+          "displayName" : "PokeParty Pro",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.freebits.pokeparty.pro",
+      "referenceName" : "PokeParty Pro",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

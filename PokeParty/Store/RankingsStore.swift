@@ -390,6 +390,16 @@ final class RankingsStore {
         return members.isEmpty ? [pokemon] : members
     }
 
+    /// `family(for:)` with each member's Mega Evolution row(s) placed right
+    /// after it — a Mega keeps the owned Pokémon's IVs, so IV grids use this
+    /// to show the CP and rank it would have after mega evolving.
+    func familyIncludingMegas(for id: String, excludingPreEvolutions: Bool = false) -> [Pokemon] {
+        var seen: Set<String> = []
+        return family(for: id, excludingPreEvolutions: excludingPreEvolutions).flatMap { member in
+            member.isMegaEvolution ? [member] : [member] + megaEvolutions(for: member.speciesId)
+        }.filter { seen.insert($0.speciesId).inserted }
+    }
+
     // MARK: - Live matchup simulation
 
     /// Resolves the species (and shadow flag) for a ranking-entry species id.

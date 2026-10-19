@@ -67,7 +67,7 @@ actor ScreenScanner {
     /// Priority 2: Any ScreenContinuity window large enough to be the mirroring viewport
     ///             (excludes the tiny menu-bar status icon at ~54×54).
     /// Priority 3: Any window with "iPhone Mirroring" in the title as a last resort.
-    private func findMirroringWindow(in content: SCShareableContent) -> SCWindow? {
+    func findMirroringWindow(in content: SCShareableContent) -> SCWindow? {
         content.windows.first {
             $0.owningApplication?.bundleIdentifier == "com.apple.ScreenContinuity"
                 && $0.title == "iPhone Mirroring"
