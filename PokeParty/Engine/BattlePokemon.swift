@@ -9,11 +9,40 @@
 import Foundation
 
 nonisolated struct BattlePokemon {
-    let speciesId: String
-    let speciesName: String
-    let types: [String]
-    /// Indices of `types` in `TypeChart.allTypes` (excluding "none").
-    let typeIndices: [Int]
+    /// The immutable per-species data, held by reference so copying a
+    /// `BattlePokemon` (hot in the AI/battle loops) is one retain rather than
+    /// one per String/array field.
+    final class Profile: Sendable {
+        let speciesId: String
+        let speciesName: String
+        let types: [String]
+        /// Indices of `types` in `TypeChart.allTypes` (excluding "none").
+        let typeIndices: [Int]
+        /// Effectiveness of each attacking type against this Pokémon, indexed
+        /// by `TypeChart.allTypes` position.
+        let typeEffectiveness: [Double]
+
+        init(speciesId: String, speciesName: String, types: [String]) {
+            self.speciesId = speciesId
+            self.speciesName = speciesName
+            let lowered = types.map { $0.lowercased() }
+            self.types = lowered
+            let indices = lowered.map(TypeChart.index(of:)).filter { $0 >= 0 }
+            self.typeIndices = indices
+            let n = TypeChart.allTypes.count
+            var cache = [Double](repeating: 1, count: n)
+            for a in 0..<n {
+                for d in indices { cache[a] *= TypeChart.matrix[a * n + d] }
+            }
+            self.typeEffectiveness = cache
+        }
+    }
+
+    private let profile: Profile
+    var speciesId: String { profile.speciesId }
+    var speciesName: String { profile.speciesName }
+    var types: [String] { profile.types }
+    var typeIndices: [Int] { profile.typeIndices }
     let shadow: Bool
     /// Has Mimikyu's Disguise (blocks one charged move).
     let hasDisguise: Bool
@@ -75,17 +104,10 @@ nonisolated struct BattlePokemon {
     let shadowAtkMult: Double
     let shadowDefMult: Double
 
-    /// Effectiveness of each attacking type against this Pokémon, indexed by
-    /// `TypeChart.allTypes` position.
-    private var typeEffectivenessCache: [Double] = []
-
     init(speciesId: String, speciesName: String, types: [String], shadow: Bool,
          hasDisguise: Bool = false, hasGulpMissile: Bool = false,
          stats: Stats, fastMove: BattleMove, chargedMoves: [BattleMove]) {
-        self.speciesId = speciesId
-        self.speciesName = speciesName
-        self.types = types.map { $0.lowercased() }
-        self.typeIndices = self.types.map(TypeChart.index(of:)).filter { $0 >= 0 }
+        self.profile = Profile(speciesId: speciesId, speciesName: speciesName, types: types)
         self.shadow = shadow
         self.hasDisguise = hasDisguise
         self.hasGulpMissile = hasGulpMissile
@@ -94,24 +116,14 @@ nonisolated struct BattlePokemon {
         self.chargedMoves = chargedMoves
         self.shadowAtkMult = shadow ? DamageMultiplier.shadowAtk : 1
         self.shadowDefMult = shadow ? DamageMultiplier.shadowDef : 1
-        precomputeTypeEffectiveness()
     }
 
     // MARK: - Type effectiveness (as defender)
 
-    private mutating func precomputeTypeEffectiveness() {
-        let n = TypeChart.allTypes.count
-        var cache = [Double](repeating: 1, count: n)
-        for a in 0..<n {
-            for d in typeIndices { cache[a] *= TypeChart.matrix[a * n + d] }
-        }
-        typeEffectivenessCache = cache
-    }
-
     /// Effectiveness of an attacking type (`TypeChart.allTypes` index) against
     /// this Pokémon; -1 (unknown type) is neutral.
     func typeEffectiveness(forTypeIndex index: Int) -> Double {
-        index >= 0 ? typeEffectivenessCache[index] : 1
+        index >= 0 ? profile.typeEffectiveness[index] : 1
     }
 
     // MARK: - Stats & buffs

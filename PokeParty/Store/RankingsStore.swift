@@ -160,6 +160,27 @@ final class RankingsStore {
         await loadRankings(policy: policy)
     }
 
+    /// Listens for background revalidations that downloaded changed data and
+    /// reloads whatever is on screen, so the cached/bundled copy shown at
+    /// launch is replaced as soon as fresher data lands. Run for the app's
+    /// lifetime (e.g. from a `.task`).
+    func observeDataUpdates() async {
+        for await path in service.updates {
+            if path == "gamemaster.json" {
+                // Everything derives from the gamemaster — rebuild from the
+                // freshly cached copy (which also re-checks local rankings).
+                gameMasterLoaded = false
+                rankingsCache.removeAll()
+                await load()
+            } else if let stale = rankingsCache.keys.first(where: { $0.rankingsPath == path }) {
+                rankingsCache[stale] = nil
+                if stale == format { await loadRankings() }
+            } else if path == format.rankingsPath {
+                await loadRankings()
+            }
+        }
+    }
+
     /// Re-checks the server for newer data (cheap ETag revalidation).
     func refresh() async {
         gameMasterLoaded = false
@@ -170,6 +191,7 @@ final class RankingsStore {
     /// Wipes the on-disk cache and re-downloads everything from scratch.
     func rebuildCache() async {
         await service.clearCache()
+        await localRankingBuilder.clearCache()
         gameMasterLoaded = false
         rankingsCache.removeAll()
         await load(policy: .reload)
@@ -203,6 +225,7 @@ final class RankingsStore {
         guard gameMasterLoaded else { return }
 
         if rankingSource == .local {
+            await localRankingBuilder.ensureLoaded()
             if let local = localRankingBuilder.cachedEntries(formatId: format.id, gameMasterHash: gameMasterHash) {
                 entries = local
                 phase = .loaded

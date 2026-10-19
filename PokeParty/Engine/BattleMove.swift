@@ -12,9 +12,29 @@ import Foundation
 /// `buffApplyMeter` during simulation (written back through the owning
 /// BattlePokemon's stored arrays, eliminating ARC overhead).
 nonisolated struct BattleMove {
-    let moveId: String
-    let name: String
-    let type: String
+    /// The immutable, string-heavy half of a move. Held by reference so copying
+    /// a `BattleMove` (which the engine does constantly) is one retain instead
+    /// of one per String/array field.
+    final class Static: Sendable {
+        let moveId: String
+        let name: String
+        let type: String
+        let buffs: [Int]?
+        let buffTarget: String?
+
+        init(moveId: String, name: String, type: String, buffs: [Int]?, buffTarget: String?) {
+            self.moveId = moveId
+            self.name = name
+            self.type = type
+            self.buffs = buffs
+            self.buffTarget = buffTarget
+        }
+    }
+
+    private let shared: Static
+    var moveId: String { shared.moveId }
+    var name: String { shared.name }
+    var type: String { shared.type }
     /// Index of `type` in `TypeChart.allTypes` (-1 if unknown) for flat lookups.
     let typeIndex: Int
     let power: Int
@@ -24,8 +44,8 @@ nonisolated struct BattleMove {
     let turns: Int           // duration in 500ms turns (fast moves)
 
     // Buff effects
-    let buffs: [Int]?
-    let buffTarget: String?  // "self" | "opponent" | "both"
+    var buffs: [Int]? { shared.buffs }
+    var buffTarget: String? { shared.buffTarget }
     let buffApplyChance: Double
     let selfDebuffing: Bool
     let selfBuffing: Bool
@@ -41,10 +61,8 @@ nonisolated struct BattleMove {
     var isFast: Bool { energy == 0 }
 
     init(from move: Move) {
-        moveId = move.moveId
-        name = move.name
-        type = move.type.lowercased()
-        typeIndex = TypeChart.index(of: type)
+        let lowercasedType = move.type.lowercased()
+        typeIndex = TypeChart.index(of: lowercasedType)
         power = move.power
         energy = move.energy
         energyGain = move.energyGain
@@ -53,8 +71,9 @@ nonisolated struct BattleMove {
         cooldown = move.cooldown
 
         let b = move.buffs
-        buffs = b
-        buffTarget = move.buffTarget
+        shared = Static(
+            moveId: move.moveId, name: move.name, type: lowercasedType,
+            buffs: b, buffTarget: move.buffTarget)
         let chance = Double(move.buffApplyChanceValue ?? 0)
         buffApplyChance = chance
 

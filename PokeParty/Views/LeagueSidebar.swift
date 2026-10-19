@@ -54,7 +54,9 @@ enum SidebarSelection: Hashable {
         case "teamBuilder": return .teamBuilder
         case "partyFinder": return .partyFinder
         case "matchup": return .matchup
-        case "breakpoints": return .breakpoints
+        // "breakpoints" intentionally unresolved: the tab is pulled from
+        // this release's sidebar, so a persisted selection from before the
+        // update shouldn't restore to a now-unreachable screen.
         case "bench": return .bench
         #if os(macOS)
         case "scan": return .scan
@@ -107,8 +109,6 @@ struct LeagueSidebar: View {
                     .tag(SidebarSelection.partyFinder)
                 Label("1v1 Simulator", systemImage: "bolt.horizontal.fill")
                     .tag(SidebarSelection.matchup)
-                Label("Breakpoints", systemImage: "stairs")
-                    .tag(SidebarSelection.breakpoints)
                 #if os(macOS)
                 Label("Scan", systemImage: "camera.viewfinder")
                     .tag(SidebarSelection.scan)
@@ -139,21 +139,12 @@ struct LeagueSidebar: View {
                     showingSettings = true
                 } label: {
                     Label("Settings", systemImage: "gearshape.fill")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
-                if case .building(let formatTitle) = store.localRankingBuilder.phase {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Updating local rankings…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ProgressView(value: store.localRankingBuilder.progress)
-                            .labelsHidden()
-                        Text(formatTitle)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
+                LocalBuildProgressRow(builder: store.localRankingBuilder)
             }
         }
         .navigationTitle("PokeParty")
@@ -185,5 +176,31 @@ struct LeagueSidebar: View {
                 .foregroundStyle(format.tint)
         }
         .tag(SidebarSelection.format(format))
+    }
+}
+
+/// The "Updating local rankings…" row. Its own view so the frequent
+/// `progress` ticks only re-evaluate this row, not the whole sidebar `List`
+/// (which re-diffed every row on each tick during the startup build).
+private struct LocalBuildProgressRow: View {
+    let builder: LocalRankingBuilder
+
+    var body: some View {
+        if case .failed(let message) = builder.phase {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if case .building(let formatTitle) = builder.phase {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Updating local rankings…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ProgressView(value: builder.progress)
+                    .labelsHidden()
+                Text(formatTitle)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
     }
 }

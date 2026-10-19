@@ -80,6 +80,18 @@ nonisolated enum MatchupSimulator {
         return (battle.battleRating(forIndex: 0), battle.battleRating(forIndex: 1))
     }
 
+    /// Rates two already-built sides. Callers that run many battles against
+    /// the same Pokémon (the ranker's N×N matrix, moveset selection) build
+    /// each `BattlePokemon` once and reuse it here — `Battle` copies its
+    /// inputs and `reset` re-derives all battle state, so reuse is safe.
+    static func rate(
+        prepared pa: BattlePokemon, _ pb: BattlePokemon
+    ) -> (a: Int, b: Int) {
+        let battle = Battle(pa, pb)
+        battle.simulate()
+        return (battle.battleRating(forIndex: 0), battle.battleRating(forIndex: 1))
+    }
+
     /// Convenience: computes stats then rates (used in one-off simulations).
     static func rate(
         _ a: Combatant, _ b: Combatant,

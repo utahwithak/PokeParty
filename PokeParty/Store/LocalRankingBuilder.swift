@@ -69,8 +69,35 @@ final class LocalRankingBuilder {
     init(directory: URL? = nil) {
         self.directory = directory ?? Self.defaultDirectory
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
-        loadAllFromDisk()
-        seedBundledIfMissing()
+        // Decoding the cached rankings is tens of ms of JSON — kept off the
+        // main thread. Anything that reads `cache` awaits `ensureLoaded()`.
+        Task { await ensureLoaded() }
+    }
+
+    /// Where the per-format cache files live (for the DEBUG "reveal" action).
+    var cacheDirectory: URL { directory }
+
+    private var isLoaded = false
+    private var loadTask: Task<Void, Never>?
+
+    /// Loads the disk cache (and bundled seeds) once, off the main actor.
+    func ensureLoaded() async {
+        if isLoaded { return }
+        if loadTask == nil {
+            let directory = directory
+            loadTask = Task {
+                let loaded = await Task.detached(priority: .utility) {
+                    Self.readCacheFromDisk(directory: directory)
+                }.value
+                for entry in loaded { cache[entry.formatId] = entry }
+                let seeds = await Task.detached(priority: .utility) { [existing = Set(cache.keys)] in
+                    Self.readBundledSeeds(excluding: existing)
+                }.value
+                for entry in seeds where cache[entry.formatId] == nil { cache[entry.formatId] = entry }
+                isLoaded = true
+            }
+        }
+        await loadTask?.value
     }
 
     // MARK: - Reads
@@ -93,6 +120,16 @@ final class LocalRankingBuilder {
 
     // MARK: - Background rebuild
 
+    /// Drops every cached local ranking (memory and disk) so the next
+    /// `rebuildCoreLeaguesIfStale`/`buildIfStale` recomputes from scratch.
+    func clearCache() async {
+        cancel()
+        await ensureLoaded()
+        cache.removeAll()
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        for file in files where file.pathExtension == "json" { try? FileManager.default.removeItem(at: file) }
+    }
+
     func cancel() {
         runTask?.cancel()
         runTask = nil
@@ -103,11 +140,12 @@ final class LocalRankingBuilder {
     /// the background. Safe to call every launch — a no-op once caches are
     /// current for this gamemaster version.
     func rebuildCoreLeaguesIfStale(context: GameMasterContext) {
-        let staleFormats = RankingFormat.coreLeagues.filter { isStale(formatId: $0.id, gameMasterHash: context.hash) }
-        guard !staleFormats.isEmpty, !isRunning else { return }
+        guard !isRunning else { return }
 
         runTask?.cancel()
         runTask = Task {
+            await ensureLoaded()
+            let staleFormats = RankingFormat.coreLeagues.filter { isStale(formatId: $0.id, gameMasterHash: context.hash) }
             for format in staleFormats {
                 if Task.isCancelled { return }
                 await build(format: format, context: context)
@@ -122,10 +160,13 @@ final class LocalRankingBuilder {
     /// already running, this is a no-op now, but `onIdle` fires when that
     /// run finishes so the caller gets a chance to re-request it.
     func buildIfStale(format: RankingFormat, context: GameMasterContext) {
-        guard isStale(formatId: format.id, gameMasterHash: context.hash), !isRunning else { return }
+        guard !isRunning else { return }
         runTask?.cancel()
         runTask = Task {
-            await build(format: format, context: context)
+            await ensureLoaded()
+            if isStale(formatId: format.id, gameMasterHash: context.hash) {
+                await build(format: format, context: context)
+            }
             if !Task.isCancelled, !phase.isFailed { phase = .done }
             onIdle?()
         }
@@ -156,7 +197,10 @@ final class LocalRankingBuilder {
         let greatLeagueIneligible = context.greatLeagueIneligible
         let movesById = context.movesById
 
-        let result = await Task.detached { () -> [RankingEntry] in
+        // `.utility` keeps this background build from competing with the UI
+        // (and the rest of the system) for CPU; `Ranker` also caps its own
+        // parallelism at half the cores via `BoundedParallel`.
+        let result = await Task.detached(priority: .utility) { () -> [RankingEntry] in
             let pool = MetaPool.eligiblePokemon(
                 for: cup, cpCap: cpCap, allPokemon: allPokemon,
                 greatLeagueIneligible: greatLeagueIneligible)
@@ -185,13 +229,11 @@ final class LocalRankingBuilder {
         directory.appendingPathComponent("\(formatId).json")
     }
 
-    private func loadAllFromDisk() {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
-        for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file),
-                  let entry = try? JSONDecoder().decode(LocalRankingCacheEntry.self, from: data)
-            else { continue }
-            cache[entry.formatId] = entry
+    private nonisolated static func readCacheFromDisk(directory: URL) -> [LocalRankingCacheEntry] {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return [] }
+        return files.filter { $0.pathExtension == "json" }.compactMap { file in
+            guard let data = try? Data(contentsOf: file) else { return nil }
+            return try? JSONDecoder().decode(LocalRankingCacheEntry.self, from: data)
         }
     }
 
@@ -204,20 +246,18 @@ final class LocalRankingBuilder {
     /// fresh install has *some* local ranking immediately rather than a
     /// "computing…" spinner on first launch — mirrors
     /// `DataService.seedBundledDataIfNeeded`. Never overwrites a real disk
-    /// cache entry. There's nothing to seed until a maintainer generates
-    /// `seed_local_ranking_*.json` via the DEBUG "Export Local Rankings"
-    /// action and adds it to `Resources/` (see docs/RELEASE_CHECKLIST.md) —
-    /// until then this is a no-op and the background builder computes from
-    /// scratch on first launch.
-    private func seedBundledIfMissing() {
-        for cp in [1500, 2500, 10000] {
-            let formatId = "all-\(cp)"
-            guard cache[formatId] == nil,
+    /// cache entry. There's nothing to seed until a maintainer copies the
+    /// built cache files into `Resources/` as `seed_local_ranking_*.json`
+    /// (see docs/RELEASE_CHECKLIST.md) — until then this is a no-op and the
+    /// background builder computes from scratch on first launch. A seed only
+    /// helps while its gamemaster hash matches the data in use.
+    private nonisolated static func readBundledSeeds(excluding existing: Set<String>) -> [LocalRankingCacheEntry] {
+        [1500, 2500, 10000].compactMap { cp in
+            guard !existing.contains("all-\(cp)"),
                   let url = Bundle.main.url(forResource: "seed_local_ranking_\(cp)", withExtension: "json"),
-                  let data = try? Data(contentsOf: url),
-                  let entry = try? JSONDecoder().decode(LocalRankingCacheEntry.self, from: data)
-            else { continue }
-            cache[formatId] = entry
+                  let data = try? Data(contentsOf: url)
+            else { return nil }
+            return try? JSONDecoder().decode(LocalRankingCacheEntry.self, from: data)
         }
     }
 }

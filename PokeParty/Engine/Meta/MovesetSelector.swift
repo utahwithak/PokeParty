@@ -36,15 +36,27 @@ nonisolated enum MovesetSelector {
     ) async -> [MatchupSimulator.Combatant] {
         let n = pool.count
         var products = [Double](repeating: 0, count: n)
-        await withTaskGroup(of: (Int, Double).self) { group in
-            for i in 0..<n {
-                let species = pool[i]
-                group.addTask { (i, MetaPool.statProduct(for: species, cpCap: cpCap)) }
-            }
-            for await (i, product) in group { products[i] = product }
+        await BoundedParallel.run(count: n, of: (Int, Double).self) { i in
+            (i, MetaPool.statProduct(for: pool[i], cpCap: cpCap))
+        } consume: { i, product in
+            products[i] = product
         }
         let rankedIndices = pool.indices.sorted { products[$0] > products[$1] }
         return rankedIndices.prefix(probeSize).compactMap { naiveCombatant(for: pool[$0]) }
+    }
+
+    /// The probe field as ready-to-battle sides (1 shield each, the Team
+    /// Builder's default scenario). Build once per ranking run and share across
+    /// every species' `select` — the IV-optimal stat sweep per probe member is
+    /// far too expensive to repeat per species.
+    static func preparedProbe(
+        _ probe: [MatchupSimulator.Combatant], cpCap: Int, movesById: [String: Move]
+    ) -> [BattlePokemon] {
+        probe.compactMap { opponent in
+            guard let stats = MatchupSimulator.optimalStats(for: opponent, cpCap: cpCap) else { return nil }
+            return MatchupSimulator.makeBattlePokemon(
+                opponent, stats: stats, movesById: movesById, shields: 1)
+        }
     }
 
     /// The best-scoring fast/charged combo for `species` against `probe`
@@ -54,6 +66,16 @@ nonisolated enum MovesetSelector {
         species: Pokemon, shadow: Bool, cpCap: Int,
         probe: [MatchupSimulator.Combatant], movesById: [String: Move]
     ) -> Result? {
+        select(
+            species: species, shadow: shadow, cpCap: cpCap,
+            preparedProbe: preparedProbe(probe, cpCap: cpCap, movesById: movesById),
+            movesById: movesById)
+    }
+
+    static func select(
+        species: Pokemon, shadow: Bool, cpCap: Int,
+        preparedProbe: [BattlePokemon], movesById: [String: Move]
+    ) -> Result? {
         guard let stats = MatchupSimulator.optimalStats(
             for: .init(species: species, shadow: shadow, fastMoveId: "", chargedMoveIds: []),
             cpCap: cpCap
@@ -62,10 +84,6 @@ nonisolated enum MovesetSelector {
         let candidates = candidateMovesets(for: species)
         guard !candidates.isEmpty else { return nil }
 
-        // Opponent stats depend only on `probe`/`cpCap`, not on the candidate
-        // moveset being scored — compute once instead of once per candidate.
-        let probeStats = probe.map { MatchupSimulator.optimalStats(for: $0, cpCap: cpCap) }
-
         var best: Result?
         var bestScore = -Double.infinity
 
@@ -73,20 +91,16 @@ nonisolated enum MovesetSelector {
             let combatant = MatchupSimulator.Combatant(
                 species: species, shadow: shadow,
                 fastMoveId: candidate.fastMoveId, chargedMoveIds: candidate.chargedMoveIds)
+            guard let me = MatchupSimulator.makeBattlePokemon(
+                combatant, stats: stats, movesById: movesById, shields: 1)
+            else { continue }
 
             var total = 0.0
-            var count = 0
-            for (opponent, opponentStats) in zip(probe, probeStats) {
-                guard let opponentStats,
-                      let r = MatchupSimulator.rate(
-                        combatant, statsA: stats, opponent, statsB: opponentStats,
-                        movesById: movesById, shieldsA: 1, shieldsB: 1)
-                else { continue }
-                total += Double(r.a)
-                count += 1
+            for opponent in preparedProbe {
+                total += Double(MatchupSimulator.rate(prepared: me, opponent).a)
             }
-            guard count > 0 else { continue }
-            let score = total / Double(count)
+            guard !preparedProbe.isEmpty else { continue }
+            let score = total / Double(preparedProbe.count)
             if score > bestScore {
                 bestScore = score
                 best = candidate

@@ -45,6 +45,9 @@ nonisolated enum League: Int, CaseIterable, Identifiable, Codable {
 /// listed in gamemaster's `formats`. Rankings live at
 /// `rankings/{cup}/overall/rankings-{cp}.json`; core leagues use cup "all".
 nonisolated struct RankingFormat: Decodable, Hashable, Identifiable {
+    /// Path of this format's rankings file, relative to PvPoke's data root.
+    var rankingsPath: String { "rankings/\(cup)/overall/rankings-\(cp).json" }
+
     let title: String
     let cup: String
     let cp: Int

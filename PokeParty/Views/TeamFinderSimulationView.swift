@@ -68,7 +68,7 @@ struct TeamFinderSimulationView: View {
 
     private var caption: String {
         let league = format.map { "\($0.title) — " } ?? ""
-        let field = "a full round robin between the \(standings.totalEntrants) most promising teams from the top \(poolSize) ranked Pokémon"
+        let field = "a full round robin between the \(standings.totalEntrants) most promising teams from the \(TeamFinderModel.poolDescription(poolSize)) of ranked Pokémon"
         if standings.isComplete {
             return "\(league)final standings of \(field): every record is measured against the entire field. The first member is the lead."
         }
@@ -259,7 +259,7 @@ struct OptimizerResultsView: View {
 
     private var caption: String {
         let league = format.map { "\($0.title) — " } ?? ""
-        let base = "top \(poolSize) ranked Pokémon including alternate movesets"
+        let base = "\(TeamFinderModel.poolDescription(poolSize)) ranked Pokémon including alternate movesets"
         if results.isComplete {
             return "\(league)best teams from \(results.totalClimbers) hill-climbs over the \(base), ranked by expected score vs the meta field. The first member is the lead."
         }
@@ -375,7 +375,7 @@ struct GradedTeamsView: View {
 
     private var caption: String {
         let league = format.map { "\($0.title) — " } ?? ""
-        let base = "\(league)every trio from the top \(poolSize) ranked Pokémon, graded with the Team Builder's static analysis (no battle simulations)."
+        let base = "\(league)every trio from the \(TeamFinderModel.poolDescription(poolSize)) of ranked Pokémon, graded with the Team Builder's static analysis (no battle simulations)."
         if aaaaTeams.isEmpty {
             return "\(base) No trio grades A in all of Coverage, Bulk, Safety and Consistency, so these are the teams whose worst grade is best. The first member is the lead."
         }

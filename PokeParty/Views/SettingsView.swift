@@ -73,6 +73,13 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            #if DEBUG && os(macOS)
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([store.localRankingBuilder.cacheDirectory])
+            } label: {
+                Label("Reveal Local Rankings Cache", systemImage: "folder")
+            }
+            #endif
         } header: {
             Text("Ranking Order")
         } footer: {

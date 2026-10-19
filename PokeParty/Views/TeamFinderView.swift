@@ -46,7 +46,7 @@ struct TeamFinderView: View {
             Section("Candidate pool") {
                 Picker("Top ranked Pokémon", selection: Bindable(model).poolSize) {
                     ForEach(TeamFinderModel.poolSizes, id: \.self) { size in
-                        Text("Top \(size)").tag(size)
+                        Text(size >= TeamFinderModel.fullListPoolSize ? "Full list (very slow)" : "Top \(size)").tag(size)
                     }
                 }
                 .disabled(model.isRunning)
@@ -61,7 +61,7 @@ struct TeamFinderView: View {
                 .disabled(model.isRunning)
 
                 if model.method == .gradeCheck {
-                    Text("Every trio from the pool (\(model.estimatedTrios.formatted()) teams) is graded with the Team Builder's static analysis — Coverage, Bulk, Safety and Consistency — and the teams graded A across the board are listed. Pairwise 1v1 matchups only; no 3v3 battle simulations.")
+                    Text("Every trio from the pool (\(model.poolSize >= TeamFinderModel.fullListPoolSize ? "potentially millions of" : model.estimatedTrios.formatted()) teams) is graded with the Team Builder's static analysis — Coverage, Bulk, Safety and Consistency — and the teams graded A across the board are listed. Pairwise 1v1 matchups only; no 3v3 battle simulations.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if model.method == .combined {
@@ -112,6 +112,11 @@ struct TeamFinderView: View {
                             ProgressView(value: model.progress) {
                                 Text(seedingLabel)
                             }
+                        }
+                        if let eta = model.eta.label {
+                            Text(eta)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         Button("Cancel", role: .cancel) { model.cancel() }
                     }
@@ -197,18 +202,29 @@ struct TeamFinderView: View {
     private var lockedPokemonSection: some View {
         Section {
             ForEach(model.lockedMembers) { member in
-                HStack(spacing: 10) {
-                    Text(store.name(forSpeciesId: member.speciesId))
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-                    Spacer()
-                    Button {
-                        model.unlockMember(member)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 10) {
+                        Text(store.name(forSpeciesId: member.speciesId))
+                            .font(.body.weight(.medium))
+                            .lineLimit(1)
+                        Spacer()
+                        Button {
+                            model.unlockMember(member)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    if let species = store.pokemonById[member.speciesId],
+                       species.isShadow || species.isShadowEligible || member.shadow {
+                        Toggle("Shadow", isOn: Binding(
+                            get: { member.shadow },
+                            set: { model.setLockedMemberShadow($0, for: member) }))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .font(.caption)
+                    }
                 }
             }
             .disabled(model.isRunning)
@@ -242,18 +258,29 @@ struct TeamFinderView: View {
     private var strongAgainstSection: some View {
         Section {
             ForEach(model.strongAgainstMembers) { member in
-                HStack(spacing: 10) {
-                    Text(store.name(forSpeciesId: member.speciesId))
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-                    Spacer()
-                    Button {
-                        model.removeStrongAgainst(member)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 10) {
+                        Text(store.name(forSpeciesId: member.speciesId))
+                            .font(.body.weight(.medium))
+                            .lineLimit(1)
+                        Spacer()
+                        Button {
+                            model.removeStrongAgainst(member)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    if let species = store.pokemonById[member.speciesId],
+                       species.isShadow || species.isShadowEligible || member.shadow {
+                        Toggle("Shadow", isOn: Binding(
+                            get: { member.shadow },
+                            set: { model.setStrongAgainstShadow($0, for: member) }))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .font(.caption)
+                    }
                 }
             }
             .disabled(model.isRunning)
@@ -411,7 +438,7 @@ private struct SavedTournamentRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.formatTitle)
                         .font(.subheadline.weight(.medium))
-                    Text("Top \(run.poolSize) pool · \(run.fieldSize)-team field · \(run.date.formatted(date: .abbreviated, time: .shortened))")
+                    Text("\(TeamFinderModel.poolDescription(run.poolSize).capitalized) pool · \(run.fieldSize)-team field · \(run.date.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -442,7 +469,7 @@ private struct SavedOptimizerRunRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.formatTitle)
                         .font(.subheadline.weight(.medium))
-                    Text("Top \(run.poolSize) pool · \(run.restarts) restarts · \(run.date.formatted(date: .abbreviated, time: .shortened))")
+                    Text("\(TeamFinderModel.poolDescription(run.poolSize).capitalized) pool · \(run.restarts) restarts · \(run.date.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

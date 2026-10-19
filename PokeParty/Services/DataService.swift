@@ -16,10 +16,13 @@ import SwiftData
 /// and pinned to a ref we control instead of "whatever's live right now."
 ///
 /// PvPoke's data changes only every few months, so blobs are persisted via
-/// `ResourceCache` (SwiftData, in Application Support). A long freshness window
-/// avoids the network entirely most launches; when stale, the resource is
-/// revalidated cheaply with an HTTP ETag (a 304 just refreshes the timestamp).
-/// On any network failure, a stale cache is used so the app works offline.
+/// `ResourceCache` (SwiftData, in Application Support). Any decodable cached
+/// or seeded blob — fresh or stale — is returned immediately; a stale one
+/// also kicks off a background revalidation via HTTP ETag (a 304 just
+/// refreshes the timestamp) so next launch is current. This means a slow or
+/// stalled connection (common on cellular) can never leave the UI hanging on
+/// a spinner as long as *any* cached/seeded copy exists — only a genuinely
+/// first-ever load with no seed data blocks on the network.
 actor DataService {
     static let shared = DataService()
 
@@ -57,6 +60,12 @@ actor DataService {
     private let cache: ResourceCache?
     private var hasSeeded = false
 
+    /// Emits a resource path whenever a background revalidation downloads
+    /// data that differs from what was already cached/shown, so the UI can
+    /// reload it instead of waiting for the next launch.
+    nonisolated let updates: AsyncStream<String>
+    private let updatesContinuation: AsyncStream<String>.Continuation
+
     /// Bundled fallbacks for a fresh install (or a cleared cache) so the app
     /// has something to show before any network call succeeds — see
     /// `seedBundledDataIfNeeded()`. Cups aren't seeded since they rotate and
@@ -71,13 +80,23 @@ actor DataService {
     ]
 
     init() {
+        (updates, updatesContinuation) = AsyncStream.makeStream(of: String.self)
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 30
         session = URLSession(configuration: config)
 
+        // This is a local blob cache only — never sync it via CloudKit.
+        // Without an explicit `.none`, SwiftData's automatic container
+        // discovery can key off the app's other iCloud entitlements (used by
+        // SavedTeamsStore/BenchStore's NSUbiquitousKeyValueStore sync) and
+        // attempt CloudKit setup for this store too, which can hang
+        // indefinitely waiting on account resolution when no iCloud account
+        // is signed in (a fresh simulator, or a signed-out device) — the
+        // actual cause of rankings never loading on a cold iOS install.
+        let modelConfig = ModelConfiguration(cloudKitDatabase: .none)
         // Persistent store in Application Support; nil disables caching gracefully.
-        if let container = try? ModelContainer(for: CachedResource.self) {
+        if let container = try? ModelContainer(for: CachedResource.self, configurations: modelConfig) {
             cache = ResourceCache(modelContainer: container)
         } else {
             cache = nil
@@ -100,12 +119,15 @@ actor DataService {
     }
 
     func rankings(for format: RankingFormat, policy: LoadPolicy = .cache) async throws -> [RankingEntry] {
-        try await load(path: "rankings/\(format.cup)/overall/rankings-\(format.cp).json", as: [RankingEntry].self, policy: policy).value
+        try await load(path: format.rankingsPath, as: [RankingEntry].self, policy: policy).value
     }
 
     /// Wipe the persistent cache so the next load downloads everything fresh.
     func clearCache() async {
         await cache?.deleteAll()
+        // Re-seed on the next load so a failed re-download still has the
+        // bundled snapshot to fall back on instead of nothing.
+        hasSeeded = false
     }
 
     // MARK: - Loading & caching
@@ -117,13 +139,39 @@ actor DataService {
         }
         let cached = await cache?.entry(for: path)
 
-        // 1. Fresh cache wins outright — no network (skipped when revalidating/reloading).
-        if policy == .cache, let cached, Date().timeIntervalSince(cached.fetchedAt) < maxCacheAge,
-           let value = try? decoder.decode(type, from: cached.data) {
+        // 1. Any usable cache/seed wins outright, regardless of freshness —
+        // the UI must never block on the network when there's already
+        // something to show. A stale copy also kicks off a background
+        // revalidation so the cache is current by the next load.
+        if policy == .cache, let cached, let value = try? decoder.decode(type, from: cached.data) {
+            if Date().timeIntervalSince(cached.fetchedAt) >= maxCacheAge {
+                revalidateInBackground(path: path, as: type, cached: cached)
+            }
             return (value, cached.data)
         }
 
-        // 2. Revalidate / fetch. A full reload omits the validator to force a 200.
+        // 2. No usable cache yet (first-ever load with no seed data, or an
+        // explicit revalidate/reload) — the caller is waiting, so fetch now.
+        return try await fetch(path: path, as: type, policy: policy, cached: cached)
+    }
+
+    /// Refreshes `path` without blocking the caller, who already has
+    /// `cached` on screen. Errors are swallowed — a failed background
+    /// revalidation just means the next load tries again.
+    private func revalidateInBackground<T: Decodable>(path: String, as type: T.Type, cached: CachedEntry) {
+        Task {
+            guard let result = try? await fetch(path: path, as: type, policy: .revalidate, cached: cached),
+                  result.data != cached.data else { return }
+            updatesContinuation.yield(path)
+        }
+    }
+
+    /// The actual network round trip (ETag-conditional GET), falling back to
+    /// any stale cache on failure so the app still works offline.
+    private func fetch<T: Decodable>(
+        path: String, as type: T.Type, policy: LoadPolicy, cached: CachedEntry?
+    ) async throws -> (value: T, data: Data) {
+        // A full reload omits the validator to force a 200.
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         if policy != .reload, let etag = cached?.etag {
             request.setValue(etag, forHTTPHeaderField: "If-None-Match")
@@ -146,7 +194,7 @@ actor DataService {
             await cache?.save(path: path, data: data, etag: etag)
             return (value, data)
         } catch {
-            // 3. Offline / failed — fall back to any stale cache.
+            // Offline / failed — fall back to any stale cache.
             if let cached, let value = try? decoder.decode(type, from: cached.data) {
                 return (value, cached.data)
             }

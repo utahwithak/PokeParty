@@ -52,6 +52,7 @@ struct ContentView: View {
             await store.load()
             restoreSavedSelection()
         }
+        .task { await store.observeDataUpdates() }
         .task { await entitlements.load() }
         .onChange(of: selection) { _, new in
             if let new, case .format(let format) = new {

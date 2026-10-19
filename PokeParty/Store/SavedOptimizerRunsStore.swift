@@ -73,18 +73,46 @@ final class SavedOptimizerRunsStore {
 
     init(fileURL: URL? = nil) {
         self.fileURL = fileURL ?? Self.defaultFileURL
-        runs = Self.load(from: self.fileURL)
+        // Decoding saved runs can be sizable JSON — kept off the main thread.
+        Task { await load() }
+    }
+
+    private var isLoaded = false
+
+    /// Reads the saved runs from disk off the main actor and merges them with
+    /// anything already saved this session.
+    func load() async {
+        guard !isLoaded else { return }
+        let url = fileURL
+        let loaded: [SavedOptimizerRun] = await Task.detached(priority: .utility) { Self.load(from: url) }.value
+        merge(loaded)
+    }
+
+    /// Synchronous fallback so a save/delete that races the async load never
+    /// clobbers the file on disk with a partial list.
+    private func loadNowIfNeeded() {
+        guard !isLoaded else { return }
+        merge(Self.load(from: fileURL))
+    }
+
+    private func merge(_ loaded: [SavedOptimizerRun]) {
+        guard !isLoaded else { return }
+        isLoaded = true
+        let existingIDs = Set(runs.map(\.id))
+        runs += loaded.filter { !existingIDs.contains($0.id) }
     }
 
     /// Saves a completed run, replacing any earlier run of the same
     /// configuration. Newest first.
     func save(_ run: SavedOptimizerRun) {
+        loadNowIfNeeded()
         runs.removeAll { $0.sameConfiguration(as: run) }
         runs.insert(run, at: 0)
         persist()
     }
 
     func delete(_ run: SavedOptimizerRun) {
+        loadNowIfNeeded()
         runs.removeAll { $0.id == run.id }
         persist()
     }
@@ -95,7 +123,7 @@ final class SavedOptimizerRunsStore {
         JSONFileStore.defaultFileURL(filename: "SavedOptimizerRuns.json")
     }
 
-    private static func load(from url: URL) -> [SavedOptimizerRun] {
+    nonisolated private static func load(from url: URL) -> [SavedOptimizerRun] {
         JSONFileStore.load(from: url)
     }
 

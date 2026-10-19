@@ -50,7 +50,15 @@ final class TeamFinderModel {
     var poolSize: Int = 15 {
         didSet { metaSize = Self.defaultMetaSize(forPoolSize: poolSize) }
     }
-    static let poolSizes = [10, 15, 20, 25, 50, 75, 100, 125, 150, 200, 250]
+    /// Sentinel pool size meaning "every ranked Pokémon" — larger than any
+    /// ranking list, so the pool builders (which stop at `poolSize`) take it all.
+    static let fullListPoolSize = 100_000
+    static let poolSizes = [10, 15, 20, 25, 50, 75, 100, 125, 150, 200, 250, 500, fullListPoolSize]
+
+    /// Human-readable pool size, e.g. "top 50" or "full list".
+    static func poolDescription(_ size: Int) -> String {
+        size >= fullListPoolSize ? "full list" : "top \(size)"
+    }
 
     /// How many of the pool's top-ranked species become AI Optimizer opponent
     /// threats — the curated field the hill-climb scores candidate teams
@@ -90,6 +98,13 @@ final class TeamFinderModel {
         lockedMembers.removeAll { $0.id == member.id }
     }
 
+    /// Toggles a locked member's shadow flag — only meaningful for species
+    /// that can be caught as either form (see `Pokemon.isShadowEligible`).
+    func setLockedMemberShadow(_ shadow: Bool, for member: TeamMember) {
+        guard let index = lockedMembers.firstIndex(where: { $0.id == member.id }) else { return }
+        lockedMembers[index].shadow = shadow
+    }
+
     /// Pokémon the AI Optimizer should weight teams strongly against (0–4).
     /// Unlike `lockedMembers`, these don't join the searched team's slots —
     /// they're added to the meta field as extra opponent threats (see
@@ -108,6 +123,13 @@ final class TeamFinderModel {
 
     func removeStrongAgainst(_ member: TeamMember) {
         strongAgainstMembers.removeAll { $0.id == member.id }
+    }
+
+    /// Toggles a "strong against" pick's shadow flag — only meaningful for
+    /// species that can be caught as either form (see `Pokemon.isShadowEligible`).
+    func setStrongAgainstShadow(_ shadow: Bool, for member: TeamMember) {
+        guard let index = strongAgainstMembers.firstIndex(where: { $0.id == member.id }) else { return }
+        strongAgainstMembers[index].shadow = shadow
     }
 
     /// How many coverage-seeded teams enter the round robin (slider-driven;
@@ -197,6 +219,15 @@ final class TeamFinderModel {
     private(set) var resultsFormat: RankingFormat?
     private(set) var resultsPoolSize = 0
 
+    /// Time-remaining estimate for the current stage of a run (seeding/grading,
+    /// then the round robin's battles), measured from its recent speed.
+    private(set) var eta = ProgressETA()
+
+    private func noteProgress(_ fraction: Double) {
+        progress = max(progress, fraction)
+        eta.record(fraction)
+    }
+
     private var searchTask: Task<Void, Never>?
     private var validateTask: Task<Void, Never>?
 
@@ -281,6 +312,7 @@ final class TeamFinderModel {
 
         phase = .loadingRankings
         progress = 0
+        eta.reset()
         results = []
         standings = nil
         gradedTeams = nil
@@ -315,7 +347,7 @@ final class TeamFinderModel {
                 let teams = await GradeFinder.findTopGradedTeams(
                     pool: pool, cpCap: format.cp, movesById: movesById,
                     onProgress: { fraction in
-                        Task { @MainActor in self.progress = max(self.progress, fraction) }
+                        Task { @MainActor in self.noteProgress(fraction) }
                     })
                 if Task.isCancelled { return }
                 withAnimation(.spring(duration: 0.6)) { gradedTeams = teams }
@@ -351,7 +383,7 @@ final class TeamFinderModel {
                     optimalShields: optimalShields,
                     exploreAlternateMovesets: exploreAlternateMovesets,
                     onProgress: { fraction in
-                        Task { @MainActor in self.progress = max(self.progress, fraction) }
+                        Task { @MainActor in self.noteProgress(fraction) }
                     },
                     onResults: { snapshot in
                         Task { @MainActor in
@@ -395,7 +427,7 @@ final class TeamFinderModel {
                     pool: pool, cpCap: format.cp, movesById: movesById,
                     maxResults: fieldSize,
                     onProgress: { fraction in
-                        Task { @MainActor in self.progress = max(self.progress, fraction) }
+                        Task { @MainActor in self.noteProgress(fraction) }
                     })
                 if Task.isCancelled { return }
                 let aaaa = graded.filter(\.isAAAA)
@@ -406,6 +438,7 @@ final class TeamFinderModel {
                     return
                 }
                 seededField = aaaa.map(\.poolIndices)
+                eta.reset()
             }
 
             let final = await TeamFinder.findTeams(
@@ -416,12 +449,16 @@ final class TeamFinderModel {
                 learnedSwitches: learnedSwitches,
                 seededField: seededField,
                 onSeedingProgress: { fraction in
-                    Task { @MainActor in self.progress = max(self.progress, fraction) }
+                    Task { @MainActor in self.noteProgress(fraction) }
                 },
                 onStandings: { snapshot in
                     Task { @MainActor in
                         // Snapshots hop actors independently; never regress.
                         guard snapshot.battlesFought >= (self.standings?.battlesFought ?? -1) else { return }
+                        // Battle speed differs from seeding speed: start a fresh
+                        // measurement when the round robin begins.
+                        if self.standings == nil { self.eta.reset() }
+                        self.eta.record(Double(snapshot.battlesFought) / Double(max(snapshot.totalBattles, 1)))
                         withAnimation(.spring(duration: 0.6)) { self.standings = snapshot }
                     }
                 })

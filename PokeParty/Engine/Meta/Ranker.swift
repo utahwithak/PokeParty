@@ -36,24 +36,20 @@ nonisolated enum Ranker {
         guard n >= 2 else { return [] }
 
         // --- Moveset selection (once per species, before the matrix) -----------
-        let probe = await MovesetSelector.probeSet(pool: pool, cpCap: cpCap)
+        let probe = MovesetSelector.preparedProbe(
+            await MovesetSelector.probeSet(pool: pool, cpCap: cpCap), cpCap: cpCap, movesById: movesById)
         var movesets = [MovesetSelector.Result?](repeating: nil, count: n)
         var completedMovesets = 0
-        await withTaskGroup(of: (Int, MovesetSelector.Result?).self) { group in
-            for i in 0..<n {
-                let species = pool[i]
-                group.addTask {
-                    (i, MovesetSelector.select(
-                        species: species, shadow: species.isShadow, cpCap: cpCap,
-                        probe: probe, movesById: movesById))
-                }
-            }
-            for await (i, result) in group {
-                movesets[i] = result
-                completedMovesets += 1
-                if completedMovesets % 32 == 0 || completedMovesets == n {
-                    onProgress?(0.1 * Double(completedMovesets) / Double(n))
-                }
+        await BoundedParallel.run(count: n, of: (Int, MovesetSelector.Result?).self) { i in
+            let species = pool[i]
+            return (i, MovesetSelector.select(
+                species: species, shadow: species.isShadow, cpCap: cpCap,
+                preparedProbe: probe, movesById: movesById))
+        } consume: { i, result in
+            movesets[i] = result
+            completedMovesets += 1
+            if completedMovesets % 32 == 0 || completedMovesets == n {
+                onProgress?(0.1 * Double(completedMovesets) / Double(n))
             }
         }
 
@@ -64,21 +60,19 @@ nonisolated enum Ranker {
         // contributor to blocking whatever thread called `rank`.
         var combatants = [MatchupSimulator.Combatant?](repeating: nil, count: n)
         var stats = [BattlePokemon.Stats?](repeating: nil, count: n)
-        await withTaskGroup(of: (Int, MatchupSimulator.Combatant?, BattlePokemon.Stats?).self) { group in
-            for i in 0..<n {
-                guard let moveset = movesets[i] else { continue }
-                let species = pool[i]
-                group.addTask {
-                    let combatant = MatchupSimulator.Combatant(
-                        species: species, shadow: species.isShadow,
-                        fastMoveId: moveset.fastMoveId, chargedMoveIds: moveset.chargedMoveIds)
-                    return (i, combatant, MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap))
-                }
-            }
-            for await (i, combatant, stat) in group {
-                combatants[i] = combatant
-                stats[i] = stat
-            }
+        let finalMovesets = movesets
+        await BoundedParallel.run(
+            count: n, of: (Int, MatchupSimulator.Combatant?, BattlePokemon.Stats?).self
+        ) { i in
+            guard let moveset = finalMovesets[i] else { return (i, nil, nil) }
+            let species = pool[i]
+            let combatant = MatchupSimulator.Combatant(
+                species: species, shadow: species.isShadow,
+                fastMoveId: moveset.fastMoveId, chargedMoveIds: moveset.chargedMoveIds)
+            return (i, combatant, MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap))
+        } consume: { i, combatant, stat in
+            combatants[i] = combatant
+            stats[i] = stat
         }
 
         // --- The 5 scenario matrices --------------------------------------------
@@ -109,40 +103,41 @@ nonisolated enum Ranker {
         // Parallelized: the per-species matchup sort is O(n log n), which
         // adds up to O(n² log n) done serially across all n species.
         var entries = [RankingEntry?](repeating: nil, count: n)
-        await withTaskGroup(of: (Int, RankingEntry?).self) { group in
-            for i in 0..<n {
-                guard let moveset = movesets[i], let s = stats[i] else { continue }
-                let leads = categoryScores[0][i]
-                let closers = categoryScores[1][i]
-                let switches = categoryScores[2][i]
-                let chargers = categoryScores[3][i]
-                let attackers = categoryScores[4][i]
-                let species = pool[i]
-                group.addTask {
-                    let consistency = Consistency.score(
-                        fastMoveId: moveset.fastMoveId, chargedMoveIds: moveset.chargedMoveIds,
-                        types: species.types, movesById: movesById)
+        let finalStats = stats
+        let finalScores = categoryScores
+        let finalLeads = leadsMatrix
+        await BoundedParallel.run(count: n, of: (Int, RankingEntry?).self) { i in
+            guard let moveset = finalMovesets[i], let s = finalStats[i] else { return (i, nil) }
+            let leads = finalScores[0][i]
+            let closers = finalScores[1][i]
+            let switches = finalScores[2][i]
+            let chargers = finalScores[3][i]
+            let attackers = finalScores[4][i]
+            let species = pool[i]
 
-                    let overall = overallScore(
-                        leads: leads, closers: closers, switches: switches, chargers: chargers,
-                        attackers: attackers, consistency: consistency)
+            let consistency = Consistency.score(
+                fastMoveId: moveset.fastMoveId, chargedMoveIds: moveset.chargedMoveIds,
+                types: species.types, movesById: movesById)
 
-                    let matchups = (0..<n).filter { $0 != i }.map {
-                        RankingEntry.Matchup(opponent: pool[$0].speciesId, rating: leadsMatrix[i * n + $0])
-                    }.sorted { $0.rating > $1.rating }
+            let overall = overallScore(
+                leads: leads, closers: closers, switches: switches, chargers: chargers,
+                attackers: attackers, consistency: consistency)
 
-                    let entry = RankingEntry(
-                        speciesId: species.speciesId, speciesName: species.speciesName,
-                        rating: overall * 10, score: overall,
-                        scores: [leads, closers, switches, chargers, attackers, consistency],
-                        moveset: [moveset.fastMoveId] + moveset.chargedMoveIds,
-                        matchups: Array(matchups.prefix(10)), counters: Array(matchups.suffix(10)),
-                        moves: nil,
-                        stats: .init(product: Double(s.hp) * s.atk * s.def / 1000, atk: s.atk, def: s.def, hp: Double(s.hp)))
-                    return (i, entry)
-                }
-            }
-            for await (i, entry) in group { entries[i] = entry }
+            let matchups = (0..<n).filter { $0 != i }.map {
+                RankingEntry.Matchup(opponent: pool[$0].speciesId, rating: finalLeads[i * n + $0])
+            }.sorted { $0.rating > $1.rating }
+
+            let entry = RankingEntry(
+                speciesId: species.speciesId, speciesName: species.speciesName,
+                rating: overall * 10, score: overall,
+                scores: [leads, closers, switches, chargers, attackers, consistency],
+                moveset: [moveset.fastMoveId] + moveset.chargedMoveIds,
+                matchups: Array(matchups.prefix(10)), counters: Array(matchups.suffix(10)),
+                moves: nil,
+                stats: .init(product: Double(s.hp) * s.atk * s.def / 1000, atk: s.atk, def: s.def, hp: Double(s.hp)))
+            return (i, entry)
+        } consume: { i, entry in
+            entries[i] = entry
         }
 
         return entries.compactMap { $0 }.sorted { $0.displayScore > $1.displayScore }
@@ -189,35 +184,30 @@ nonisolated enum Ranker {
         var matrix = [Int](repeating: 500, count: n * n)
         var completedRows = 0
 
-        await withTaskGroup(of: (Int, [Int]).self) { group in
-            for i in 0..<n {
-                group.addTask {
-                    var row = [Int](repeating: 500, count: n)
-                    guard let ci = combatants[i], let si = stats[i],
-                          let fastI = movesById[ci.fastMoveId] else { return (i, row) }
-                    let energyI = RankerScenario.startEnergy(turnsOfAdvantage: scenario.energy.own, fastMove: fastI)
+        // Build each side's BattlePokemon once per scenario instead of once per
+        // pair — the matrix runs n² battles but only needs 2n distinct sides.
+        func prepare(_ i: Int, shields: Int, turnsOfAdvantage: Double) -> BattlePokemon? {
+            guard let c = combatants[i], let s = stats[i], let fast = movesById[c.fastMoveId] else { return nil }
+            return MatchupSimulator.makeBattlePokemon(
+                c, stats: s, movesById: movesById, shields: shields,
+                startEnergy: RankerScenario.startEnergy(turnsOfAdvantage: turnsOfAdvantage, fastMove: fast))
+        }
+        let ownSide = (0..<n).map { prepare($0, shields: scenario.shields.own, turnsOfAdvantage: scenario.energy.own) }
+        let opponentSide = (0..<n).map { prepare($0, shields: scenario.shields.opponent, turnsOfAdvantage: scenario.energy.opponent) }
 
-                    for j in 0..<n where j != i {
-                        guard let cj = combatants[j], let sj = stats[j],
-                              let fastJ = movesById[cj.fastMoveId] else { continue }
-                        let energyJ = RankerScenario.startEnergy(turnsOfAdvantage: scenario.energy.opponent, fastMove: fastJ)
-                        if let r = MatchupSimulator.rate(
-                            ci, statsA: si, cj, statsB: sj, movesById: movesById,
-                            shieldsA: scenario.shields.own, shieldsB: scenario.shields.opponent,
-                            startEnergyA: energyI, startEnergyB: energyJ
-                        ) {
-                            row[j] = r.a
-                        }
-                    }
-                    return (i, row)
-                }
+        await BoundedParallel.run(count: n, of: (Int, [Int]).self) { i in
+            var row = [Int](repeating: 500, count: n)
+            guard let own = ownSide[i] else { return (i, row) }
+            for j in 0..<n where j != i {
+                guard let opponent = opponentSide[j] else { continue }
+                row[j] = MatchupSimulator.rate(prepared: own, opponent).a
             }
-            for await (i, row) in group {
-                for j in 0..<n { matrix[i * n + j] = row[j] }
-                completedRows += 1
-                if completedRows % 8 == 0 || completedRows == n {
-                    onProgress?(Double(completedRows) / Double(n))
-                }
+            return (i, row)
+        } consume: { i, row in
+            for j in 0..<n { matrix[i * n + j] = row[j] }
+            completedRows += 1
+            if completedRows % 8 == 0 || completedRows == n {
+                onProgress?(Double(completedRows) / Double(n))
             }
         }
         return matrix

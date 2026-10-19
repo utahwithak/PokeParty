@@ -60,7 +60,7 @@ struct TeamMetaTestView: View {
                     .foregroundStyle(.secondary)
                 Picker("Top ranked Pokémon", selection: $model.poolSize) {
                     ForEach(TeamMetaTestModel.poolSizes, id: \.self) { size in
-                        Text("Top \(size)").tag(size)
+                        Text(size >= TeamFinderModel.fullListPoolSize ? "Full list" : "Top \(size)").tag(size)
                     }
                 }
                 .labelsHidden()

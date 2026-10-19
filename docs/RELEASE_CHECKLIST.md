@@ -23,6 +23,21 @@ header comment for why.)
 Cups (limited-time formats) aren't bundled since they rotate — a stale one
 would be actively misleading, so those stay live-fetch-only.
 
+## Bundle precomputed local rankings
+
+Computing the local rankings takes about a minute of background CPU on first
+launch. Shipping the result avoids that for new installs. A seed only helps
+while its gamemaster hash matches the data in use, so do this *after*
+refreshing the seed data above:
+
+1. Run a Debug build with a clean cache (delete the app's
+   `Application Support/PokeParty/LocalRankings` folder) and let the sidebar's
+   "Updating local rankings…" finish.
+2. Settings → Ranking Order → "Reveal Local Rankings Cache" (DEBUG only).
+3. Copy `all-1500.json`, `all-2500.json`, `all-10000.json` into
+   `PokeParty/Resources/` as `seed_local_ranking_1500.json`, `…_2500.json`,
+   `…_10000.json`. `LocalRankingBuilder` loads them automatically.
+
 ## Build & test
 
 - [ ] Bump the version/build number.
