@@ -306,12 +306,11 @@ nonisolated enum TeamAnalyzer {
 
         // Build the ≤6 threat opponents once (combatant + stats).
         struct Opp: Sendable { let combatant: MatchupSimulator.Combatant; let stats: BattlePokemon.Stats }
-        var opponents: [Opp] = []
-        for t in counterTeam {
+        let opponents: [Opp] = counterTeam.compactMap { t in
             guard let cand = meta.first(where: { $0.species.speciesId == t.speciesId }),
                   let oppStats = Self.stats(for: cand, cpCap: cpCap)
-            else { continue }
-            opponents.append(Opp(combatant: cand.combatant, stats: oppStats))
+            else { return nil }
+            return Opp(combatant: cand.combatant, stats: oppStats)
         }
         guard !opponents.isEmpty else { return [] }
 

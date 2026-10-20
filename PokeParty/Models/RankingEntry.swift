@@ -12,7 +12,7 @@ import Foundation
 /// - `score` is the headline 0–100 ranking score shown in lists.
 /// - `rating` is the average battle rating (0–1000).
 /// - Matchup/counter `rating` is a per-opponent battle rating where 500 is even.
-struct RankingEntry: Codable, Identifiable, Hashable {
+nonisolated struct RankingEntry: Codable, Identifiable, Hashable {
     let speciesId: String
     let speciesName: String
     let rating: Double

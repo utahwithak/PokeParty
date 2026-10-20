@@ -56,13 +56,22 @@ private func makePokemon(
     }
 
     @Test func greatLeagueIneligibleAppliesBelow2500Only() {
-        let banned = makePokemon(id: "banned", fastMoves: ["fast"], chargedMoves: ["c1", "c2"])
+        // Strong enough to clear the stat-product floor at both caps (1370 at
+        // 1500, 2800 at 2500), so the ban list is the only thing that can
+        // exclude it — weaker stats get dropped by the floor instead.
+        let banned = makePokemon(
+            id: "banned", atk: 250, def: 200, hp: 200, fastMoves: ["fast"], chargedMoves: ["c1", "c2"])
 
+        let unbanned1500 = MetaPool.eligiblePokemon(
+            for: allCup, cpCap: 1500, allPokemon: [banned], greatLeagueIneligible: [])
         let at1500 = MetaPool.eligiblePokemon(
             for: allCup, cpCap: 1500, allPokemon: [banned], greatLeagueIneligible: ["banned"])
         let at2500 = MetaPool.eligiblePokemon(
             for: allCup, cpCap: 2500, allPokemon: [banned], greatLeagueIneligible: ["banned"])
 
+        // Without the ban it's eligible at 1500, so the empty result below is
+        // the ban's doing and not the stat floor's.
+        #expect(unbanned1500.contains { $0.speciesId == "banned" })
         #expect(at1500.isEmpty)
         #expect(at2500.contains { $0.speciesId == "banned" })
     }
@@ -128,7 +137,10 @@ private func makePokemon(
     @Test func picksTheStrongerChargedMovePair() {
         let movesById: [String: Move] = [
             "fast": makeMove("fast", power: 4, energy: 0, energyGain: 8, cooldown: 500),
-            "weak": makeMove("weak", power: 5, energy: 35, energyGain: 0, cooldown: 0),
+            // Costly and nearly powerless. A cheap weak move would be a good
+            // shield bait (it can win the matchup by drawing the opponent's
+            // one shield), so this one is priced out of ever being useful.
+            "weak": makeMove("weak", power: 5, energy: 60, energyGain: 0, cooldown: 0),
             "medium": makeMove("medium", power: 55, energy: 45, energyGain: 0, cooldown: 0),
             "strong": makeMove("strong", power: 110, energy: 55, energyGain: 0, cooldown: 0),
         ]
@@ -162,23 +174,29 @@ private func makePokemon(
 @Suite struct RankerTests {
 
     @Test func dominantSpeciesRanksFirstWithValidScores() async {
-        let types = ["fire", "water", "grass", "rock"]
+        // All species share one type so super-effective matchups can't decide
+        // the ranking; only stats differ.
+        let names = ["fire", "water", "grass", "rock"]
         var pokemonById: [String: Pokemon] = [:]
         var movesById: [String: Move] = [:]
         var pool: [Pokemon] = []
 
-        for (i, type) in types.enumerated() {
-            let id = "p_\(type)"
-            let fastId = "f_\(type)", c1Id = "c1_\(type)", c2Id = "c2_\(type)"
-            // The first species is dramatically stronger than the rest.
-            let atk = i == 0 ? 300 : 120
-            let pokemon = makePokemon(id: id, dex: i + 1, atk: atk, def: 150, hp: 160,
-                                       types: [type], fastMoves: [fastId], chargedMoves: [c1Id, c2Id])
+        for (i, name) in names.enumerated() {
+            let id = "p_\(name)"
+            let fastId = "f_\(name)", c1Id = "c1_\(name)", c2Id = "c2_\(name)"
+            // The first species is much bulkier at the same attack. Under a CP
+            // cap that is what makes it dominant: raising base attack (or every
+            // base stat) lowers the level it can reach and its stat product, so
+            // a high-attack species would rank last rather than first.
+            let isDominant = i == 0
+            let pokemon = makePokemon(id: id, dex: i + 1, atk: 120,
+                                       def: isDominant ? 200 : 150, hp: isDominant ? 200 : 160,
+                                       fastMoves: [fastId], chargedMoves: [c1Id, c2Id])
             pokemonById[id] = pokemon
             pool.append(pokemon)
-            movesById[fastId] = makeMove(fastId, type: type, power: 4, energy: 0, energyGain: 8, cooldown: 500)
-            movesById[c1Id] = makeMove(c1Id, type: type, power: 60, energy: 35, energyGain: 0, cooldown: 0)
-            movesById[c2Id] = makeMove(c2Id, type: type, power: 100, energy: 55, energyGain: 0, cooldown: 0)
+            movesById[fastId] = makeMove(fastId, power: 4, energy: 0, energyGain: 8, cooldown: 500)
+            movesById[c1Id] = makeMove(c1Id, power: 60, energy: 35, energyGain: 0, cooldown: 0)
+            movesById[c2Id] = makeMove(c2Id, power: 100, energy: 55, energyGain: 0, cooldown: 0)
         }
 
         let entries = await Ranker.rank(pool: pool, cpCap: 1500, movesById: movesById)

@@ -16,8 +16,8 @@ import AppKit
 import CoreImage
 import CoreMedia
 import Foundation
-import ScreenCaptureKit
-import Vision
+@preconcurrency import ScreenCaptureKit
+@preconcurrency import Vision
 
 enum ScanError: LocalizedError {
     case windowNotFound
@@ -37,7 +37,7 @@ enum ScanError: LocalizedError {
 }
 
 /// Values extracted from OCR of the Pokémon GO detail screen.
-struct PokemonScanInfo {
+nonisolated struct PokemonScanInfo {
     /// Species name — from "This {name} was caught…" if available; otherwise first plausible text.
     var name: String
     /// Level shown as "Lvl XX" or "Lvl XX.X" on the detail screen.
@@ -51,7 +51,7 @@ struct PokemonScanInfo {
 /// IVs read directly off the Attack/Defense/HP fill bars on the detail
 /// screen (each bar's fill fraction is the stat's IV / 15). nil per-stat
 /// when that bar's label wasn't found or its fill couldn't be measured.
-struct BarIVs: Equatable {
+nonisolated struct BarIVs: Equatable {
     var atk: Int?
     var def: Int?
     var hp: Int?
@@ -223,11 +223,16 @@ actor ScreenScanner {
     /// revision we probe and fall back. `.fast` is the escape hatch: it's a
     /// classic (non-neural) OCR path that doesn't touch E5RT at all, so it
     /// should keep working even where every "accurate" revision is broken.
+    ///
+    /// Revisions 1 and 2 are deprecated in macOS 15, but they're deliberate
+    /// fallbacks for Macs where the newer model is broken, so they're passed
+    /// as their raw values (`VNRecognizeTextRequestRevision1` / `...2`)
+    /// rather than the deprecated constants.
     private static let textConfigFallbacks: [TextRecognitionConfig] = [
         TextRecognitionConfig(revision: VNRecognizeTextRequestRevision3, level: .accurate),
-        TextRecognitionConfig(revision: VNRecognizeTextRequestRevision2, level: .accurate),
-        TextRecognitionConfig(revision: VNRecognizeTextRequestRevision1, level: .accurate),
-        TextRecognitionConfig(revision: VNRecognizeTextRequestRevision1, level: .fast),
+        TextRecognitionConfig(revision: 2, level: .accurate),
+        TextRecognitionConfig(revision: 1, level: .accurate),
+        TextRecognitionConfig(revision: 1, level: .fast),
     ]
 
     /// The config that last succeeded on this machine, tried first on
@@ -276,6 +281,23 @@ actor ScreenScanner {
         throw ScanError.ocrUnavailable
     }
 
+    /// OCRs `image` and extracts both the detail-screen text and the IV bars
+    /// in one actor-isolated step. Vision's observations are not `Sendable`,
+    /// so keeping them inside the actor means only the `Sendable` results
+    /// cross to the caller. Returns nil when no Pokémon name could be read.
+    func scanFrame(_ image: CGImage) async throws -> (info: PokemonScanInfo, barIVs: BarIVs?)? {
+        let observations = try await recognizeText(in: image)
+        guard let info = extractPokemonInfo(from: observations) else { return nil }
+        return (info, extractBarIVs(from: observations, image: image))
+    }
+
+    /// Like `scanFrame`, but reads only the IV bars — without requiring a
+    /// Pokémon name to be found first.
+    func readBarIVs(in image: CGImage) async throws -> BarIVs? {
+        let observations = try await recognizeText(in: image)
+        return extractBarIVs(from: observations, image: image)
+    }
+
     /// Races a single Vision attempt against a timeout. `VNImageRequestHandler.perform`
     /// is a synchronous, blocking call — on a Mac with broken on-device
     /// models it can hang (rather than throw) for a long time ("Async task
@@ -297,6 +319,10 @@ actor ScreenScanner {
         }
     }
 
+    /// Where the blocking Vision `perform` call runs (see `performVisionRequest`).
+    private nonisolated static let visionQueue = DispatchQueue(
+        label: "com.freebits.PokeParty.vision-ocr", qos: .utility, attributes: .concurrent)
+
     private nonisolated static func performVisionRequest(
         in image: CGImage, using config: TextRecognitionConfig
     ) async throws -> [VNRecognizedTextObservation] {
@@ -310,10 +336,17 @@ actor ScreenScanner {
             request.usesLanguageCorrection = false
             request.recognitionLanguages = ["en-US"]
             request.revision = config.revision
-            do {
-                try VNImageRequestHandler(cgImage: image).perform([request])
-            } catch {
-                cont.resume(throwing: error)
+            // `perform` blocks until Vision's own (QoS-less) worker threads
+            // finish. Running it on a Swift-concurrency pool thread made that
+            // a User-initiated thread waiting on an unspecified-QoS one — a
+            // priority inversion — and tied up a pool thread whenever Vision
+            // hung. A dedicated queue keeps the blocking wait off the pool.
+            Self.visionQueue.async {
+                do {
+                    try VNImageRequestHandler(cgImage: image).perform([request])
+                } catch {
+                    cont.resume(throwing: error)
+                }
             }
         }
     }

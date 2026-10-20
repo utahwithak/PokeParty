@@ -97,9 +97,7 @@ private func makeAppraisalImage(atk: Int, def: Int, hp: Int) -> CGImage? {
 }
 
 private func readBars(_ image: CGImage) async throws -> BarIVs? {
-    let scanner = ScreenScanner()
-    let observations = try await scanner.recognizeText(in: image)
-    return await scanner.extractBarIVs(from: observations, image: image)
+    try await ScreenScanner().readBarIVs(in: image)
 }
 
 // A reading within 1 of the truth is as good as exact downstream, where bar
@@ -154,9 +152,7 @@ private func metangCapture() throws -> CGImage {
 
 @Test func realCaptureOCRFindsSpeciesAndHP() async throws {
     let image = try metangCapture()
-    let scanner = ScreenScanner()
-    let observations = try await scanner.recognizeText(in: image)
-    let info = try #require(await scanner.extractPokemonInfo(from: observations))
+    let info = try #require(await ScreenScanner().scanFrame(image)).info
 
     // The name comes from "This Metang was caught on…", not the header, which
     // reads "Metang 55" — the player's nickname.

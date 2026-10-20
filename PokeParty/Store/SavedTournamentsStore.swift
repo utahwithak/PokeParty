@@ -15,7 +15,7 @@ import SwiftUI
 /// A completed tournament: its configuration, when it ran, and the final
 /// leaderboard. `RankingFormat` is only Decodable, so the identifying fields
 /// are stored flat and the format is rebuilt on demand.
-struct SavedTournament: Identifiable, Codable {
+nonisolated struct SavedTournament: Identifiable, Codable {
     var id = UUID()
     var date: Date
     var formatTitle: String

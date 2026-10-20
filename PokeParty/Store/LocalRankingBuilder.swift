@@ -17,7 +17,7 @@ import SwiftUI
 /// One format's cached local ranking, tagged with the gamemaster hash it was
 /// computed from — a mismatch means the underlying data moved on and this
 /// entry is stale.
-struct LocalRankingCacheEntry: Codable {
+nonisolated struct LocalRankingCacheEntry: Codable {
     let formatId: String
     let gameMasterHash: String
     let computedAt: Date

@@ -525,6 +525,8 @@ nonisolated enum TeamOptimizer {
         let n = metaCandidates.count
         let poolCount = matrixPool.count
         var matrix = Array(repeating: Array(repeating: 500, count: n), count: poolCount)
+        // Frozen copy: the task-group closures must not capture the mutable var.
+        let threats = metaCandidates
         await withTaskGroup(of: (Int, Int, Int)?.self) { group in
             for p in 0..<poolCount {
                 for t in 0..<n {
@@ -532,7 +534,7 @@ nonisolated enum TeamOptimizer {
                         guard !Task.isCancelled,
                               let r = MatchupSimulator.rate(
                                 matrixPool[p].combatant, statsA: matrixPool[p].stats,
-                                metaCandidates[t].combatant, statsB: metaCandidates[t].stats,
+                                threats[t].combatant, statsB: threats[t].stats,
                                 movesById: movesById, shieldsA: 1, shieldsB: 1,
                                 shieldNet: shieldNet)
                         else { return nil }

@@ -17,7 +17,7 @@ import SwiftUI
 /// resulting teams. `RankingFormat` is only Decodable, so the identifying
 /// fields are stored flat and the format is rebuilt on demand (mirrors
 /// `SavedTournament`).
-struct SavedOptimizerRun: Identifiable, Codable {
+nonisolated struct SavedOptimizerRun: Identifiable, Codable {
     var id = UUID()
     var date: Date
     var formatTitle: String

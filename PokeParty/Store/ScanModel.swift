@@ -16,6 +16,7 @@
 
 import Foundation
 import SwiftUI
+@preconcurrency import Vision
 
 @MainActor
 @Observable
@@ -224,14 +225,12 @@ final class ScanModel {
     /// commits it: updates `liveStatus` and records history.
     private func processFrame(_ image: CGImage, store: RankingsStore) async throws {
         do {
-            let observations = try await scanner.recognizeText(in: image)
-            guard let info = await scanner.extractPokemonInfo(from: observations) else {
+            guard let (info, barIVs) = try await scanner.scanFrame(image) else {
                 registerMiss()
                 return
             }
 
             let speciesId = fuzzyMatch(info.name, in: store.pokemonById)
-            let barIVs = await scanner.extractBarIVs(from: observations, image: image)
             let reading = FrameReading(
                 rawName: info.name, speciesId: speciesId, cp: info.cp,
                 level: info.level, maxHP: info.maxHP, barIVs: barIVs)

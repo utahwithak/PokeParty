@@ -48,7 +48,9 @@ extension ScreenScanner {
     /// Screen Recording permission used for capture. `prompt: true` shows
     /// the system dialog the first time.
     func hasAccessibilityAccess(prompt: Bool) -> Bool {
-        AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): prompt] as CFDictionary)
+        // Literal value of `kAXTrustedCheckOptionPrompt`; the C global itself
+        // is flagged as shared mutable state under Swift 6.
+        AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": prompt] as CFDictionary)
     }
 
     /// True when the mouse cursor is over the iPhone Mirroring window. Each
