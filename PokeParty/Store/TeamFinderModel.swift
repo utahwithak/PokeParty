@@ -170,6 +170,13 @@ final class TeamFinderModel {
     /// counterswaps, and faint replacements instead of the hand-tuned rules.
     /// Default ON — same rationale as `learnedShields`.
     var learnedSwitches = true
+
+    /// Use the learned farm-vs-switch policy: when a switch is on the table but
+    /// the opponent can't punish us yet, bank energy with fast moves for a short
+    /// window instead of switching immediately. Only matters with counterswap
+    /// simulation on. Default ON — measured +1.8 pts win rate / +18 mean rating
+    /// on held-out teams (ungated farming is a wash; the policy picks the moments).
+    var learnedFarming = true
     static let fieldSizeRange = 100.0...10000.0
     static let fieldSizeStep = 100.0
 
@@ -300,6 +307,7 @@ final class TeamFinderModel {
         let optimalShields = optimalShields
         let learnedShields = learnedShields
         let learnedSwitches = learnedSwitches
+        let learnedFarming = learnedFarming
         let movesById = store.movesById
         let pokemonById = store.pokemonById
         let method = method
@@ -379,6 +387,7 @@ final class TeamFinderModel {
                     restarts: restarts,
                     learnedShields: learnedShields,
                     learnedSwitches: learnedSwitches,
+                    learnedFarming: learnedFarming,
                     voluntarySwitching: simulateCounterswaps,
                     optimalShields: optimalShields,
                     exploreAlternateMovesets: exploreAlternateMovesets,
@@ -447,6 +456,7 @@ final class TeamFinderModel {
                 optimalShields: optimalShields,
                 learnedShields: learnedShields,
                 learnedSwitches: learnedSwitches,
+                learnedFarming: learnedFarming,
                 seededField: seededField,
                 onSeedingProgress: { fraction in
                     Task { @MainActor in self.noteProgress(fraction) }
@@ -522,6 +532,7 @@ final class TeamFinderModel {
         let fieldSize = broadFieldSize
         let learnedShields = learnedShields
         let learnedSwitches = learnedSwitches
+        let learnedFarming = learnedFarming
         let voluntarySwitching = simulateCounterswaps
         let optimalShields = optimalShields
 
@@ -546,6 +557,7 @@ final class TeamFinderModel {
             let final = await TeamOptimizer.evaluateBroadField(
                 teams: teams, pool: pool, movesById: movesById, fieldSize: fieldSize,
                 learnedShields: learnedShields, learnedSwitches: learnedSwitches,
+                learnedFarming: learnedFarming,
                 voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
                 onResults: { snapshot in
                     Task { @MainActor in

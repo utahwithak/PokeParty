@@ -142,8 +142,56 @@ nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
         let evolutions: [String]?
     }
 
-    /// A form transformation (only `effect` is needed — e.g. "protect" for Disguise).
+    /// A form transformation. `effect` ("protect" for Disguise) and the
+    /// trigger fields (`battle_start` / `hp` for Minior) are what the engine reads.
     struct FormChange: Decodable, Hashable {
         let effect: String?
+        let trigger: String?
+        /// For `hp` triggers: the HP fraction below which the form changes.
+        let amount: Double?
+        let alternativeFormId: String?
+        /// Time (ms) the form-change animation adds to the battle clock.
+        let animationTime: Int?
+    }
+
+    /// An HP-triggered form shift (Minior's Shields Down), resolved against
+    /// the other form's entry when the gamemaster loads — a single entry
+    /// only knows the other form's id.
+    struct HPFormShift: Decodable, Hashable {
+        /// Shifts when HP / max HP falls below this fraction.
+        let threshold: Double
+        let animationTime: Int
+        /// Base stats the Pokémon starts the battle with (Meteor for Minior).
+        let initialBase: BaseStats
+        /// Base stats after the shift (Core for Minior).
+        let shiftedBase: BaseStats
+    }
+
+    /// Set by `resolvingFormShift(pokemonById:)`; nil for species without one.
+    var hpFormShift: HPFormShift? = nil
+
+    /// Resolves `hpFormShift` from `formChange`. A `battle_start` form (Minior
+    /// Core) begins as its alternate form, whose own `hp` change shifts back;
+    /// an `hp` form (Minior Meteor) begins as itself.
+    func resolvingFormShift(pokemonById: [String: Pokemon]) -> Pokemon {
+        guard let change = formChange, let altId = change.alternativeFormId,
+              let alt = pokemonById[altId] else { return self }
+        var copy = self
+        switch change.trigger {
+        case "battle_start":
+            guard let back = alt.formChange, back.trigger == "hp", let amount = back.amount,
+                  back.alternativeFormId == speciesId, alt.baseStats.hp == baseStats.hp else { return self }
+            copy.hpFormShift = HPFormShift(
+                threshold: amount, animationTime: back.animationTime ?? 0,
+                initialBase: alt.baseStats, shiftedBase: baseStats)
+        case "hp":
+            guard let amount = change.amount, alt.baseStats.hp == baseStats.hp else { return self }
+            copy.hpFormShift = HPFormShift(
+                threshold: amount, animationTime: change.animationTime ?? 0,
+                initialBase: baseStats, shiftedBase: alt.baseStats)
+        default:
+            return self
+        }
+        return copy
     }
 }

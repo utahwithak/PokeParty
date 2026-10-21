@@ -61,6 +61,11 @@ nonisolated final class Battle {
     var interruptCheck: ((Battle) -> Bool)?
     private(set) var interrupted = false
 
+    /// Farming: a side flagged here only throws fast moves (the AI's charged-move
+    /// choices are downgraded to fast), banking energy while it waits out a bad
+    /// matchup. The 3v3 orchestrator sets this for the duration of a farm window.
+    var holdChargedMoves = [false, false]
+
     init(_ a: BattlePokemon, _ b: BattlePokemon, startTime: Int = 0, record: Bool = false) {
         var a = a
         var b = b
@@ -86,6 +91,8 @@ nonisolated final class Battle {
 
     private func start() {
         interrupted = false
+        pokemon[0].applyStartForm()
+        pokemon[1].applyStartForm()
         pokemon[0].reset(opponent: pokemon[1])
         pokemon[1].reset(opponent: pokemon[0])
         usePriority = pokemon[0].stats.atk != pokemon[1].stats.atk
@@ -242,6 +249,9 @@ nonisolated final class Battle {
         let di = i == 0 ? 1 : 0
         var action = ActionLogic.decideAction(self, pokemon[i], pokemon[di])
             ?? TimelineAction(type: .fast, actor: i, turn: turns, value: 0, priority: pokemon[i].priority)
+        if action.type == .charged && holdChargedMoves[i] {
+            action = TimelineAction(type: .fast, actor: i, turn: turns, value: 0, priority: pokemon[i].priority)
+        }
         if action.type == .charged {
             action.priority += 10
             if pokemon[i].stats.atk > pokemon[di].stats.atk { action.priority += 1 }
@@ -386,6 +396,15 @@ nonisolated final class Battle {
 
         pokemon[di].hp = max(0, pokemon[di].hp - damage)
         if pokemon[di].hp <= 0 { pokemon[di].faintSource = move.energy > 0 ? .charged : .fast }
+
+        // Minior's Shields Down: dropping below the HP threshold swaps forms
+        // (Meteor → Core). Both sides re-evaluate move damage with the new
+        // stats, and the animation adds to the battle clock like PvPoke's.
+        if pokemon[di].shouldShiftForm {
+            pokemon[di].shiftForm(opponent: pokemon[ai])
+            pokemon[ai].refreshMoves(opponent: pokemon[di])
+            time += pokemon[di].formShift?.animationTime ?? 0
+        }
 
         applyBuffs(move, ai: ai, di: di, shielded: defenderUsedShield, chargedIdx: chargedIdx)
 

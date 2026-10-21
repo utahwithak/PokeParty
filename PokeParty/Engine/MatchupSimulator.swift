@@ -53,12 +53,29 @@ nonisolated enum MatchupSimulator {
             hasDisguise: c.species.hasDisguise,
             hasGulpMissile: c.species.hasGulpMissile,
             stats: stats,
+            formShift: formShift(for: c.species, stats: stats),
             fastMove: BattleMove(from: fastMoveData),
             chargedMoves: chargedData.map(BattleMove.init)
         )
         bp.startingShields = shields
         bp.startEnergy = startEnergy
         return bp
+    }
+
+    /// Minior-style form shift: the same level/IVs behind `stats` re-applied to
+    /// the initial and shifted forms' base stats. Nil for species without a
+    /// shift, or if `stats` can't be traced back to a level/IV combination.
+    private static func formShift(for species: Pokemon, stats: BattlePokemon.Stats) -> BattlePokemon.FormShift? {
+        guard let shift = species.hpFormShift else { return nil }
+        let own = (atk: species.baseStats.atk, def: species.baseStats.def, hp: species.baseStats.hp)
+        let given = (atk: stats.atk, def: stats.def, hp: stats.hp)
+        func converted(_ base: Pokemon.BaseStats) -> BattlePokemon.Stats? {
+            guard let s = IVCalculator.stats(given, from: own, to: (base.atk, base.def, base.hp)) else { return nil }
+            return .init(atk: s.atk, def: s.def, hp: s.hp)
+        }
+        guard let initial = converted(shift.initialBase), let shifted = converted(shift.shiftedBase) else { return nil }
+        return .init(threshold: shift.threshold, animationTime: shift.animationTime,
+                     initial: initial, shifted: shifted)
     }
 
     /// Runs a 1v1 between two prepared sides and returns each side's rating.

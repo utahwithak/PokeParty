@@ -62,7 +62,32 @@ nonisolated struct BattlePokemon {
 
     // Permanent stats (effective at the chosen level/IVs).
     struct Stats: Hashable, Sendable { var atk: Double; var def: Double; var hp: Int }
-    let stats: Stats
+    /// Current effective stats — changes only through a form shift.
+    private(set) var stats: Stats
+
+    /// An HP-triggered form shift (Minior's Shields Down): the Pokémon starts
+    /// in the `initial` form and swaps to `shifted` once HP falls below
+    /// `threshold` of max. HP is identical in both forms.
+    final class FormShift: Sendable {
+        let threshold: Double
+        /// Battle-clock time (ms) the transformation adds.
+        let animationTime: Int
+        let initial: Stats
+        let shifted: Stats
+
+        init(threshold: Double, animationTime: Int, initial: Stats, shifted: Stats) {
+            self.threshold = threshold
+            self.animationTime = animationTime
+            self.initial = initial
+            self.shifted = shifted
+        }
+    }
+    let formShift: FormShift?
+    /// Whether the shift has happened this battle.
+    private(set) var formShifted = false
+    /// Form carried into the next `reset()` — PvPoke's `resetOnSwitch: false`,
+    /// so a shifted Minior stays Core for the rest of the match.
+    var startFormShifted = false
 
     // Moves — var so the engine can update scratch fields (damage, stab, dpe,
     // buffApplyMeter) in-place without allocating new objects.
@@ -106,12 +131,14 @@ nonisolated struct BattlePokemon {
 
     init(speciesId: String, speciesName: String, types: [String], shadow: Bool,
          hasDisguise: Bool = false, hasGulpMissile: Bool = false,
-         stats: Stats, fastMove: BattleMove, chargedMoves: [BattleMove]) {
+         stats: Stats, formShift: FormShift? = nil,
+         fastMove: BattleMove, chargedMoves: [BattleMove]) {
         self.profile = Profile(speciesId: speciesId, speciesName: speciesName, types: types)
         self.shadow = shadow
         self.hasDisguise = hasDisguise
         self.hasGulpMissile = hasGulpMissile
-        self.stats = stats
+        self.formShift = formShift
+        self.stats = formShift?.initial ?? stats
         self.fastMove = fastMove
         self.chargedMoves = chargedMoves
         self.shadowAtkMult = shadow ? DamageMultiplier.shadowAtk : 1
@@ -175,6 +202,7 @@ nonisolated struct BattlePokemon {
     /// Resets battle state from the start* fields and initializes move scratch
     /// values against `opponent`. Call before each 1v1 segment.
     mutating func reset(opponent: BattlePokemon) {
+        applyStartForm()
         hp = startHp > 0 ? min(startHp, stats.hp) : stats.hp
         energy = startEnergy
         shields = startingShields
@@ -219,6 +247,35 @@ nonisolated struct BattlePokemon {
             }
         }
         return m
+    }
+
+    /// Puts a form-shifting Pokémon into its carried-over starting form. The
+    /// battle calls this on both sides before either `reset(opponent:)`, so
+    /// each side's move damage is computed against the opponent's real stats.
+    mutating func applyStartForm() {
+        guard let formShift else { return }
+        formShifted = startFormShifted
+        stats = formShifted ? formShift.shifted : formShift.initial
+    }
+
+    /// Whether HP has just fallen below the form-shift threshold.
+    var shouldShiftForm: Bool {
+        guard let formShift, !formShifted, hp > 0 else { return false }
+        return Double(hp) / Double(stats.hp) < formShift.threshold
+    }
+
+    /// Swaps to the shifted form and recomputes move damage/DPE against
+    /// `opponent` with the new Attack/Defense.
+    mutating func shiftForm(opponent: BattlePokemon) {
+        guard let formShift, !formShifted else { return }
+        formShifted = true
+        stats = formShift.shifted
+        resetMoves(opponent: opponent)
+    }
+
+    /// Recomputes move damage/DPE after the opponent's stats changed.
+    mutating func refreshMoves(opponent: BattlePokemon) {
+        resetMoves(opponent: opponent)
     }
 
     private mutating func resetMoves(opponent: BattlePokemon) {

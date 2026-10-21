@@ -210,13 +210,13 @@ if CommandLine.arguments.contains("--dagger") {
     func oracleLabel(_ battle: Battle, _ d: Int, _ move: BattleMove) -> Int {
         let defender = battle.pokemon[d]
         let attacker = battle.pokemon[d == 0 ? 1 : 0]
-        let dc = defender.clone()
+        var dc = defender
         dc.startHp = max(defender.hp, 1)
         dc.startEnergy = defender.energy
         dc.startStatBuffs = defender.statBuffs
         dc.startingShields = defender.shields          // pre-decision: includes this one
         dc.startDisguiseConsumed = dc.hasDisguise && !defender.disguiseActive
-        let ac = attacker.clone()
+        var ac = attacker
         ac.startHp = max(attacker.hp, 1)
         ac.startEnergy = min(attacker.energy + move.energy, 100)   // pre-throw
         ac.startStatBuffs = attacker.statBuffs
@@ -456,6 +456,169 @@ if CommandLine.arguments.contains("--switch-gen") {
                              sampleCount: samples.count, teams: trios.count))
         .write(to: URL(fileURLWithPath: "\(outDir)/switch_meta.json"))
     print("Wrote \(outDir)/\(outName) and switch_meta.json")
+    exit(0)
+}
+
+// MARK: - Farm policy: farm-vs-switch rollout labels
+
+/// One farm decision labeled by rollout search.
+struct FarmSample: Encodable {
+    let g: String       // game key "teamA vs teamB" (for leakage-free splitting)
+    let side: Int
+    let x: [Double]     // FarmObservation features
+    let v: [Int]        // rollout value (deciding side's final rating): [switch now, farm]
+    let y: Int          // best action (0 = switch now, 1 = farm; ties prefer 0)
+}
+
+/// Plays one 3v3 with farming on and a scripted farm hook: calls < `forceAt`
+/// follow the base policy (the always-farm gate when nil — deterministic, so
+/// they replay identically), the call at `forceAt` takes `forced`, everything
+/// after is the base policy again. `forceAt = -1` is a pure base-policy game.
+func playFarmGame(
+    _ tA: [Int], _ tB: [Int],
+    forceAt: Int = -1, forced: Bool = true,
+    base: FarmPolicyNet? = nil,
+    observe: ((Int, SwitchContext, Int) -> Void)? = nil
+) -> TeamBattleResult? {
+    guard let a = makeTrio(tA), let b = makeTrio(tB) else { return nil }
+    var battle = ThreeVThreeBattle(teamA: a, teamB: b, voluntarySwitching: true)
+    battle.farming = true
+    var call = 0
+    battle.farmDecisionHook = { ctx, window in
+        defer { call += 1 }
+        observe?(call, ctx, window)
+        if call == forceAt { return forced }
+        return base?.shouldFarm(ctx, window: window) ?? true
+    }
+    return battle.run()
+}
+
+// MARK: - --farm-gen: rollout-teacher labels for farm-vs-switch decisions
+
+if CommandLine.arguments.contains("--farm-gen") {
+    let teamCount = flagValue("--farm-gen", default: 120)
+    let seed = UInt64(flagValue("--seed", default: 0xFA12))
+    let trios = buildTrios(count: teamCount, seed: seed)
+    var games: [(Int, Int)] = []
+    for i in 0..<trios.count { for j in (i + 1)..<trios.count { games.append((i, j)) } }
+    print("Farm-gen: \(trios.count) teams (seed \(seed)), \(games.count) games")
+
+    let cores = ProcessInfo.processInfo.activeProcessorCount
+    let chunks = cores * 4
+    nonisolated(unsafe) var chunkOut = [[FarmSample]](repeating: [], count: chunks)
+
+    let t0 = ContinuousClock.now
+    DispatchQueue.concurrentPerform(iterations: chunks) { c in
+        var local: [FarmSample] = []
+        var k = c
+        while k < games.count {
+            let (ti, tj) = games[k]
+            let key = "\(trioKey(trios[ti])) vs \(trioKey(trios[tj]))"
+
+            // Pass 1: record every farm decision point the base game reaches.
+            struct Point { let call: Int; let side: Int; let x: [Double] }
+            var points: [Point] = []
+            guard playFarmGame(trios[ti], trios[tj], observe: { call, ctx, window in
+                points.append(Point(call: call, side: ctx.side,
+                                    x: FarmObservation.capture(ctx, window: window)))
+            }) != nil else { k += chunks; continue }
+
+            // Branch rollouts: replay once per option (switch now / farm) per point.
+            for p in points {
+                var values: [Int] = []
+                for farm in [false, true] {
+                    guard let r = playFarmGame(trios[ti], trios[tj],
+                                               forceAt: p.call, forced: farm) else { break }
+                    values.append(p.side == 0 ? r.ratingA : 1000 - r.ratingA)
+                }
+                guard values.count == 2 else { continue }
+                local.append(FarmSample(g: key, side: p.side, x: p.x, v: values,
+                                        y: values[1] > values[0] ? 1 : 0))
+            }
+            k += chunks
+        }
+        chunkOut[c] = local
+    }
+
+    let samples = chunkOut.flatMap { $0 }
+    let dt = ContinuousClock.now - t0
+    print(String(format: "Farm-gen: %d labeled decisions in %.1fs",
+                 samples.count,
+                 Double(dt.components.seconds) + Double(dt.components.attoseconds) / 1e18))
+    let farmBest = samples.filter { $0.y == 1 }.count
+    print("Label distribution: switch now \(samples.count - farmBest), farm \(farmBest)")
+
+    let enc = JSONEncoder()
+    var lines: [String] = []
+    lines.reserveCapacity(samples.count)
+    for s in samples { lines.append(String(data: try enc.encode(s), encoding: .utf8)!) }
+    try (lines.joined(separator: "\n") + "\n")
+        .write(to: URL(fileURLWithPath: "\(outDir)/farm_dataset.jsonl"), atomically: true, encoding: .utf8)
+
+    struct FarmMeta: Encodable { let featureNames: [String]; let sampleCount: Int; let teams: Int }
+    let me = JSONEncoder(); me.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try me.encode(FarmMeta(featureNames: FarmObservation.featureNames,
+                           sampleCount: samples.count, teams: trios.count))
+        .write(to: URL(fileURLWithPath: "\(outDir)/farm_meta.json"))
+    print("Wrote \(outDir)/farm_dataset.jsonl and farm_meta.json")
+    exit(0)
+}
+
+// MARK: - --farm-eval: does farming help, and does the net beat the gate alone?
+
+if CommandLine.arguments.contains("--farm-eval") {
+    let netPath = stringFlag("--farm-weights") ?? "\(outDir)/farm_policy.json"
+    let net = try? FarmPolicyNet(contentsOf: URL(fileURLWithPath: netPath))
+    let teamCount = flagValue("--farm-eval", default: 120)
+    // A different --seed builds teams never seen in training in any pairing.
+    let seed = UInt64(flagValue("--seed", default: 0xFA77))
+    let trios = buildTrios(count: teamCount, seed: seed)
+    var games: [(Int, Int)] = []
+    for i in 0..<trios.count {
+        for j in (i + 1)..<trios.count {
+            let key = "\(trioKey(trios[i])) vs \(trioKey(trios[j]))"
+            if crc32(key) % 10 == 0 { games.append((i, j)) }   // held-out split
+        }
+    }
+    print("Farm-eval: \(games.count) held-out games\(net == nil ? " (no farm net found — gate-only)" : "")")
+
+    enum Mode { case off, gate, net }
+    /// One game where only `farmSide` may farm (so the effect is attributable).
+    func play(_ ti: Int, _ tj: Int, farmSide: Int, mode: Mode) -> Int? {
+        guard let a = makeTrio(trios[ti]), let b = makeTrio(trios[tj]) else { return nil }
+        var battle = ThreeVThreeBattle(teamA: a, teamB: b, voluntarySwitching: true)
+        if mode != .off {
+            battle.farming = true
+            battle.farmDecisionHook = { ctx, window in
+                guard ctx.side == farmSide else { return false }
+                if mode == .net, let net { return net.shouldFarm(ctx, window: window) }
+                return true
+            }
+        }
+        let r = battle.run().ratingA
+        return farmSide == 0 ? r : 1000 - r
+    }
+
+    var n = 0
+    var wins = [0, 0, 0], rating = [0.0, 0.0, 0.0]
+    for (ti, tj) in games {
+        for farmSide in 0...1 {
+            guard let off = play(ti, tj, farmSide: farmSide, mode: .off),
+                  let gate = play(ti, tj, farmSide: farmSide, mode: .gate),
+                  let learned = play(ti, tj, farmSide: farmSide, mode: .net) else { continue }
+            n += 1
+            for (i, r) in [off, gate, learned].enumerated() {
+                rating[i] += Double(r)
+                if r > 500 { wins[i] += 1 }
+            }
+        }
+    }
+    let d = Double(max(n, 1))
+    print(String(format: "\n%d paired games (farming side alternated)", n))
+    for (i, label) in ["never farm (switch now)", "always farm when safe", "learned farm policy"].enumerated() {
+        print(String(format: "%-26@ win rate %5.1f%%   mean rating %6.1f",
+                     label as NSString, 100 * Double(wins[i]) / d, rating[i] / d))
+    }
     exit(0)
 }
 

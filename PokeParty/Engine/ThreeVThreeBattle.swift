@@ -113,8 +113,42 @@ nonisolated struct ThreeVThreeBattle {
     /// charged move, and sac swaps that use a nearly-fainted mon as an extra shield).
     /// The switch timer prevents thrashing. Off by default (M8.3).
     var voluntarySwitching: Bool
+    /// Farming: when a voluntary escape from a losing matchup is available but the
+    /// opponent can't hurt us yet (no charged move affordable, only light fast-move
+    /// chip), stay in and throw only fast moves for a short window to bank energy —
+    /// and let the opponent's switch timer drain — before reassessing. The immediate
+    /// escape stays the fallback: the window ends the moment the opponent could throw.
+    /// Requires `voluntarySwitching`. Off by default.
+    var farming: Bool = false
+    /// Optional veto/confirm seam for farm-vs-switch (e.g. a learned model): given
+    /// the switch context and the proposed window (ms), return true to farm, false
+    /// to switch immediately. Nil = the built-in safety gate alone decides.
+    var farmDecisionHook: ((SwitchContext, Int) -> Bool)?
+
+    /// Turns farming on, driven by the learned farm-vs-switch policy. A no-op when
+    /// `net` is nil: ungated farming (every safe window) measured as a wash in
+    /// rl `--farm-eval`, so farming is only worth enabling with the policy picking
+    /// the moments. Has no effect unless `voluntarySwitching` is also on.
+    mutating func applyFarmNet(_ net: FarmPolicyNet?) {
+        guard let net else { return }
+        farming = true
+        farmDecisionHook = { ctx, window in net.shouldFarm(ctx, window: window) }
+    }
 
     private let battleTimeLimit = 240_000
+    /// Longest single farm window (battle-ms); the boundary re-evaluates afterwards.
+    private static let maxFarmMs = 10_000
+    /// Max share of the farmer's current HP the opponent's fast moves may chip away
+    /// over a farm window — past that it isn't "free" energy any more.
+    private static let farmDamageBudget = 0.2
+    /// A farm window must fit at least this many of our fast moves…
+    private static let minFarmFastMoves = 3
+    /// …and bank at least this much energy (after the 100 cap) to be worth it.
+    private static let minFarmEnergyGain = 15
+    /// Farming is considered up to this matchup rating — i.e. neutral (500) and a
+    /// little better, not just losing ones — since a neutral mon often still wants
+    /// to bank energy before a switch lands.
+    private static let farmMaxRating = 575
     /// GBL switch cooldown: after a voluntary switch a side can't switch again for
     /// this long (battle-ms). (Live-game value is often cited as 60s; set to 30s per
     /// project spec — one constant to change.)
@@ -173,12 +207,12 @@ nonisolated struct ThreeVThreeBattle {
         for i in teamA.indices {
             teamA[i].startHp = 0; teamA[i].startEnergy = 0
             teamA[i].startStatBuffs = [0, 0]; teamA[i].startDisguiseConsumed = false
-            teamA[i].startGulpMissileForm = .none
+            teamA[i].startGulpMissileForm = .none; teamA[i].startFormShifted = false
         }
         for i in teamB.indices {
             teamB[i].startHp = 0; teamB[i].startEnergy = 0
             teamB[i].startStatBuffs = [0, 0]; teamB[i].startDisguiseConsumed = false
-            teamB[i].startGulpMissileForm = .none
+            teamB[i].startGulpMissileForm = .none; teamB[i].startFormShifted = false
         }
 
         var teamAShields = shieldsA
@@ -203,6 +237,8 @@ nonisolated struct ThreeVThreeBattle {
         // bounded by total energy income over the clock; the /1500 term covers it.
         let maxSegments = teamA.count + teamB.count + 1
             + (voluntarySwitching ? 2 * (battleTimeLimit / Self.switchTimerMs) + battleTimeLimit / 1500 : 0)
+            // Each farm window lasts at least `minFarmFastMoves` fast moves (≥ 1.5s).
+            + (voluntarySwitching && farming ? 2 * battleTimeLimit / (Self.minFarmFastMoves * 500) : 0)
         var segment = 0
 
         while segment < maxSegments {
@@ -214,6 +250,9 @@ nonisolated struct ThreeVThreeBattle {
             var voluntarySwitchSide: Int?
             var switchTempoEnergy = 0
             var switchTempoDamage = 0
+            // End time (battle-ms) of a farm window per side; 0 = not farming.
+            var farmEndA = 0
+            var farmEndB = 0
 
             // Voluntary switching at the boundary (turn-0 safe-swap + counter-switch
             // vs the revealed opponent). Both sides decide simultaneously from the
@@ -221,7 +260,7 @@ nonisolated struct ThreeVThreeBattle {
             if voluntarySwitching {
                 let aCanSwitch = globalTime - lastSwitchA >= Self.switchTimerMs
                 let bCanSwitch = globalTime - lastSwitchB >= Self.switchTimerMs
-                let aTarget = aCanSwitch ? resolvedSwitchTarget(
+                var aTarget = aCanSwitch ? resolvedSwitchTarget(
                     side: 0, team: teamA, fainted: faintedA, active: activeA,
                     opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields,
                     time: globalTime, opponentLocked: false, mandatory: false) {
@@ -229,7 +268,7 @@ nonisolated struct ThreeVThreeBattle {
                             team: teamA, fainted: faintedA, active: activeA,
                             opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields)
                     } : nil
-                let bTarget = bCanSwitch ? resolvedSwitchTarget(
+                var bTarget = bCanSwitch ? resolvedSwitchTarget(
                     side: 1, team: teamB, fainted: faintedB, active: activeB,
                     opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields,
                     time: globalTime, opponentLocked: false, mandatory: false) {
@@ -237,6 +276,24 @@ nonisolated struct ThreeVThreeBattle {
                             team: teamB, fainted: faintedB, active: activeB,
                             opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields)
                     } : nil
+                // Farm instead of switching right now when the opponent can't punish
+                // us — also covers waiting out a planned catch with no escape target.
+                if farming {
+                    if aCanSwitch, let w = farmWindowMs(
+                        side: 0, team: teamA, fainted: faintedA, active: activeA,
+                        opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields,
+                        time: globalTime, switchOnTable: aTarget != nil,
+                        opponentUnlockAt: lastSwitchB + Self.switchTimerMs) {
+                        farmEndA = globalTime + w; aTarget = nil
+                    }
+                    if bCanSwitch, let w = farmWindowMs(
+                        side: 1, team: teamB, fainted: faintedB, active: activeB,
+                        opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields,
+                        time: globalTime, switchOnTable: bTarget != nil,
+                        opponentUnlockAt: lastSwitchA + Self.switchTimerMs) {
+                        farmEndB = globalTime + w; bTarget = nil
+                    }
+                }
                 if let aTarget { activeA = aTarget; lastSwitchA = globalTime; entrancesA.append(aTarget) }
                 if let bTarget { activeB = bTarget; lastSwitchB = globalTime; entrancesB.append(bTarget) }
                 var aSwitched = aTarget != nil
@@ -257,7 +314,15 @@ nonisolated struct ThreeVThreeBattle {
                                 team: teamB, fainted: faintedB, active: activeB,
                                 opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields)
                         }) {
-                        activeB = c; lastSwitchB = globalTime; entrancesB.append(c); bSwitched = true
+                        if farming, let w = farmWindowMs(
+                            side: 1, team: teamB, fainted: faintedB, active: activeB,
+                            opponent: teamA[activeA], teamShields: teamBShields, opponentShields: teamAShields,
+                            time: globalTime, switchOnTable: true,
+                            opponentUnlockAt: globalTime + Self.switchTimerMs) {
+                            farmEndB = globalTime + w
+                        } else {
+                            activeB = c; lastSwitchB = globalTime; entrancesB.append(c); bSwitched = true
+                        }
                     } else if bSwitched, aCanSwitch, let c = resolvedSwitchTarget(
                         side: 0, team: teamA, fainted: faintedA, active: activeA,
                         opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields,
@@ -266,7 +331,15 @@ nonisolated struct ThreeVThreeBattle {
                                 team: teamA, fainted: faintedA, active: activeA,
                                 opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields)
                         }) {
-                        activeA = c; lastSwitchA = globalTime; entrancesA.append(c); aSwitched = true
+                        if farming, let w = farmWindowMs(
+                            side: 0, team: teamA, fainted: faintedA, active: activeA,
+                            opponent: teamB[activeB], teamShields: teamAShields, opponentShields: teamBShields,
+                            time: globalTime, switchOnTable: true,
+                            opponentUnlockAt: globalTime + Self.switchTimerMs) {
+                            farmEndA = globalTime + w
+                        } else {
+                            activeA = c; lastSwitchA = globalTime; entrancesA.append(c); aSwitched = true
+                        }
                     }
                 }
                 // Tempo cost: if exactly one side switched, the other gets free fast
@@ -341,6 +414,20 @@ nonisolated struct ThreeVThreeBattle {
                     }
                 }
             }
+            // Farm windows: the farming side holds its charged moves, and the segment
+            // stops when the window ends or the opponent first affords a charged move.
+            if farmEndA > 0 || farmEndB > 0 {
+                battle.holdChargedMoves = [farmEndA > 0, farmEndB > 0]
+                let aEnd = farmEndA, bEnd = farmEndB
+                let aThreat = teamB[activeB].chargedMoves.map(\.energy).min() ?? Int.max
+                let bThreat = teamA[activeA].chargedMoves.map(\.energy).min() ?? Int.max
+                let existing = battle.interruptCheck
+                battle.interruptCheck = {
+                    (existing?($0) ?? false)
+                        || (aEnd > 0 && ($0.time >= aEnd || $0.pokemon[1].energy >= aThreat))
+                        || (bEnd > 0 && ($0.time >= bEnd || $0.pokemon[0].energy >= bThreat))
+                }
+            }
             var shieldSolution: ShieldSearch.Solution?
             if optimalShields {
                 let sol = ShieldSearch.optimalSolution(teamA[activeA], teamB[activeB])
@@ -378,6 +465,7 @@ nonisolated struct ThreeVThreeBattle {
             teamA[activeA].startStatBuffs = postA.statBuffs
             teamA[activeA].startDisguiseConsumed = postA.hasDisguise && !postA.disguiseActive
             teamA[activeA].startGulpMissileForm = postA.gulpMissileForm
+            teamA[activeA].startFormShifted = postA.formShifted
             teamAShields = postA.shields
             teamB[activeB].hp = postB.hp
             teamB[activeB].startHp = max(0, postB.hp)
@@ -385,6 +473,7 @@ nonisolated struct ThreeVThreeBattle {
             teamB[activeB].startStatBuffs = postB.statBuffs
             teamB[activeB].startDisguiseConsumed = postB.hasDisguise && !postB.disguiseActive
             teamB[activeB].startGulpMissileForm = postB.gulpMissileForm
+            teamB[activeB].startFormShifted = postB.formShifted
             teamBShields = postB.shields
 
             let aFainted = postA.hp <= 0
@@ -471,6 +560,67 @@ nonisolated struct ThreeVThreeBattle {
             else { return heuristic() }
             return i
         }
+    }
+
+    /// Length (ms) of a safe farm window for `active`, or nil when farming isn't
+    /// worth it. Worth considering when the matchup is neutral or worse
+    /// (`farmMaxRating`) and a switch is on the table (`switchOnTable`: an escape or
+    /// counterswap target exists) or a catch is planned (a bench resist to a
+    /// super-effective move the opponent is charging toward). Safe = the opponent
+    /// can't afford any charged move yet and its fast-move chip over the window
+    /// stays within `farmDamageBudget` of our HP.
+    ///
+    /// The window ends one opposing fast move before it could first throw (exactly
+    /// when it could, for a planned catch — we want to be there for the throw),
+    /// rounded down to whole fast moves of ours, and never outlasts the opponent's
+    /// switch lock (`opponentUnlockAt`) so a counterswap still lands while it's
+    /// stuck. Uses revealed info only (counted energy).
+    private func farmWindowMs(
+        side: Int, team: [BattlePokemon], fainted: Set<Int>, active: Int,
+        opponent: BattlePokemon, teamShields: Int, opponentShields: Int, time: Int,
+        switchOnTable: Bool, opponentUnlockAt: Int
+    ) -> Int? {
+        let me = team[active]
+        let oppFast = opponent.fastMove
+        guard let cheapest = opponent.chargedMoves.map(\.energy).min(),
+              opponent.startEnergy < cheapest,
+              me.fastMove.cooldown > 0, me.fastMove.energyGain > 0,
+              oppFast.cooldown > 0, oppFast.energyGain > 0,
+              rate(me, vs: opponent, myShields: teamShields, oppShields: opponentShields, fresh: false) < Self.farmMaxRating
+        else { return nil }
+        let catchPlanned = catchEnergyThreshold(team: team, fainted: fainted, active: active, opponent: opponent) != nil
+        guard switchOnTable || catchPlanned else { return nil }
+
+        // Opposing fast moves until it can first throw (minus a safety margin
+        // unless we're deliberately waiting to catch the throw).
+        let toThrow = (cheapest - opponent.startEnergy + oppFast.energyGain - 1) / oppFast.energyGain
+        let margin = catchPlanned ? 0 : 1
+        var window = min(max(0, toThrow - margin) * oppFast.cooldown, Self.maxFarmMs, battleTimeLimit - time)
+        if opponentUnlockAt > time { window = min(window, opponentUnlockAt - time) }
+
+        // Cap the chip damage we're willing to eat while farming.
+        let chip = DamageCalculator.damage(opponent, me, oppFast)
+        if chip > 0 {
+            let budget = Self.farmDamageBudget * Double(Self.carriedHp(me))
+            let maxHits = Int(budget) / chip
+            window = min(window, maxHits * oppFast.cooldown)
+        }
+
+        let cycles = window / me.fastMove.cooldown
+        guard cycles >= Self.minFarmFastMoves else { return nil }
+        window = cycles * me.fastMove.cooldown
+        guard min(100, me.startEnergy + cycles * me.fastMove.energyGain) - me.startEnergy
+                >= Self.minFarmEnergyGain else { return nil }
+
+        if let hook = farmDecisionHook {
+            let ctx = SwitchContext(
+                side: side, team: team, fainted: fainted, active: active,
+                opponent: opponent, teamShields: teamShields,
+                opponentShields: opponentShields, time: time,
+                opponentLocked: opponentUnlockAt > time, mandatory: false)
+            guard hook(ctx, window) else { return nil }
+        }
+        return window
     }
 
     /// Whether to voluntarily switch the active mon, and to whom, given only the
@@ -620,6 +770,21 @@ nonisolated struct ThreeVThreeBattle {
             if d > bestDamage { bestDamage = d; best = move }
         }
         return best
+    }
+
+    /// The cheapest opposing charged move that's super-effective against `active`
+    /// and resisted by a living backup (type math only), i.e. the energy level at
+    /// which a catch swap becomes possible. Nil when the bench can't catch anything.
+    private func catchEnergyThreshold(
+        team: [BattlePokemon], fainted: Set<Int>, active: Int, opponent: BattlePokemon
+    ) -> Int? {
+        let backups = (0..<team.count).filter { !fainted.contains($0) && $0 != active }
+        return opponent.chargedMoves
+            .filter { move in
+                team[active].typeEffectiveness(forTypeIndex: move.typeIndex) > 1
+                    && backups.contains { team[$0].typeEffectiveness(forTypeIndex: move.typeIndex) < 1 }
+            }
+            .map(\.energy).min()
     }
 
     /// The opponent-energy level that should interrupt this side's segment: the

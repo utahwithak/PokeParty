@@ -69,6 +69,7 @@ nonisolated enum MetaFieldTester {
         movesById: [String: Move],
         learnedShields: Bool = true,
         learnedSwitches: Bool = true,
+        learnedFarming: Bool = true,
         onProgress: (@Sendable (Double) -> Void)? = nil,
         onResults: (@Sendable (Results) -> Void)? = nil
     ) async -> Results {
@@ -80,6 +81,7 @@ nonisolated enum MetaFieldTester {
 
         let shieldNet = learnedShields ? ShieldPolicyNet.bundled : nil
         let switchNet = learnedSwitches ? SwitchPolicyNet.bundled : nil
+        let farmNet = learnedFarming ? FarmPolicyNet.bundled : nil
 
         var results: [OpponentResult] = []
         var completed = 0
@@ -108,6 +110,7 @@ nonisolated enum MetaFieldTester {
                             voluntarySwitching: true,
                             learnedShieldNet: shieldNet)
                         if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
+                        battle.applyFarmNet(farmNet)
                         let result = battle.run()
                         outcomes.append(result.winner)
                         ratings.append(result.ratingA)

@@ -129,6 +129,7 @@ nonisolated enum TeamOptimizer {
         maxResults: Int = 50,
         learnedShields: Bool = true,
         learnedSwitches: Bool = true,
+        learnedFarming: Bool = true,
         voluntarySwitching: Bool = false,
         optimalShields: Bool = false,
         exploreAlternateMovesets: Bool = false,
@@ -148,6 +149,7 @@ nonisolated enum TeamOptimizer {
 
         let shieldNet = learnedShields ? ShieldPolicyNet.bundled : nil
         let switchNet = learnedSwitches ? SwitchPolicyNet.bundled : nil
+        let farmNet = learnedFarming ? FarmPolicyNet.bundled : nil
 
         let strongAgainstCandidates = strongAgainstMembers.prefix(4).compactMap {
             makeLockedCandidate(member: $0, cpCap: cpCap, pokemonById: pokemonById)
@@ -190,6 +192,7 @@ nonisolated enum TeamOptimizer {
                     return await climb(
                         start: start, pool: pool, metaField: metaField,
                         movesById: movesById, shieldNet: shieldNet, switchNet: switchNet,
+                        farmNet: farmNet,
                         voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
                         prefilter: prefilterData, lockedCount: lockedIndices.count)
                 }
@@ -233,6 +236,7 @@ nonisolated enum TeamOptimizer {
         fieldSize: Int,
         learnedShields: Bool = true,
         learnedSwitches: Bool = true,
+        learnedFarming: Bool = true,
         voluntarySwitching: Bool = false,
         optimalShields: Bool = false,
         onProgress: (@Sendable (Double) -> Void)? = nil,
@@ -247,6 +251,7 @@ nonisolated enum TeamOptimizer {
 
         let shieldNet = learnedShields ? ShieldPolicyNet.bundled : nil
         let switchNet = learnedSwitches ? SwitchPolicyNet.bundled : nil
+        let farmNet = learnedFarming ? FarmPolicyNet.bundled : nil
 
         var results = teams
         var completed = 0
@@ -275,6 +280,7 @@ nonisolated enum TeamOptimizer {
                             voluntarySwitching: voluntarySwitching,
                             learnedShieldNet: shieldNet)
                         if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
+                        battle.applyFarmNet(farmNet)
                         switch battle.run().winner {
                         case .teamA: wins += 1
                         case .teamB: losses += 1
@@ -758,6 +764,7 @@ nonisolated enum TeamOptimizer {
         movesById: [String: Move],
         shieldNet: ShieldPolicyNet?,
         switchNet: SwitchPolicyNet?,
+        farmNet: FarmPolicyNet?,
         voluntarySwitching: Bool,
         optimalShields: Bool,
         prefilter: PrefilterData?,
@@ -766,7 +773,7 @@ nonisolated enum TeamOptimizer {
         var current = start
         var currentScore = evalSync(
             team: current, pool: pool, metaField: metaField, movesById: movesById,
-            shieldNet: shieldNet, switchNet: switchNet,
+            shieldNet: shieldNet, switchNet: switchNet, farmNet: farmNet,
             voluntarySwitching: voluntarySwitching, optimalShields: optimalShields)
 
         // When pre-filtering: evaluate only the topK most-promising swaps per step,
@@ -819,6 +826,7 @@ nonisolated enum TeamOptimizer {
                             let sc = evalSync(
                                 team: neighbor, pool: pool, metaField: metaField,
                                 movesById: movesById, shieldNet: shieldNet, switchNet: switchNet,
+                                farmNet: farmNet,
                                 voluntarySwitching: voluntarySwitching,
                                 optimalShields: optimalShields)
                             if localBest == nil || sc > localBest!.0 {
@@ -859,7 +867,7 @@ nonisolated enum TeamOptimizer {
         for perm in orderPermutations(current) where perm != current {
             let sc = evalSync(
                 team: perm, pool: pool, metaField: metaField, movesById: movesById,
-                shieldNet: shieldNet, switchNet: switchNet,
+                shieldNet: shieldNet, switchNet: switchNet, farmNet: farmNet,
                 voluntarySwitching: voluntarySwitching, optimalShields: optimalShields)
             if sc > bestOrderScore { bestOrderScore = sc; bestOrder = perm }
         }
@@ -880,6 +888,7 @@ nonisolated enum TeamOptimizer {
                     voluntarySwitching: voluntarySwitching,
                     learnedShieldNet: shieldNet)
                 if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
+                battle.applyFarmNet(farmNet)
                 switch battle.run().winner {
                 case .teamA: wins += 1
                 case .teamB: losses += 1
@@ -912,6 +921,7 @@ nonisolated enum TeamOptimizer {
         movesById: [String: Move],
         shieldNet: ShieldPolicyNet?,
         switchNet: SwitchPolicyNet?,
+        farmNet: FarmPolicyNet?,
         voluntarySwitching: Bool,
         optimalShields: Bool
     ) -> Double {
@@ -928,6 +938,7 @@ nonisolated enum TeamOptimizer {
                 voluntarySwitching: voluntarySwitching,
                 learnedShieldNet: shieldNet)
             if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
+            battle.applyFarmNet(farmNet)
             switch battle.run().winner {
             case .teamA: total += meta.weight
             case .teamB: break

@@ -373,6 +373,8 @@ struct TeamFinderView: View {
                 .disabled(model.isRunning || model.optimalShields)
             Toggle("Learned switch AI", isOn: Bindable(model).learnedSwitches)
                 .disabled(model.isRunning)
+            Toggle("Learned farming AI", isOn: Bindable(model).learnedFarming)
+                .disabled(model.isRunning || !model.simulateCounterswaps)
         }
     }
 
@@ -420,6 +422,12 @@ struct TeamFinderView: View {
             Toggle("Learned switch AI", isOn: Bindable(model).learnedSwitches)
                 .disabled(model.isRunning)
             Text("Chooses switches with a neural network trained on rollout search — it replays each choice to the end of the match and learns which one wins. Beats the built-in switching rules in about 63% of paired games.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Toggle("Learned farming AI", isOn: Bindable(model).learnedFarming)
+                .disabled(model.isRunning || !model.simulateCounterswaps)
+            Text("When a switch is available but the opponent can't punish yet, a small neural network decides whether to farm energy with fast moves for a few seconds first or switch right away. Needs counterswap simulation. A modest edge: about +2 points of win rate in held-out games.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

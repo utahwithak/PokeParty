@@ -252,6 +252,35 @@ nonisolated enum IVCalculator {
         )
     }
 
+    /// Re-derives the stats the same level and IVs would have on a different
+    /// base stat line, given the effective stats already computed for
+    /// `from`. Used for in-battle form changes (Minior), which keep the
+    /// Pokémon's level and IVs but swap base stats. Returns nil when no
+    /// level/IV combination reproduces `stats` exactly or when the base HP
+    /// differs (HP is carried over as-is, so it must not change).
+    static func stats(
+        _ stats: (atk: Double, def: Double, hp: Int),
+        from: (atk: Int, def: Int, hp: Int),
+        to: (atk: Int, def: Int, hp: Int)
+    ) -> (atk: Double, def: Double, hp: Int)? {
+        guard from.hp == to.hp else { return nil }
+        for m in cpms {
+            let ivAtk = stats.atk / m - Double(from.atk)
+            let ivDef = stats.def / m - Double(from.def)
+            guard abs(ivAtk - ivAtk.rounded()) < 1e-6, abs(ivDef - ivDef.rounded()) < 1e-6,
+                  (0...15).contains(Int(ivAtk.rounded())), (0...15).contains(Int(ivDef.rounded()))
+            else { continue }
+            let hpMatches = (0...15).contains {
+                max(Int((m * Double(from.hp + $0)).rounded(.down)), 10) == stats.hp
+            }
+            guard hpMatches else { continue }
+            return (m * Double(to.atk + Int(ivAtk.rounded())),
+                    m * Double(to.def + Int(ivDef.rounded())),
+                    stats.hp)
+        }
+        return nil
+    }
+
     // MARK: - Ranking
 
     /// Every valid IV combination for a base stat line under `cpCap`, each

@@ -37,6 +37,22 @@ actor DataService {
         let cups: [Cup]?
         /// Species banned from Great/Ultra League regardless of cup filters.
         let greatLeagueIneligible: [String]?
+
+        private enum CodingKeys: String, CodingKey {
+            case pokemon, moves, formats, cups, greatLeagueIneligible
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            let decoded = try c.decode([Pokemon].self, forKey: .pokemon)
+            // Link form-changing species (Minior) to their other form's stats.
+            let byId = Dictionary(decoded.map { ($0.speciesId, $0) }, uniquingKeysWith: { first, _ in first })
+            pokemon = decoded.map { $0.formChange == nil ? $0 : $0.resolvingFormShift(pokemonById: byId) }
+            moves = try c.decode([Move].self, forKey: .moves)
+            formats = try c.decodeIfPresent([RankingFormat].self, forKey: .formats)
+            cups = try c.decodeIfPresent([Cup].self, forKey: .cups)
+            greatLeagueIneligible = try c.decodeIfPresent([String].self, forKey: .greatLeagueIneligible)
+        }
     }
 
     enum DataError: LocalizedError {

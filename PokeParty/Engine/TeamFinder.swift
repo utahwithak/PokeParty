@@ -157,6 +157,7 @@ nonisolated enum TeamFinder {
         optimalShields: Bool = false,
         learnedShields: Bool = false,
         learnedSwitches: Bool = false,
+        learnedFarming: Bool = false,
         seededField: [[Int]]? = nil,
         onSeedingProgress: (@Sendable (Double) -> Void)? = nil,
         onStandings: (@Sendable (Standings) -> Void)? = nil
@@ -171,6 +172,8 @@ nonisolated enum TeamFinder {
         // Learned switch policy (drives boundary switches, counterswaps, and
         // faint replacements in every 3v3).
         let switchNet = learnedSwitches ? SwitchPolicyNet.bundled : nil
+        // Learned farm-vs-switch policy (needs voluntarySwitching to matter).
+        let farmNet = learnedFarming ? FarmPolicyNet.bundled : nil
 
         let field: [[Int]]
         if let seededField {
@@ -307,6 +310,7 @@ nonisolated enum TeamFinder {
                             if let switchNet {
                                 battle.switchDecisionHook = { switchNet.decide($0) }
                             }
+                            battle.applyFarmNet(farmNet)
                             let result = battle.run()
                             outcomes.append((pair.a, pair.b, result.winner, result.ratingA))
                         }
@@ -367,6 +371,7 @@ nonisolated enum TeamFinder {
                             if let switchNet {
                                 battle.switchDecisionHook = { switchNet.decide($0) }
                             }
+                            battle.applyFarmNet(farmNet)
                             switch battle.run().winner {
                             case .teamA: return (i, j, 1.0)
                             case .teamB: return (i, j, 0.0)
