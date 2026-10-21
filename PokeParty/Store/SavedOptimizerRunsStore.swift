@@ -2,16 +2,16 @@
 //  SavedOptimizerRunsStore.swift
 //  PokeParty
 //
-//  Persists completed AI Optimizer (hill-climbing) runs as a JSON file in
-//  Application Support — same pattern as SavedTournamentsStore. A run's
-//  climbers are expensive to converge and the meta rarely changes, so a
-//  finished run is worth keeping around to review later without re-climbing.
-//  Runs are deduplicated by configuration (format + pool + meta field +
-//  restarts): re-running the same setup replaces the old result.
+//  A completed AI Optimizer (hill-climbing) run, persisted (and synced across
+//  the user's devices) by `SyncedRunsStore` — same pattern as
+//  SavedTournamentsStore. A run's climbers are expensive to converge and the
+//  meta rarely changes, so a finished run is worth keeping around to review
+//  later without re-climbing. Runs are deduplicated by configuration (format
+//  + pool + meta field + restarts): re-running the same setup replaces the
+//  old result.
 //
 
 import Foundation
-import SwiftUI
 
 /// A completed AI Optimizer run: its configuration, when it ran, and the
 /// resulting teams. `RankingFormat` is only Decodable, so the identifying
@@ -32,7 +32,10 @@ nonisolated struct SavedOptimizerRun: Identifiable, Codable {
     /// so replaying it later with these values reproduces the same pool the
     /// saved `teams[].poolIndices` index into, without persisting the pool
     /// itself (a broad-field validation pass can then run on a reloaded run
-    /// exactly as it would on a freshly completed one).
+    /// exactly as it would on a freshly completed one). That only holds while
+    /// the rankings data is unchanged, so `TeamFinderModel` checks the
+    /// rebuilt pool against each team's stored members before validating
+    /// (a run synced or shared from another device may predate a data update).
     var exploreAlternateMovesets: Bool
     var lockedMembers: [TeamMember]
     /// User-picked Pokémon the hill-climb was asked to weight teams strongly
@@ -47,6 +50,8 @@ nonisolated struct SavedOptimizerRun: Identifiable, Codable {
     /// vs Full Meta" pass on a reloaded run uses the same size the run was
     /// set up with rather than whatever the slider happens to be at now.
     var broadFieldSize: Int = 3000
+    /// Set when this run was imported from somebody else's shared file.
+    var importedAt: Date? = nil
 
     var format: RankingFormat {
         RankingFormat(title: formatTitle, cup: cup, cp: cp, hideRankings: false, showFormat: nil)
@@ -63,72 +68,11 @@ nonisolated struct SavedOptimizerRun: Identifiable, Codable {
     }
 }
 
-@MainActor
-@Observable
-final class SavedOptimizerRunsStore {
-
-    private(set) var runs: [SavedOptimizerRun] = []
-
-    private let fileURL: URL
-
-    init(fileURL: URL? = nil) {
-        self.fileURL = fileURL ?? Self.defaultFileURL
-        // Decoding saved runs can be sizable JSON — kept off the main thread.
-        Task { await load() }
-    }
-
-    private var isLoaded = false
-
-    /// Reads the saved runs from disk off the main actor and merges them with
-    /// anything already saved this session.
-    func load() async {
-        guard !isLoaded else { return }
-        let url = fileURL
-        let loaded: [SavedOptimizerRun] = await Task.detached(priority: .utility) { Self.load(from: url) }.value
-        merge(loaded)
-    }
-
-    /// Synchronous fallback so a save/delete that races the async load never
-    /// clobbers the file on disk with a partial list.
-    private func loadNowIfNeeded() {
-        guard !isLoaded else { return }
-        merge(Self.load(from: fileURL))
-    }
-
-    private func merge(_ loaded: [SavedOptimizerRun]) {
-        guard !isLoaded else { return }
-        isLoaded = true
-        let existingIDs = Set(runs.map(\.id))
-        runs += loaded.filter { !existingIDs.contains($0.id) }
-    }
-
-    /// Saves a completed run, replacing any earlier run of the same
-    /// configuration. Newest first.
-    func save(_ run: SavedOptimizerRun) {
-        loadNowIfNeeded()
-        runs.removeAll { $0.sameConfiguration(as: run) }
-        runs.insert(run, at: 0)
-        persist()
-    }
-
-    func delete(_ run: SavedOptimizerRun) {
-        loadNowIfNeeded()
-        runs.removeAll { $0.id == run.id }
-        persist()
-    }
-
-    // MARK: - Disk
-
-    private static var defaultFileURL: URL {
-        JSONFileStore.defaultFileURL(filename: "SavedOptimizerRuns.json")
-    }
-
-    nonisolated private static func load(from url: URL) -> [SavedOptimizerRun] {
-        JSONFileStore.load(from: url)
-    }
-
-    private func persist() {
-        guard let data = JSONFileStore.encode(runs) else { return }
-        JSONFileStore.write(data, to: fileURL)
-    }
+nonisolated extension SavedOptimizerRun: SyncedRun {
+    static var kind: ResultsKind { .optimizerRun }
+    static var folderName: String { "OptimizerRuns" }
+    static var legacyFilename: String { "SavedOptimizerRuns.json" }
+    var shareTitle: String { "\(formatTitle) AI Optimizer run" }
 }
+
+typealias SavedOptimizerRunsStore = SyncedRunsStore<SavedOptimizerRun>

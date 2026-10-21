@@ -35,6 +35,8 @@ struct TeamResultRow<Record: View>: View {
     let rank: Int
     let members: [TeamResultMember]
     var onOpenInBuilder: (() -> Void)?
+    /// When set, a share button exports this team as a `.pokeparty` file.
+    var shareItem: ResultsShareItem?
     @ViewBuilder var record: () -> Record
 
     var body: some View {
@@ -66,6 +68,13 @@ struct TeamResultRow<Record: View>: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .fixedSize()
+            }
+            if let shareItem {
+                ShareLink(item: shareItem, preview: SharePreview(shareItem.title)) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderless)
+                .help("Share this team")
             }
         }
     }

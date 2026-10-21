@@ -26,7 +26,7 @@ struct TeamFinderSimulationView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(standings.teams.enumerated()), id: \.element.id) { index, team in
-                        LeaderboardRow(rank: index + 1, team: team) {
+                        LeaderboardRow(rank: index + 1, team: team, format: format) {
                             openInBuilder(team)
                         }
                         .transition(.asymmetric(
@@ -81,6 +81,7 @@ struct TeamFinderSimulationView: View {
 private struct LeaderboardRow: View {
     let rank: Int
     let team: TeamFinder.RankedTeam
+    let format: RankingFormat?
     let openInBuilder: () -> Void
 
     var body: some View {
@@ -91,6 +92,11 @@ private struct LeaderboardRow: View {
                                   shadow: member.shadow, isLead: index == 0)
             },
             onOpenInBuilder: openInBuilder,
+            shareItem: format.map {
+                ResultsShareItem(
+                    teamNamed: team.members.map(\.speciesName).joined(separator: " / "),
+                    members: team.members.map(\.member), cup: $0.cup, cp: $0.cp)
+            },
             record: { record }
         )
     }
@@ -172,7 +178,7 @@ struct OptimizerResultsView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(displayedTeams.enumerated()), id: \.element.id) { index, team in
-                            OptimizerTeamRow(rank: index + 1, team: team, movesById: movesById) {
+                            OptimizerTeamRow(rank: index + 1, team: team, format: format, movesById: movesById) {
                                 openInBuilder(team)
                             }
                             .transition(.asymmetric(
@@ -214,14 +220,21 @@ struct OptimizerResultsView: View {
                     .controlSize(.small)
             }
         } else if model.canValidateAgainstBroadField {
-            HStack {
-                Text("Curated meta field win rates cluster near 50% by design — validate against a much larger random sample to see which result really holds up.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Validate vs Full Meta") { model.validateAgainstBroadField(using: store) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Curated meta field win rates cluster near 50% by design — validate against a much larger random sample to see which result really holds up.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Validate vs Full Meta") { model.validateAgainstBroadField(using: store) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                if let message = model.broadFieldMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
         }
     }
@@ -270,6 +283,7 @@ struct OptimizerResultsView: View {
 private struct OptimizerTeamRow: View {
     let rank: Int
     let team: TeamOptimizer.OptimizedTeam
+    let format: RankingFormat?
     let movesById: [String: Move]
     let openInBuilder: () -> Void
 
@@ -284,6 +298,11 @@ private struct OptimizerTeamRow: View {
                     tooltip: movesetText(for: member))
             },
             onOpenInBuilder: openInBuilder,
+            shareItem: format.map {
+                ResultsShareItem(
+                    teamNamed: team.members.map(\.speciesName).joined(separator: " / "),
+                    members: team.members.map(\.member), cup: $0.cup, cp: $0.cp)
+            },
             record: { scoreRow }
         )
     }

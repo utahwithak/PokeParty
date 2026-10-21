@@ -3,9 +3,11 @@
 //  PokeParty
 //
 //  Shared disk I/O for the app's JSON-array stores (SavedTeamsStore,
-//  BenchStore, SavedTournamentsStore, SavedOptimizerRunsStore) — each keeps
-//  its own in-memory array and higher-level CRUD/cloud-sync behavior, but
-//  all persist the same way: one JSON array file in Application Support.
+//  BenchStore) — each keeps its own in-memory array and higher-level
+//  CRUD/cloud-sync behavior, but all persist the same way: one JSON array
+//  file in Application Support. (Saved tournaments and optimizer runs moved
+//  to one file per run in `SyncedRunsStore`, which still uses `load` to
+//  migrate their old array files.)
 //
 
 import Foundation

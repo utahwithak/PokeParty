@@ -22,6 +22,7 @@ struct TeamBuilderDetailView: View {
     @State private var metaTestModel = TeamMetaTestModel()
     @State private var showingSavePrompt = false
     @State private var saveName = ""
+    @Environment(ShareImportModel.self) private var shareImport
 
     private enum DetailTab: String, CaseIterable {
         case analysis = "Analysis"
@@ -167,6 +168,12 @@ struct TeamBuilderDetailView: View {
             ForEach(teamsForCurrentFormat) { team in
                 Menu(team.name) {
                     Button("Load") { model.setTeam(team.members) }
+                    ShareLink(
+                        item: ResultsShareItem(teamNamed: team.name, members: team.members, cup: team.cup, cp: team.cp),
+                        preview: SharePreview(team.name)
+                    ) {
+                        Label("Share…", systemImage: "square.and.arrow.up")
+                    }
                     Button("Delete", role: .destructive) { savedTeams.delete(team) }
                 }
             }
@@ -176,6 +183,9 @@ struct TeamBuilderDetailView: View {
                 showingSavePrompt = true
             }
             .disabled(!model.hasMembers)
+            Button("Import Shared Team…") {
+                shareImport.isImporterPresented = true
+            }
         } label: {
             Label("Teams", systemImage: "person.3.sequence")
         }

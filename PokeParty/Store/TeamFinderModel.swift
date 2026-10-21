@@ -222,6 +222,8 @@ final class TeamFinderModel {
     /// completes or is cancelled.
     private(set) var broadFieldResults: TeamOptimizer.BroadFieldResults?
     private(set) var isValidatingBroadField = false
+    /// Why the last validation couldn't run (nil when it could).
+    private(set) var broadFieldMessage: String?
     /// The format and pool size the current run was started with.
     private(set) var resultsFormat: RankingFormat?
     private(set) var resultsPoolSize = 0
@@ -282,6 +284,7 @@ final class TeamFinderModel {
         gradedTeams = nil
         standings = nil
         broadFieldResults = nil
+        broadFieldMessage = nil
         resultsFormat = run.format
         resultsPoolSize = run.poolSize
         resultsExploreAlternateMovesets = run.exploreAlternateMovesets
@@ -538,6 +541,7 @@ final class TeamFinderModel {
 
         isValidatingBroadField = true
         broadFieldResults = nil
+        broadFieldMessage = nil
 
         validateTask = Task {
             let entries: [RankingEntry]
@@ -554,6 +558,15 @@ final class TeamFinderModel {
                 pokemonById: pokemonById, exploreAlternateMovesets: exploreAlternateMovesets,
                 lockedMembers: lockedMembers).pool
 
+            // A run synced or shared from another device can predate a
+            // rankings update here; its pool indices would then point at
+            // different Pokémon, so refuse rather than battle the wrong teams.
+            guard Self.pool(pool, matches: teams) else {
+                broadFieldMessage = "This run was made with different rankings data than this device has now, so it can't be validated here. Re-run the AI Optimizer to validate."
+                isValidatingBroadField = false
+                return
+            }
+
             let final = await TeamOptimizer.evaluateBroadField(
                 teams: teams, pool: pool, movesById: movesById, fieldSize: fieldSize,
                 learnedShields: learnedShields, learnedSwitches: learnedSwitches,
@@ -567,6 +580,22 @@ final class TeamFinderModel {
             if Task.isCancelled { return }
             withAnimation(.spring(duration: 0.6)) { broadFieldResults = final }
             isValidatingBroadField = false
+        }
+    }
+
+    /// True when every team's pool indices resolve to the members stored with
+    /// it (species, moveset and shadow flag, in team order).
+    static func pool(_ pool: [TeamOptimizer.Candidate], matches teams: [TeamOptimizer.OptimizedTeam]) -> Bool {
+        teams.allSatisfy { team in
+            team.poolIndices.count == team.members.count
+                && zip(team.poolIndices, team.members).allSatisfy { index, stored in
+                    guard pool.indices.contains(index) else { return false }
+                    let candidate = pool[index].member
+                    return candidate.speciesId == stored.member.speciesId
+                        && candidate.fastMoveId == stored.member.fastMoveId
+                        && candidate.chargedMoveIds == stored.member.chargedMoveIds
+                        && candidate.shadow == stored.member.shadow
+                }
         }
     }
 

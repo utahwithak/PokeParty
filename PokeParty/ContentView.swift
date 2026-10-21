@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var breakpoints = BreakpointModel()
     @State private var savedTeams = SavedTeamsStore()
     @State private var bench = BenchStore()
+    @State private var shareImport = ShareImportModel()
     @State private var selection: SidebarSelection? = .format(.great)
     @State private var selectedEntryID: RankingEntry.ID?
     @State private var selectedBenchID: BenchEntry.ID?
@@ -45,6 +46,24 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .environment(entitlements)
+        .environment(shareImport)
+        .fileImporter(
+            isPresented: Bindable(shareImport).isImporterPresented,
+            allowedContentTypes: [.pokePartyResults],
+            allowsMultipleSelection: true
+        ) { result in
+            if case .success(let urls) = result { importResults(urls) }
+        }
+        // Opening a .pokeparty file (Finder, Files, AirDrop, Messages).
+        .onOpenURL { importResults([$0]) }
+        .alert("Import", isPresented: Binding(
+            get: { shareImport.message != nil },
+            set: { if !$0 { shareImport.message = nil } }
+        )) {
+            Button("OK") {}
+        } message: {
+            Text(shareImport.message ?? "")
+        }
         #if os(macOS)
         // Keeps the 3-pane layout usable on macOS; on iOS these columns
         // collapse to a single full-width screen, so a forced minimum here
@@ -65,6 +84,22 @@ struct ContentView: View {
             if let new {
                 UserDefaults.standard.set(new.persistenceKey, forKey: Self.selectionDefaultsKey)
             }
+        }
+    }
+
+    /// Imports shared `.pokeparty` files into the matching stores and reports
+    /// what happened in one alert.
+    private func importResults(_ urls: [URL]) {
+        Task {
+            var messages: [String] = []
+            for url in urls {
+                messages.append(await ResultsImporter.importFile(
+                    at: url,
+                    tournaments: teamFinder.savedTournaments,
+                    optimizerRuns: teamFinder.savedOptimizerRuns,
+                    savedTeams: savedTeams))
+            }
+            shareImport.message = messages.joined(separator: "\n")
         }
     }
 

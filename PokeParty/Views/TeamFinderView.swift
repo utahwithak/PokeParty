@@ -21,6 +21,7 @@ struct TeamFinderView: View {
     @Binding var selection: SidebarSelection?
     @State private var showingLockedPicker = false
     @State private var showingStrongAgainstPicker = false
+    @Environment(ShareImportModel.self) private var shareImport
 
     private var visibleCupFormats: [RankingFormat] {
         store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
@@ -165,6 +166,16 @@ struct TeamFinderView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Party Finder")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    shareImport.isImporterPresented = true
+                } label: {
+                    Label("Import Shared Results", systemImage: "square.and.arrow.down")
+                }
+                .help("Import a tournament, AI Optimizer run or team someone shared with you")
+            }
+        }
         #if os(iOS)
         // See MatchupSimulatorView: on iOS the detail column (here,
         // TeamFinderResultsView) has no other way to become reachable.
@@ -446,7 +457,7 @@ private struct SavedTournamentRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.formatTitle)
                         .font(.subheadline.weight(.medium))
-                    Text("\(TeamFinderModel.poolDescription(run.poolSize).capitalized) pool · \(run.fieldSize)-team field · \(run.date.formatted(date: .abbreviated, time: .shortened))")
+                    Text("\(TeamFinderModel.poolDescription(run.poolSize).capitalized) pool · \(run.fieldSize)-team field · \(run.date.formatted(date: .abbreviated, time: .shortened))\(run.importedAt == nil ? "" : " · shared")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -455,6 +466,12 @@ private struct SavedTournamentRow: View {
             .contentShape(Rectangle())
 
             Spacer()
+
+            ShareLink(item: ResultsShareItem(run: run), preview: SharePreview(run.shareTitle)) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .buttonStyle(.borderless)
+            .help("Share this tournament")
 
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")
@@ -477,7 +494,7 @@ private struct SavedOptimizerRunRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.formatTitle)
                         .font(.subheadline.weight(.medium))
-                    Text("\(TeamFinderModel.poolDescription(run.poolSize).capitalized) pool · \(run.restarts) restarts · \(run.date.formatted(date: .abbreviated, time: .shortened))")
+                    Text("\(TeamFinderModel.poolDescription(run.poolSize).capitalized) pool · \(run.restarts) restarts · \(run.date.formatted(date: .abbreviated, time: .shortened))\(run.importedAt == nil ? "" : " · shared")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -486,6 +503,12 @@ private struct SavedOptimizerRunRow: View {
             .contentShape(Rectangle())
 
             Spacer()
+
+            ShareLink(item: ResultsShareItem(run: run), preview: SharePreview(run.shareTitle)) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .buttonStyle(.borderless)
+            .help("Share this run")
 
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")
