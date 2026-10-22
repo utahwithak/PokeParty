@@ -21,6 +21,7 @@ struct TeamFinderView: View {
     @Binding var selection: SidebarSelection?
     @State private var showingLockedPicker = false
     @State private var showingStrongAgainstPicker = false
+    @State private var showingResults = false
     @Environment(ShareImportModel.self) private var shareImport
 
     private var visibleCupFormats: [RankingFormat] {
@@ -156,6 +157,10 @@ struct TeamFinderView: View {
                     ForEach(model.savedOptimizerRuns.runs) { run in
                         SavedOptimizerRunRow(run: run) {
                             model.load(run)
+                            #if os(iOS)
+                            // Results live in a pushed screen on iOS.
+                            showingResults = true
+                            #endif
                         } onDelete: {
                             model.savedOptimizerRuns.delete(run)
                         }
@@ -181,13 +186,16 @@ struct TeamFinderView: View {
         // TeamFinderResultsView) has no other way to become reachable.
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink {
-                    TeamFinderResultsView(store: store, model: model, teamBuilder: teamBuilder, selection: $selection)
+                Button {
+                    showingResults = true
                 } label: {
                     Label("View Results", systemImage: "wand.and.stars")
                 }
                 .disabled(model.phase != .done)
             }
+        }
+        .navigationDestination(isPresented: $showingResults) {
+            TeamFinderResultsView(store: store, model: model, teamBuilder: teamBuilder, selection: $selection)
         }
         #endif
     }
