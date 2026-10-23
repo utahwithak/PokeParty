@@ -185,15 +185,19 @@ nonisolated enum TeamOptimizer {
         var best: [OptimizedTeam] = []
         var completed = 0
 
+        // Shared by every climber: prebuilt battle teams plus a memo of
+        // (team, meta team) outcomes, so work one climber did isn't redone.
+        let env = EvalEnv(
+            pool: pool, metaField: metaField, movesById: movesById,
+            shieldNet: shieldNet, switchNet: switchNet, farmNet: farmNet,
+            voluntarySwitching: voluntarySwitching, optimalShields: optimalShields)
+
         await withTaskGroup(of: OptimizedTeam?.self) { group in
             for start in starts {
                 group.addTask {
                     guard !Task.isCancelled else { return nil }
                     return await climb(
-                        start: start, pool: pool, metaField: metaField,
-                        movesById: movesById, shieldNet: shieldNet, switchNet: switchNet,
-                        farmNet: farmNet,
-                        voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
+                        start: start, env: env,
                         prefilter: prefilterData, lockedCount: lockedIndices.count)
                 }
             }
@@ -759,22 +763,13 @@ nonisolated enum TeamOptimizer {
 
     private static func climb(
         start: [Int],
-        pool: [Candidate],
-        metaField: [MetaTeam],
-        movesById: [String: Move],
-        shieldNet: ShieldPolicyNet?,
-        switchNet: SwitchPolicyNet?,
-        farmNet: FarmPolicyNet?,
-        voluntarySwitching: Bool,
-        optimalShields: Bool,
+        env: EvalEnv,
         prefilter: PrefilterData?,
         lockedCount: Int = 0
     ) async -> OptimizedTeam {
+        let pool = env.pool
         var current = start
-        var currentScore = evalSync(
-            team: current, pool: pool, metaField: metaField, movesById: movesById,
-            shieldNet: shieldNet, switchNet: switchNet, farmNet: farmNet,
-            voluntarySwitching: voluntarySwitching, optimalShields: optimalShields)
+        var currentScore = env.score(team: current)
 
         // When pre-filtering: evaluate only the topK most-promising swaps per step,
         // then validate with a full sweep once the filtered climb stalls. If the
@@ -809,6 +804,13 @@ nonisolated enum TeamOptimizer {
                 candidates = swaps
             }
 
+            // Branch-and-bound order: neighbors resemble `current`, so they tend
+            // to lose the matchups `current` loses. Playing those first lets most
+            // neighbors be rejected after a handful of battles (exact — a neighbor
+            // is only dropped once it provably can't beat the best score).
+            let order = env.matchupOrder(for: current)
+            let threshold = SharedThreshold(currentScore)
+
             // Evaluate in parallel chunks; keep the best improvement found.
             let chunkSize = 16
             var bestScore = currentScore
@@ -823,12 +825,9 @@ nonisolated enum TeamOptimizer {
                         if Task.isCancelled { return nil }
                         var localBest: (Double, [Int])? = nil
                         for neighbor in chunk {
-                            let sc = evalSync(
-                                team: neighbor, pool: pool, metaField: metaField,
-                                movesById: movesById, shieldNet: shieldNet, switchNet: switchNet,
-                                farmNet: farmNet,
-                                voluntarySwitching: voluntarySwitching,
-                                optimalShields: optimalShields)
+                            guard let sc = env.score(
+                                team: neighbor, order: order, threshold: threshold) else { continue }
+                            threshold.raise(to: sc)
                             if localBest == nil || sc > localBest!.0 {
                                 localBest = (sc, neighbor)
                             }
@@ -865,37 +864,17 @@ nonisolated enum TeamOptimizer {
         var bestOrder = current
         var bestOrderScore = currentScore
         for perm in orderPermutations(current) where perm != current {
-            let sc = evalSync(
-                team: perm, pool: pool, metaField: metaField, movesById: movesById,
-                shieldNet: shieldNet, switchNet: switchNet, farmNet: farmNet,
-                voluntarySwitching: voluntarySwitching, optimalShields: optimalShields)
+            let sc = env.score(team: perm)
             if sc > bestOrderScore { bestOrderScore = sc; bestOrder = perm }
         }
         current = bestOrder
         currentScore = bestOrderScore
 
         // Win/loss/tie breakdown vs meta field for display.
-        var wins = 0, losses = 0, ties = 0
-        let members = current.map { pool[$0] }
-        if let battleTeam = makeTeam(members, movesById: movesById) {
-            for meta in metaField {
-                if Task.isCancelled { break }
-                guard let oppTeam = makeTeam(meta.members, movesById: movesById) else { continue }
-                var battle = ThreeVThreeBattle(
-                    teamA: battleTeam, teamB: oppTeam,
-                    switchPolicy: .bestMatchup,
-                    optimalShields: optimalShields,
-                    voluntarySwitching: voluntarySwitching,
-                    learnedShieldNet: shieldNet)
-                if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
-                battle.applyFarmNet(farmNet)
-                switch battle.run().winner {
-                case .teamA: wins += 1
-                case .teamB: losses += 1
-                case .tie: ties += 1
-                }
-            }
-        }
+        let outcomes = env.outcomes(team: current)
+        let wins = outcomes.filter { $0 == .win }.count
+        let losses = outcomes.filter { $0 == .loss }.count
+        let ties = outcomes.filter { $0 == .tie }.count
 
         return OptimizedTeam(
             members: current.map { i in
@@ -912,27 +891,76 @@ nonisolated enum TeamOptimizer {
 
     // MARK: - Score evaluation
 
-    /// Synchronous weighted win rate of `team` vs the meta field (0…1).
-    /// Called from within TaskGroup task closures — CPU-bound, no awaits.
-    private static func evalSync(
-        team: [Int],
-        pool: [Candidate],
-        metaField: [MetaTeam],
-        movesById: [String: Move],
-        shieldNet: ShieldPolicyNet?,
-        switchNet: SwitchPolicyNet?,
-        farmNet: FarmPolicyNet?,
-        voluntarySwitching: Bool,
-        optimalShields: Bool
-    ) -> Double {
-        let members = team.map { pool[$0] }
-        guard let battleTeam = makeTeam(members, movesById: movesById) else { return 0 }
-        var total = 0.0
-        for meta in metaField {
-            if Task.isCancelled { break }
-            guard let oppTeam = makeTeam(meta.members, movesById: movesById) else { continue }
+    enum Outcome: UInt8, Sendable { case loss = 0, tie = 1, win = 2 }
+
+    /// Best score seen so far in the current climb step, shared by the parallel
+    /// chunks so each can reject neighbors against the global best.
+    private final class SharedThreshold: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Double
+        init(_ value: Double) { self.value = value }
+        var current: Double { lock.lock(); defer { lock.unlock() }; return value }
+        func raise(to v: Double) { lock.lock(); if v > value { value = v }; lock.unlock() }
+    }
+
+    /// Everything the climbers share while scoring teams against the meta field:
+    /// the battle settings, and a memo of (ordered team, meta team) → outcome.
+    /// The engine is deterministic, so a memoized outcome is exact.
+    private final class EvalEnv: @unchecked Sendable {
+        let pool: [Candidate]
+        private let metaWeights: [Double]
+        private let totalWeight: Double
+        private let movesById: [String: Move]
+        private let metaMembers: [[Candidate]]
+        private let shieldNet: ShieldPolicyNet?
+        private let switchNet: SwitchPolicyNet?
+        private let farmNet: FarmPolicyNet?
+        private let voluntarySwitching: Bool
+        private let optimalShields: Bool
+
+        // Memo, sharded to keep lock contention negligible next to a 3v3 sim.
+        // Outcomes pack 2 bits per meta team into `outcomes`; `known` marks which
+        // meta teams have been simulated. Disabled past 32 meta teams.
+        private struct Key: Hashable { let a: Int32, b: Int32, c: Int32 }
+        private struct Entry { var known: UInt32 = 0; var outcomes: UInt64 = 0 }
+        private final class Shard: @unchecked Sendable {
+            let lock = NSLock()
+            var map: [Key: Entry] = [:]
+        }
+        private let shards: [Shard]
+        private let memoEnabled: Bool
+        private static let maxEntriesPerShard = 60_000
+
+        init(
+            pool: [Candidate], metaField: [MetaTeam], movesById: [String: Move],
+            shieldNet: ShieldPolicyNet?, switchNet: SwitchPolicyNet?, farmNet: FarmPolicyNet?,
+            voluntarySwitching: Bool, optimalShields: Bool
+        ) {
+            self.pool = pool
+            self.metaWeights = metaField.map(\.weight)
+            self.totalWeight = metaField.reduce(0) { $0 + $1.weight }
+            self.movesById = movesById
+            self.metaMembers = metaField.map(\.members)
+            self.shieldNet = shieldNet
+            self.switchNet = switchNet
+            self.farmNet = farmNet
+            self.voluntarySwitching = voluntarySwitching
+            self.optimalShields = optimalShields
+            self.memoEnabled = metaField.count <= 32
+            self.shards = (0..<64).map { _ in Shard() }
+        }
+
+        private func shard(for key: Key) -> Shard {
+            shards[Int(truncatingIfNeeded: key.hashValue) & 63]
+        }
+
+        // Teams are built fresh per evaluation rather than shared: BattlePokemon
+        // holds arrays, and every thread retaining/releasing the same buffers
+        // costs more in atomic contention than rebuilding does.
+        private func simulate(_ team: [BattlePokemon], meta: Int) -> Outcome? {
+            guard let opp = makeTeam(metaMembers[meta], movesById: movesById) else { return nil }
             var battle = ThreeVThreeBattle(
-                teamA: battleTeam, teamB: oppTeam,
+                teamA: team, teamB: opp,
                 switchPolicy: .bestMatchup,
                 optimalShields: optimalShields,
                 voluntarySwitching: voluntarySwitching,
@@ -940,12 +968,109 @@ nonisolated enum TeamOptimizer {
             if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
             battle.applyFarmNet(farmNet)
             switch battle.run().winner {
-            case .teamA: total += meta.weight
-            case .teamB: break
-            case .tie: total += meta.weight * 0.5
+            case .teamA: return .win
+            case .teamB: return .loss
+            case .tie: return .tie
             }
         }
-        return total
+
+        private func value(_ o: Outcome) -> Double {
+            switch o {
+            case .win: return 1
+            case .tie: return 0.5
+            case .loss: return 0
+            }
+        }
+
+        /// Meta-team evaluation order for neighbors of `team`: matchups `team`
+        /// doesn't win first (losses, then ties), so neighbors that fail to flip
+        /// them are pruned immediately.
+        func matchupOrder(for team: [Int]) -> [Int] {
+            let results = outcomes(team: team)
+            return results.indices.sorted { results[$0].rawValue < results[$1].rawValue }
+        }
+
+        /// Per-meta-team outcomes for `team`, simulating whatever isn't memoized.
+        /// Meta teams that can't be built count as losses (matching a score of 0).
+        func outcomes(team: [Int]) -> [Outcome] {
+            var out = [Outcome](repeating: .loss, count: metaWeights.count)
+            _ = evaluate(team: team, order: Array(out.indices), threshold: nil, outcomes: &out)
+            return out
+        }
+
+        /// Weighted win rate vs the meta field (0…1), no pruning.
+        func score(team: [Int]) -> Double {
+            var out = [Outcome](repeating: .loss, count: metaWeights.count)
+            return evaluate(team: team, order: Array(out.indices), threshold: nil, outcomes: &out) ?? 0
+        }
+
+        /// Weighted win rate, or nil when the team provably can't exceed
+        /// `threshold`'s current value (remaining battles can't make up the gap).
+        func score(team: [Int], order: [Int], threshold: SharedThreshold) -> Double? {
+            var out = [Outcome](repeating: .loss, count: metaWeights.count)
+            return evaluate(team: team, order: order, threshold: threshold, outcomes: &out)
+        }
+
+        private func evaluate(
+            team: [Int], order: [Int], threshold: SharedThreshold?, outcomes out: inout [Outcome]
+        ) -> Double? {
+            guard team.count == 3,
+                  let battleTeam = makeTeam(team.map { pool[$0] }, movesById: movesById)
+            else { return threshold == nil ? 0 : nil }
+
+            let key = Key(a: Int32(team[0]), b: Int32(team[1]), c: Int32(team[2]))
+            var entry = Entry()
+            if memoEnabled {
+                let s = shard(for: key)
+                s.lock.lock(); entry = s.map[key] ?? Entry(); s.lock.unlock()
+            }
+            let startKnown = entry.known
+
+            var partial = 0.0
+            var remaining = totalWeight
+            var pruned = false
+            for m in order {
+                if Task.isCancelled { pruned = true; break }
+                remaining -= metaWeights[m]
+                let outcome: Outcome
+                if memoEnabled, entry.known & (1 << UInt32(m)) != 0 {
+                    outcome = Outcome(rawValue: UInt8((entry.outcomes >> UInt64(2 * m)) & 3)) ?? .loss
+                } else if let o = simulate(battleTeam, meta: m) {
+                    outcome = o
+                    if memoEnabled {
+                        entry.known |= 1 << UInt32(m)
+                        entry.outcomes |= UInt64(o.rawValue) << UInt64(2 * m)
+                    }
+                } else {
+                    outcome = .loss   // unbuildable opponent: contributes nothing
+                }
+                out[m] = outcome
+                partial += metaWeights[m] * value(outcome)
+                if let threshold, partial + remaining + 1e-9 <= threshold.current {
+                    pruned = true
+                    break
+                }
+            }
+
+            if memoEnabled, entry.known != startKnown {
+                let s = shard(for: key)
+                s.lock.lock()
+                if s.map.count < Self.maxEntriesPerShard || s.map[key] != nil {
+                    // Merge with anything another climber stored meanwhile.
+                    var merged = s.map[key] ?? Entry()
+                    merged.known |= entry.known
+                    merged.outcomes |= entry.outcomes
+                    s.map[key] = merged
+                }
+                s.lock.unlock()
+            }
+
+            if pruned { return nil }
+            // Sum in canonical meta order so the result is independent of `order`.
+            var total = 0.0
+            for m in out.indices { total += metaWeights[m] * value(out[m]) }
+            return total
+        }
     }
 
     // MARK: - Helpers
