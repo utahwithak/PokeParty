@@ -19,6 +19,9 @@ struct ContentView: View {
     @State private var savedTeams = SavedTeamsStore()
     @State private var bench = BenchStore()
     @State private var shareImport = ShareImportModel()
+    #if os(iOS)
+    @AppStorage(AppTheme.defaultsKey) private var selectedTheme = AppTheme.standard
+    #endif
     @State private var selection: SidebarSelection? = .format(.great)
     @State private var selectedEntryID: RankingEntry.ID?
     @State private var selectedBenchID: BenchEntry.ID?
@@ -45,6 +48,9 @@ struct ContentView: View {
                 #endif
         }
         .navigationSplitViewStyle(.balanced)
+        #if os(iOS)
+        .appTheme(selectedTheme.available(unlocked: entitlements.isUnlocked))
+        #endif
         .environment(entitlements)
         .environment(shareImport)
         .fileImporter(

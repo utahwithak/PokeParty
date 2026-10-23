@@ -29,10 +29,14 @@ struct SettingsView: View {
             dataSection
             megaSection
             hiddenCupsSection
+            #if os(iOS)
+            ThemeSettingsSection()
+            #endif
             purchasesSection
             feedbackSection
         }
         .formStyle(.grouped)
+        .themedBackground()
         .navigationTitle("Settings")
         .alert("Restore Purchases", isPresented: $showingRestoreAlert) {
             Button("OK", role: .cancel) {}
@@ -59,6 +63,7 @@ struct SettingsView: View {
         } footer: {
             Text("Check for updated rankings, or rebuild the local cache from scratch.")
         }
+        .themedRow()
 
         Section {
             Picker("Ranking Order", selection: $store.rankingSource) {
@@ -85,6 +90,7 @@ struct SettingsView: View {
         } footer: {
             Text("PvPoke shows their published ranking order. PokeParty (Local) computes its own ordering on-device from the raw game data, using PokeParty's own battle engine — it won't exactly match PvPoke's list. Great/Ultra/Master League are kept up to date automatically in the background; cups compute the first time you view them in Local mode.")
         }
+        .themedRow()
     }
 
     private var megaSection: some View {
@@ -93,6 +99,7 @@ struct SettingsView: View {
         } footer: {
             Text("Include Mega Evolutions when picking Pokémon in the Team Builder, Bench, Rank Checker, Breakpoints, and 1v1 Simulator — even in leagues where Megas aren't officially legal.")
         }
+        .themedRow()
     }
 
     private var hiddenCupsSection: some View {
@@ -118,6 +125,7 @@ struct SettingsView: View {
         } header: {
             Text("Hidden Cups")
         }
+        .themedRow()
     }
 
     private var purchasesSection: some View {
@@ -145,6 +153,7 @@ struct SettingsView: View {
                 ? "Unlocked: \(EntitlementStore.proFeatureList)."
                 : "Unlock \(EntitlementStore.proFeatureList). Restore if you've purchased on another device.")
         }
+        .themedRow()
     }
 
     private var feedbackSection: some View {
@@ -155,6 +164,7 @@ struct SettingsView: View {
         } footer: {
             Text("PokeParty is open source. File a bug or feature request on GitHub.")
         }
+        .themedRow()
     }
 
     private func restorePurchases() {

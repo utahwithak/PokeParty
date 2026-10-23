@@ -128,12 +128,14 @@ struct LeagueSidebar: View {
                     .tag(SidebarSelection.betaScan)
                 #endif
             }
+            .themedRow()
 
             Section("Leagues") {
                 ForEach(RankingFormat.coreLeagues) { format in
                     row(for: format)
                 }
             }
+            .themedRow()
 
             if !visibleCupFormats.isEmpty {
                 Section("Cups") {
@@ -146,6 +148,7 @@ struct LeagueSidebar: View {
                             }
                     }
                 }
+                .themedRow()
             }
 
             Section {
@@ -160,7 +163,9 @@ struct LeagueSidebar: View {
 
                 LocalBuildProgressRow(builder: store.localRankingBuilder)
             }
+            .themedRow()
         }
+        .themedBackground()
         .navigationTitle("PokeParty")
         .sheet(isPresented: $showingSettings) {
             NavigationStack {

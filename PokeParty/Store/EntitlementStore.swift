@@ -24,7 +24,7 @@ final class EntitlementStore {
         #if os(macOS)
         return "Party Finder and Screen Scanner"
         #else
-        return "Party Finder"
+        return "Party Finder and Themes"
         #endif
     }
 

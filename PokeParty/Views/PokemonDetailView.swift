@@ -94,6 +94,7 @@ struct PokemonDetailView: View {
                 showFooter: false
             )
         }
+        .themedBackground()
         .navigationTitle(entry.speciesName)
         .inlineNavigationTitle()
         .toolbar {
@@ -196,6 +197,7 @@ struct PokemonDetailView: View {
             }
             .fixedSize(horizontal: false, vertical: true)
         }
+        .themedRow()
     }
 
     private func runSimulation() {
@@ -250,6 +252,7 @@ struct PokemonDetailView: View {
             .frame(height: 130)
             .listRowInsets(EdgeInsets())
         }
+        .themedRow()
     }
 
     @ViewBuilder
@@ -270,6 +273,7 @@ struct PokemonDetailView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .themedRow()
     }
 
     @ViewBuilder
@@ -317,6 +321,7 @@ struct PokemonDetailView: View {
         } footer: {
             Text("Tap a move to change it — the meta simulation below uses this moveset.")
         }
+        .themedRow()
     }
 
     @ViewBuilder
@@ -348,7 +353,7 @@ struct PokemonDetailView: View {
                                 .frame(width: 90)
                             Text("\(matchup.rating)")
                                 .font(.subheadline.weight(.semibold).monospacedDigit())
-                                .foregroundStyle(matchup.isFavorable ? Theme.win : Theme.loss)
+                                .outcomeForeground(favorable: matchup.isFavorable)
                                 .frame(width: 44, alignment: .trailing)
                             Image(systemName: "chevron.right")
                                 .font(.caption2)
@@ -366,6 +371,7 @@ struct PokemonDetailView: View {
                     Text("Battle rating vs. each opponent — tap a row to watch the battle timeline. 500 is an even fight.")
                 }
             }
+            .themedRow()
         }
     }
 }

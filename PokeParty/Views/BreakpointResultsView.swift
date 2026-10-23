@@ -25,6 +25,7 @@ struct BreakpointResultsView: View {
                 )
             }
         }
+        .themedBackground()
         .navigationTitle("Breakpoints")
         .inlineNavigationTitle()
     }
@@ -58,6 +59,7 @@ struct BreakpointResultsView: View {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.secondary)
                 }
+                .themedRow()
             } else {
                 Section {
                     HStack(spacing: 10) {
@@ -67,6 +69,7 @@ struct BreakpointResultsView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                .themedRow()
             }
         }
         .task(id: analysisKey) { model.analyze(using: store) }
@@ -104,6 +107,7 @@ struct BreakpointResultsView: View {
                 store: store,
                 onSelect: { model.setChargedMove($0, slot: 1) })
         }
+        .themedRow()
     }
 
     private func headerSection(_ report: BreakpointAnalyzer.Report) -> some View {
@@ -119,6 +123,7 @@ struct BreakpointResultsView: View {
             }
             .padding(.vertical, 4)
         }
+        .themedRow()
     }
 
     private func rankComparisonSection(
@@ -138,6 +143,7 @@ struct BreakpointResultsView: View {
                 rankOutcomeRow(outcome)
             }
         }
+        .themedRow()
     }
 
     private func rankOutcomeRow(_ outcome: BreakpointAnalyzer.RankComparison.OpponentOutcome) -> some View {
@@ -181,6 +187,7 @@ struct BreakpointResultsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .themedRow()
     }
 
     private func levelSection(_ report: BreakpointAnalyzer.Report) -> some View {
@@ -205,6 +212,7 @@ struct BreakpointResultsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .themedRow()
     }
 
     private func levelLegend(_ levels: [Double]) -> some View {
@@ -274,6 +282,7 @@ struct BreakpointResultsView: View {
                 damageRow(step)
             }
         }
+        .themedRow()
     }
 
     private func stableSection(_ report: BreakpointAnalyzer.Report) -> some View {
@@ -286,6 +295,7 @@ struct BreakpointResultsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .themedRow()
     }
 
     // MARK: - Rows

@@ -27,6 +27,7 @@ struct RankCheckerInputView: View {
                 }
                 .padding(.vertical, 2)
             }
+            .themedPlainRow()
 
             Section("Level Cap") {
                 // Menu style, not segmented: segmented pickers inside a macOS
@@ -39,6 +40,7 @@ struct RankCheckerInputView: View {
                 }
                 .labelsHidden()
             }
+            .themedPlainRow()
 
             Section("Pokémon") {
                 ForEach(results) { pokemon in
@@ -52,7 +54,9 @@ struct RankCheckerInputView: View {
                     .tag(pokemon.speciesId)
                 }
             }
+            .themedPlainRow()
         }
+        .themedBackground()
         .navigationTitle("Rank Checker")
         .inlineNavigationTitle()
         .searchable(text: $model.searchText, prompt: "Search Pokémon")
@@ -83,10 +87,17 @@ private struct IVField: View {
                     .frame(width: 40)
                     .multilineTextAlignment(.center)
                     .textFieldStyle(.roundedBorder)
+                #if os(macOS)
+                // A native stepper: the narrow list column squeezes bordered text
+                // buttons until their labels vanish, and fixed-size ones overflow.
+                Stepper(label, value: $value, in: 0...15)
+                    .labelsHidden()
+                #else
                 Button("−") { value = max(value - 1, 0) }
                     .buttonStyle(.bordered)
                 Button("+") { value = min(value + 1, 15) }
                     .buttonStyle(.bordered)
+                #endif
             }
         }
     }

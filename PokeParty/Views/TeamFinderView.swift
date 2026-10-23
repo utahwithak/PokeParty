@@ -44,6 +44,7 @@ struct TeamFinderView: View {
                 }
                 .disabled(model.isRunning)
             }
+            .themedRow()
 
             Section("Candidate pool") {
                 Picker("Top ranked Pokémon", selection: Bindable(model).poolSize) {
@@ -53,6 +54,7 @@ struct TeamFinderView: View {
                 }
                 .disabled(model.isRunning)
             }
+            .themedRow()
 
             Section("Method") {
                 Picker("Method", selection: Bindable(model).method) {
@@ -76,6 +78,7 @@ struct TeamFinderView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .themedRow()
 
             if model.method == .aiOptimizer {
                 lockedPokemonSection
@@ -126,7 +129,14 @@ struct TeamFinderView: View {
                     Button {
                         model.run(using: store)
                     } label: {
+                        // Plain label style: inside a Form row the default style
+                        // draws the icon in the tint color, which is the button's
+                        // fill color, so the icon vanished.
                         Label(runButtonTitle, systemImage: "wand.and.stars")
+                            .labelStyle(.titleAndIcon)
+                            #if os(iOS)
+                            .frame(maxWidth: .infinity)
+                            #endif
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(store.pokemonById.isEmpty)
@@ -138,6 +148,7 @@ struct TeamFinderView: View {
                         .foregroundStyle(.red)
                 }
             }
+            .themedRow()
 
             if !model.savedTournaments.runs.isEmpty {
                 Section("Saved tournaments") {
@@ -150,6 +161,7 @@ struct TeamFinderView: View {
                         .disabled(model.isRunning)
                     }
                 }
+                .themedRow()
             }
 
             if !model.savedOptimizerRuns.runs.isEmpty {
@@ -167,9 +179,11 @@ struct TeamFinderView: View {
                         .disabled(model.isRunning)
                     }
                 }
+                .themedRow()
             }
         }
         .formStyle(.grouped)
+        .themedBackground()
         .navigationTitle("Party Finder")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -272,6 +286,7 @@ struct TeamFinderView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .themedRow()
     }
 
     private var strongAgainstSection: some View {
@@ -328,6 +343,7 @@ struct TeamFinderView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .themedRow()
     }
 
     private var optimizerSection: some View {
@@ -395,6 +411,7 @@ struct TeamFinderView: View {
             Toggle("Learned farming AI", isOn: Bindable(model).learnedFarming)
                 .disabled(model.isRunning || !model.simulateCounterswaps)
         }
+        .themedRow()
     }
 
     private var tournamentFieldSection: some View {
@@ -450,6 +467,7 @@ struct TeamFinderView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .themedRow()
     }
 }
 
@@ -642,12 +660,14 @@ private struct LockedPokemonPickerView: View {
                             benchRow(entry)
                         }
                     }
+                    .themedRow()
                 }
                 Section("All Pokémon") {
                     ForEach(Array(allResults.prefix(50))) { pokemon in
                         allRow(pokemon)
                     }
                 }
+                .themedRow()
             }
             .overlay {
                 if benchResults.isEmpty && allResults.isEmpty {

@@ -68,12 +68,13 @@ final class TeamFinderModel {
     /// representative of the pool but costs one extra battle per swap
     /// evaluation per added threat, so it isn't simply set equal to `poolSize`.
     var metaSize: Int = 15
-    static let metaSizeRange = 5.0...100.0
+    static let metaSizeRange = 5.0...500.0
     static let metaSizeStep = 5.0
 
     /// Default `metaSize` for a given `poolSize`: scales at half the pool,
     /// floored at 15 (today's fixed default) and capped at 60 to bound the
-    /// hill-climb's per-step battle cost even for very large pools.
+    /// hill-climb's per-step battle cost even for very large pools. The slider
+    /// can go well past this cap (up to `metaSizeRange`) for slow, thorough runs.
     static func defaultMetaSize(forPoolSize poolSize: Int) -> Int {
         min(max(poolSize / 2, 15), 60)
     }

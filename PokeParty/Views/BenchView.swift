@@ -146,6 +146,7 @@ struct BenchView: View {
             benchSections(buckets)
             addToBenchSection
         }
+        .themedBackground()
         .navigationTitle("My Bench")
         .inlineNavigationTitle()
         .searchable(text: $searchText, prompt: "Search or add Pokémon")
@@ -181,7 +182,7 @@ struct BenchView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(.regularMaterial)
+            .themedBar()
             .overlay(alignment: .bottom) {
                 Divider()
             }
@@ -251,6 +252,7 @@ struct BenchView: View {
                         }
                 }
             }
+            .themedRow()
         }
     }
 
@@ -288,6 +290,7 @@ struct BenchView: View {
                     .fixedSize()
                 }
             }
+            .themedRow()
         }
     }
 

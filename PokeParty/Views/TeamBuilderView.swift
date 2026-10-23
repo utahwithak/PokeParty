@@ -106,6 +106,7 @@ struct TeamBuilderView: View {
                         .disabled(model.isFull)
                     }
                 }
+                .themedPlainRow()
             }
             Section {
                 ForEach(searchResults) { pokemon in
@@ -129,7 +130,9 @@ struct TeamBuilderView: View {
             } header: {
                 Text(model.isFull ? "Team full — remove one to add another" : "All Pokémon")
             }
+            .themedPlainRow()
         }
+        .themedBackground()
         .navigationTitle("Team Builder")
         .inlineNavigationTitle()
         .searchable(text: $searchText, prompt: "Add a Pokémon")

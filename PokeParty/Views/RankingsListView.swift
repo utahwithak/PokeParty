@@ -77,6 +77,7 @@ struct RankingsListView: View {
                 rankingsList
             }
         }
+        .themedBackground()
         .navigationTitle(store.format.title)
         .inlineNavigationTitle()
         .searchable(text: $store.searchText, prompt: "Search Pokémon")
@@ -92,6 +93,7 @@ struct RankingsListView: View {
             } header: {
                 Text(store.format.subtitle)
             }
+            .themedPlainRow()
 
             AttributionFooter()
         }

@@ -36,6 +36,7 @@ struct MatchupSimulatorView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
             }
+            .themedPlainRow()
             Section("Tap a Pokémon to set \(side == .a ? "Side A" : "Side B")") {
                 ForEach(searchResults) { pokemon in
                     Button {
@@ -53,7 +54,9 @@ struct MatchupSimulatorView: View {
                     .buttonStyle(.plain)
                 }
             }
+            .themedPlainRow()
         }
+        .themedBackground()
         .navigationTitle("1v1 Simulator")
         .inlineNavigationTitle()
         .searchable(text: $searchText, prompt: "Search Pokémon")

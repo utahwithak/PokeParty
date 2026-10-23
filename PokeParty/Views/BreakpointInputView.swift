@@ -34,6 +34,7 @@ struct BreakpointInputView: View {
                 }
                 .labelsHidden()
             }
+            .themedRow()
             Section("Compare as Rank") {
                 Picker("Compare as Rank", selection: Binding(
                     get: { model.targetRank },
@@ -48,6 +49,7 @@ struct BreakpointInputView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .themedRow()
             Section("Tap a Pokémon to analyze") {
                 ForEach(searchResults) { pokemon in
                     Button {
@@ -69,7 +71,9 @@ struct BreakpointInputView: View {
                     .buttonStyle(.plain)
                 }
             }
+            .themedRow()
         }
+        .themedBackground()
         .navigationTitle("Breakpoints")
         .inlineNavigationTitle()
         .searchable(text: $searchText, prompt: "Search Pokémon")
