@@ -372,7 +372,8 @@ private struct TeamMemberCard: View {
     }
 
     private func movesetEditor(member: TeamMember, species: Pokemon) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let fastGain = store.move(id: member.fastMoveId)?.energyGain
+        return VStack(alignment: .leading, spacing: 6) {
             TeamMovePicker(
                 label: "Fast",
                 currentId: member.fastMoveId,
@@ -381,7 +382,8 @@ private struct TeamMemberCard: View {
                 includesNone: false,
                 species: species,
                 store: store,
-                onSelect: { if let id = $0 { model.setFastMove(id, at: index) } })
+                onSelect: { if let id = $0 { model.setFastMove(id, at: index) } },
+                showsDetail: true)
             TeamMovePicker(
                 label: "Charged 1",
                 currentId: member.chargedMoveIds.first ?? "",
@@ -390,7 +392,8 @@ private struct TeamMemberCard: View {
                 includesNone: false,
                 species: species,
                 store: store,
-                onSelect: { if let id = $0 { model.setChargedMove(id, slot: 0, at: index) } })
+                onSelect: { if let id = $0 { model.setChargedMove(id, slot: 0, at: index) } },
+                showsDetail: true, fastEnergyGain: fastGain)
             TeamMovePicker(
                 label: "Charged 2",
                 currentId: member.chargedMoveIds.count > 1 ? member.chargedMoveIds[1] : "",
@@ -399,7 +402,8 @@ private struct TeamMemberCard: View {
                 includesNone: true,
                 species: species,
                 store: store,
-                onSelect: { model.setChargedMove($0, slot: 1, at: index) })
+                onSelect: { model.setChargedMove($0, slot: 1, at: index) },
+                showsDetail: true, fastEnergyGain: fastGain)
         }
     }
 
@@ -429,6 +433,10 @@ struct TeamMovePicker: View {
     let store: RankingsStore
     /// nil argument means "None" was chosen (second charged slot only).
     let onSelect: (String?) -> Void
+    /// When set, a caption under the picker shows the move's turns / energy
+    /// / fast-move counts. For a charged move, pass the fast move's energy gain.
+    var showsDetail = false
+    var fastEnergyGain: Int? = nil
 
     private var move: Move? { store.move(id: currentId) }
     private var designation: Pokemon.MoveDesignation? {
@@ -436,6 +444,18 @@ struct TeamMovePicker: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            pickerRow
+            if showsDetail, let move {
+                Text(move.detailText(fastEnergyGain: fastEnergyGain))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 64)   // label width + spacing
+            }
+        }
+    }
+
+    private var pickerRow: some View {
         HStack(spacing: 6) {
             Text(label)
                 .font(.caption2.weight(.semibold))

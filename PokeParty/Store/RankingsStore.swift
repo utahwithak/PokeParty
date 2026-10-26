@@ -518,8 +518,23 @@ final class RankingsStore {
     /// resolved, or if the opponent itself has no rankings/moveset data.
     func teamRatings(for members: [TeamMember], against opponentId: String) -> [Int?] {
         guard let oppEntry = entry(id: opponentId),
-              let oppCombatant = Self.combatant(for: oppEntry, pokemonById: pokemonById),
-              let oppStats = MatchupSimulator.optimalStats(for: oppCombatant, cpCap: format.cp)
+              let oppCombatant = Self.combatant(for: oppEntry, pokemonById: pokemonById)
+        else { return members.map { _ in nil } }
+        return teamRatings(for: members, against: oppCombatant)
+    }
+
+    /// Same as above, but against a specific (user-edited) opponent moveset.
+    func teamRatings(for members: [TeamMember], against opponent: TeamMember) -> [Int?] {
+        guard let species = pokemonById[opponent.speciesId], !opponent.chargedMoveIds.isEmpty
+        else { return members.map { _ in nil } }
+        let oppCombatant = MatchupSimulator.Combatant(
+            species: species, shadow: opponent.shadow,
+            fastMoveId: opponent.fastMoveId, chargedMoveIds: opponent.chargedMoveIds)
+        return teamRatings(for: members, against: oppCombatant)
+    }
+
+    private func teamRatings(for members: [TeamMember], against oppCombatant: MatchupSimulator.Combatant) -> [Int?] {
+        guard let oppStats = MatchupSimulator.optimalStats(for: oppCombatant, cpCap: format.cp)
         else { return members.map { _ in nil } }
         let cpCap = format.cp
         return members.map { member in

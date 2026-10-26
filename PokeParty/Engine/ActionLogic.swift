@@ -163,12 +163,8 @@ nonisolated enum ActionLogic {
 
         // MARK: Optimize move timing to deny the opponent free turns.
         if poke.optimizeMoveTiming {
-            var targetCooldown = 500
-            if poke.fastMove.cooldown >= 2000 { targetCooldown = 1000 }
-            if poke.fastMove.cooldown >= 1500 && opponent.fastMove.cooldown == 2500 { targetCooldown = 1000 }
-            if poke.fastMove.cooldown == 1000 && opponent.fastMove.cooldown == 2000 { targetCooldown = 1000 }
-            if poke.fastMove.cooldown == opponent.fastMove.cooldown { targetCooldown = 0 }
-            if poke.fastMove.cooldown % opponent.fastMove.cooldown == 0 && poke.fastMove.cooldown > opponent.fastMove.cooldown { targetCooldown = 0 }
+            let targetCooldown = ChargeTiming.targetCooldown(
+                pokeFastCooldown: poke.fastMove.cooldown, opponentFastCooldown: opponent.fastMove.cooldown)
 
             if (opponent.cooldown == 0 || opponent.cooldown > targetCooldown) && targetCooldown > 0 {
                 var optimizeTiming = true
