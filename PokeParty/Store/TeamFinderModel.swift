@@ -45,10 +45,13 @@ final class TeamFinderModel {
 
     /// The format whose meta to build teams from (defaults to Great League;
     /// switchable to any core league or active cup).
-    var format: RankingFormat = .great
+    var format: RankingFormat = .great { didSet { persistSettings() } }
     /// How many of the format's top-ranked Pokémon form the candidate pool.
     var poolSize: Int = 15 {
-        didSet { metaSize = Self.defaultMetaSize(forPoolSize: poolSize) }
+        didSet {
+            metaSize = Self.defaultMetaSize(forPoolSize: poolSize)
+            persistSettings()
+        }
     }
     /// Sentinel pool size meaning "every ranked Pokémon" — larger than any
     /// ranking list, so the pool builders (which stop at `poolSize`) take it all.
@@ -67,7 +70,7 @@ final class TeamFinderModel {
     /// still be dialed in manually afterward: a bigger field is more
     /// representative of the pool but costs one extra battle per swap
     /// evaluation per added threat, so it isn't simply set equal to `poolSize`.
-    var metaSize: Int = 15
+    var metaSize: Int = 15 { didSet { persistSettings() } }
     static let metaSizeRange = 5.0...500.0
     static let metaSizeStep = 5.0
 
@@ -79,13 +82,13 @@ final class TeamFinderModel {
         min(max(poolSize / 2, 15), 60)
     }
 
-    var method: Method = .tournament
+    var method: Method = .tournament { didSet { persistSettings() } }
 
     /// Pokémon the AI Optimizer must include on every team it searches (0–2).
     /// The hill-climb pins these to fixed slots and only searches for the best
     /// partner(s) — the final lead/switch/closer order is still optimized
     /// freely across all three members.
-    private(set) var lockedMembers: [TeamMember] = []
+    private(set) var lockedMembers: [TeamMember] = [] { didSet { persistSettings() } }
     static let maxLockedMembers = 2
 
     func lockMember(_ member: TeamMember) {
@@ -112,7 +115,7 @@ final class TeamFinderModel {
     /// `TeamOptimizer.findTeams`), each weighted equal to the single
     /// top-ranked automatic threat so they aren't diluted away by a large
     /// meta field size.
-    private(set) var strongAgainstMembers: [TeamMember] = []
+    private(set) var strongAgainstMembers: [TeamMember] = [] { didSet { persistSettings() } }
     static let maxStrongAgainstMembers = 4
 
     func addStrongAgainst(_ member: TeamMember) {
@@ -135,11 +138,11 @@ final class TeamFinderModel {
 
     /// How many coverage-seeded teams enter the round robin (slider-driven;
     /// the tournament fights fieldSize·(fieldSize−1)/2 battles).
-    var fieldSize: Int = 500
+    var fieldSize: Int = 500 { didSet { persistSettings() } }
 
     /// Number of hill-climbing restarts for the AI Optimizer (each begins from
     /// a different lead Pokémon and explores all single-swap neighbors).
-    var restarts: Int = 20
+    var restarts: Int = 20 { didSet { persistSettings() } }
     static let restartRange = 5.0...50.0
     static let restartStep = 5.0
 
@@ -148,36 +151,36 @@ final class TeamFinderModel {
     /// otherwise expand the candidate pool and hill-climb search space.
     /// Off by default: alternates roughly multiply the search space and most
     /// runs care about recommended-moveset teams.
-    var exploreAlternateMovesets = false
+    var exploreAlternateMovesets = false { didSet { persistSettings() } }
 
     /// Simulate voluntary switching in tournament battles (turn-0 safe swaps,
     /// counterswaps onto switch-locked opponents, switch-timer escapes, catch
     /// swaps onto a resist, and sac swaps that spend a nearly-fainted mon as an
     /// extra shield). More realistic, but each battle costs extra throwaway 1v1 sims.
-    var simulateCounterswaps = false
+    var simulateCounterswaps = false { didSet { persistSettings() } }
 
     /// Solve optimal shield timing (the game-theoretic search) for every 1v1
     /// segment instead of the greedy default. Far more expensive per battle.
-    var optimalShields = false
+    var optimalShields = false { didSet { persistSettings() } }
 
     /// Use the learned shield policy (RL milestone 1) instead of the greedy
     /// heuristic — near-optimal shielding at almost no extra cost. Ignored
     /// when `optimalShields` is on. Default ON: measured to change ~⅓ of game
     /// outcomes and reorder team rankings (Spearman 0.53 vs heuristic play)
     /// at 1.0x battle cost, so heuristic-play rankings are simply less accurate.
-    var learnedShields = true
+    var learnedShields = true { didSet { persistSettings() } }
 
     /// Use the learned switch policy (RL milestone 2) for boundary switches,
     /// counterswaps, and faint replacements instead of the hand-tuned rules.
     /// Default ON — same rationale as `learnedShields`.
-    var learnedSwitches = true
+    var learnedSwitches = true { didSet { persistSettings() } }
 
     /// Use the learned farm-vs-switch policy: when a switch is on the table but
     /// the opponent can't punish us yet, bank energy with fast moves for a short
     /// window instead of switching immediately. Only matters with counterswap
     /// simulation on. Default ON — measured +1.8 pts win rate / +18 mean rating
     /// on held-out teams (ungated farming is a wash; the policy picks the moments).
-    var learnedFarming = true
+    var learnedFarming = true { didSet { persistSettings() } }
     static let fieldSizeRange = 100.0...10000.0
     static let fieldSizeStep = 100.0
 
@@ -185,9 +188,88 @@ final class TeamFinderModel {
     /// AI Optimizer result against this many randomly sampled meta-team
     /// opponents (much larger than the curated field used during
     /// hill-climbing) to check which result actually holds up best.
-    var broadFieldSize: Int = 3000
+    var broadFieldSize: Int = 3000 { didSet { persistSettings() } }
+
+    /// Most cores a search may use at once. Applied live, even mid-run.
+    var coreLimit: Int = CoreLimit.defaultWorkers {
+        didSet {
+            CoreLimit.executor.workers = coreLimit
+            persistSettings()
+        }
+    }
     static let broadFieldSizeRange = 1000.0...10000.0
     static let broadFieldSizeStep = 1000.0
+
+    // MARK: - Settings persistence
+
+    /// The user's Party Finder choices, remembered across launches.
+    private struct Settings: Codable {
+        var format: RankingFormat
+        var poolSize: Int
+        var metaSize: Int
+        var method: String
+        var lockedMembers: [TeamMember]
+        var strongAgainstMembers: [TeamMember]
+        var fieldSize: Int
+        var restarts: Int
+        var exploreAlternateMovesets: Bool
+        var simulateCounterswaps: Bool
+        var optimalShields: Bool
+        var learnedShields: Bool
+        var learnedSwitches: Bool
+        var learnedFarming: Bool
+        var broadFieldSize: Int
+        var coreLimit: Int
+    }
+
+    private static let settingsKey = "teamFinderSettings"
+    /// Suppresses saving while `restoreSettings` assigns the stored values.
+    private var isRestoringSettings = false
+
+    init() {
+        restoreSettings()
+        CoreLimit.executor.workers = coreLimit
+    }
+
+    private func persistSettings() {
+        guard !isRestoringSettings else { return }
+        let settings = Settings(
+            format: format, poolSize: poolSize, metaSize: metaSize, method: method.rawValue,
+            lockedMembers: lockedMembers, strongAgainstMembers: strongAgainstMembers,
+            fieldSize: fieldSize, restarts: restarts,
+            exploreAlternateMovesets: exploreAlternateMovesets,
+            simulateCounterswaps: simulateCounterswaps, optimalShields: optimalShields,
+            learnedShields: learnedShields, learnedSwitches: learnedSwitches,
+            learnedFarming: learnedFarming, broadFieldSize: broadFieldSize,
+            coreLimit: coreLimit)
+        if let data = try? JSONEncoder().encode(settings) {
+            UserDefaults.standard.set(data, forKey: Self.settingsKey)
+        }
+    }
+
+    private func restoreSettings() {
+        guard let data = UserDefaults.standard.data(forKey: Self.settingsKey),
+              let saved = try? JSONDecoder().decode(Settings.self, from: data)
+        else { return }
+        isRestoringSettings = true
+        defer { isRestoringSettings = false }
+        format = saved.format
+        poolSize = saved.poolSize
+        metaSize = saved.metaSize   // after poolSize, whose didSet resets it
+        method = Method(rawValue: saved.method) ?? .tournament
+        lockedMembers = saved.lockedMembers
+        strongAgainstMembers = saved.strongAgainstMembers
+        fieldSize = saved.fieldSize
+        restarts = saved.restarts
+        exploreAlternateMovesets = saved.exploreAlternateMovesets
+        simulateCounterswaps = saved.simulateCounterswaps
+        optimalShields = saved.optimalShields
+        learnedShields = saved.learnedShields
+        learnedSwitches = saved.learnedSwitches
+        learnedFarming = saved.learnedFarming
+        broadFieldSize = saved.broadFieldSize
+        coreLimit = min(max(saved.coreLimit, 1), CoreLimit.totalCores)
+    }
 
     /// Completed runs, persisted across launches.
     let savedTournaments = SavedTournamentsStore()
@@ -334,162 +416,164 @@ final class TeamFinderModel {
         resultsFormat = nil
 
         searchTask = Task {
-            let entries: [RankingEntry]
-            do {
-                entries = try await DataService.shared.rankings(for: format)
-            } catch {
-                if !Task.isCancelled { phase = .failed(error.localizedDescription) }
-                return
-            }
-            if Task.isCancelled { return }
-
-            let pool = Self.buildPool(
-                entries: entries, poolSize: poolSize,
-                cpCap: format.cp, pokemonById: pokemonById)
-            guard pool.count >= 3 else {
-                phase = .failed("Not enough ranked Pokémon in this format to build teams.")
-                return
-            }
-
-            phase = .searching
-            resultsFormat = format
-            resultsPoolSize = pool.count
-
-            if method == .gradeCheck {
-                let teams = await GradeFinder.findTopGradedTeams(
-                    pool: pool, cpCap: format.cp, movesById: movesById,
-                    onProgress: { fraction in
-                        Task { @MainActor in self.noteProgress(fraction) }
-                    })
+            await withTaskExecutorPreference(CoreLimit.executor) {
+                let entries: [RankingEntry]
+                do {
+                    entries = try await DataService.shared.rankings(for: format)
+                } catch {
+                    if !Task.isCancelled { phase = .failed(error.localizedDescription) }
+                    return
+                }
                 if Task.isCancelled { return }
-                withAnimation(.spring(duration: 0.6)) { gradedTeams = teams }
-                phase = .done
-                return
-            }
 
-            if method == .aiOptimizer {
-                // TeamOptimizer.findTeams builds its own pool internally (via
-                // TeamOptimizer.buildPool/buildCandidates, a *species-scanned*
-                // stopping rule) from `poolSize` below — not from the `pool`
-                // this function built above (TeamFinderModel.buildPool, a
-                // *successful-candidate-count* stopping rule). Recording the
-                // actual `poolSize` setting here, not `pool.count`, is what
-                // lets `validateAgainstBroadField` reproduce that same pool later.
-                resultsPoolSize = poolSize
-                resultsExploreAlternateMovesets = exploreAlternateMovesets
-                resultsLockedMembers = lockedMembers
-                resultsStrongAgainstMembers = strongAgainstMembers
-                let final = await TeamOptimizer.findTeams(
-                    entries: entries,
-                    poolSize: poolSize,
-                    cpCap: format.cp,
-                    pokemonById: pokemonById,
-                    movesById: movesById,
-                    lockedMembers: lockedMembers,
-                    strongAgainstMembers: strongAgainstMembers,
-                    metaSize: metaSize,
-                    restarts: restarts,
+                let pool = Self.buildPool(
+                    entries: entries, poolSize: poolSize,
+                    cpCap: format.cp, pokemonById: pokemonById)
+                guard pool.count >= 3 else {
+                    phase = .failed("Not enough ranked Pokémon in this format to build teams.")
+                    return
+                }
+
+                phase = .searching
+                resultsFormat = format
+                resultsPoolSize = pool.count
+
+                if method == .gradeCheck {
+                    let teams = await GradeFinder.findTopGradedTeams(
+                        pool: pool, cpCap: format.cp, movesById: movesById,
+                        onProgress: { fraction in
+                            Task { @MainActor in self.noteProgress(fraction) }
+                        })
+                    if Task.isCancelled { return }
+                    withAnimation(.spring(duration: 0.6)) { gradedTeams = teams }
+                    phase = .done
+                    return
+                }
+
+                if method == .aiOptimizer {
+                    // TeamOptimizer.findTeams builds its own pool internally (via
+                    // TeamOptimizer.buildPool/buildCandidates, a *species-scanned*
+                    // stopping rule) from `poolSize` below — not from the `pool`
+                    // this function built above (TeamFinderModel.buildPool, a
+                    // *successful-candidate-count* stopping rule). Recording the
+                    // actual `poolSize` setting here, not `pool.count`, is what
+                    // lets `validateAgainstBroadField` reproduce that same pool later.
+                    resultsPoolSize = poolSize
+                    resultsExploreAlternateMovesets = exploreAlternateMovesets
+                    resultsLockedMembers = lockedMembers
+                    resultsStrongAgainstMembers = strongAgainstMembers
+                    let final = await TeamOptimizer.findTeams(
+                        entries: entries,
+                        poolSize: poolSize,
+                        cpCap: format.cp,
+                        pokemonById: pokemonById,
+                        movesById: movesById,
+                        lockedMembers: lockedMembers,
+                        strongAgainstMembers: strongAgainstMembers,
+                        metaSize: metaSize,
+                        restarts: restarts,
+                        learnedShields: learnedShields,
+                        learnedSwitches: learnedSwitches,
+                        learnedFarming: learnedFarming,
+                        voluntarySwitching: simulateCounterswaps,
+                        optimalShields: optimalShields,
+                        exploreAlternateMovesets: exploreAlternateMovesets,
+                        onProgress: { fraction in
+                            Task { @MainActor in self.noteProgress(fraction) }
+                        },
+                        onResults: { snapshot in
+                            Task { @MainActor [self] in
+                                withAnimation(.spring(duration: 0.6)) { self.optimizerResults = snapshot }
+                            }
+                        })
+                    // Note: `final.isComplete` is *not* a signal that the run
+                    // wasn't cancelled — `TeamOptimizer.findTeams` only checks
+                    // cancellation before the climbers' task group starts; once
+                    // climbing begins it always drains the group and returns
+                    // `isComplete: true` with whatever climbers converged before
+                    // being cut off. So a cancelled run's `final.teams` here is
+                    // already a fully valid set of hill-climbed results (each
+                    // team converged on its own), not a partial/unreliable
+                    // snapshot — unlike the round-robin below, there's no reason
+                    // to discard it just because Cancel was pressed.
+                    if final.teams.isEmpty {
+                        if !Task.isCancelled, !lockedMembers.isEmpty {
+                            phase = .failed("No valid partners found for the locked Pokémon in this pool — try a larger pool or different picks.")
+                        }
+                        return
+                    }
+                    withAnimation(.spring(duration: 0.6)) { optimizerResults = final }
+                    phase = .done
+
+                    savedOptimizerRuns.save(SavedOptimizerRun(
+                        date: .now,
+                        formatTitle: format.title, cup: format.cup, cp: format.cp,
+                        poolSize: poolSize, metaSize: metaSize, restarts: restarts,
+                        exploreAlternateMovesets: exploreAlternateMovesets, lockedMembers: lockedMembers,
+                        strongAgainstMembers: strongAgainstMembers,
+                        teams: final.teams, broadFieldSize: broadFieldSize))
+                    return
+                }
+
+                // Combined: the AAAA grade check seeds the tournament's field, so the
+                // round robin only ranks teams that already grade A across the board.
+                var seededField: [[Int]]?
+                if method == .combined {
+                    let graded = await GradeFinder.findTopGradedTeams(
+                        pool: pool, cpCap: format.cp, movesById: movesById,
+                        maxResults: fieldSize,
+                        onProgress: { fraction in
+                            Task { @MainActor in self.noteProgress(fraction) }
+                        })
+                    if Task.isCancelled { return }
+                    let aaaa = graded.filter(\.isAAAA)
+                    guard aaaa.count >= 2 else {
+                        phase = .failed(aaaa.isEmpty
+                            ? "No AAAA teams in this pool — try a larger pool."
+                            : "Only one AAAA team in this pool — nothing to battle. Try a larger pool.")
+                        return
+                    }
+                    seededField = aaaa.map(\.poolIndices)
+                    eta.reset()
+                }
+
+                let final = await TeamFinder.findTeams(
+                    pool: pool, movesById: movesById, fieldSize: fieldSize,
+                    voluntarySwitching: simulateCounterswaps,
+                    optimalShields: optimalShields,
                     learnedShields: learnedShields,
                     learnedSwitches: learnedSwitches,
                     learnedFarming: learnedFarming,
-                    voluntarySwitching: simulateCounterswaps,
-                    optimalShields: optimalShields,
-                    exploreAlternateMovesets: exploreAlternateMovesets,
-                    onProgress: { fraction in
+                    seededField: seededField,
+                    onSeedingProgress: { fraction in
                         Task { @MainActor in self.noteProgress(fraction) }
                     },
-                    onResults: { snapshot in
-                        Task { @MainActor in
-                            withAnimation(.spring(duration: 0.6)) { self.optimizerResults = snapshot }
+                    onStandings: { snapshot in
+                        Task { @MainActor [self] in
+                            // Snapshots hop actors independently; never regress.
+                            guard snapshot.battlesFought >= (self.standings?.battlesFought ?? -1) else { return }
+                            // Battle speed differs from seeding speed: start a fresh
+                            // measurement when the round robin begins.
+                            if self.standings == nil { self.eta.reset() }
+                            self.eta.record(Double(snapshot.battlesFought) / Double(max(snapshot.totalBattles, 1)))
+                            withAnimation(.spring(duration: 0.6)) { self.standings = snapshot }
                         }
                     })
-                // Note: `final.isComplete` is *not* a signal that the run
-                // wasn't cancelled — `TeamOptimizer.findTeams` only checks
-                // cancellation before the climbers' task group starts; once
-                // climbing begins it always drains the group and returns
-                // `isComplete: true` with whatever climbers converged before
-                // being cut off. So a cancelled run's `final.teams` here is
-                // already a fully valid set of hill-climbed results (each
-                // team converged on its own), not a partial/unreliable
-                // snapshot — unlike the round-robin below, there's no reason
-                // to discard it just because Cancel was pressed.
-                if final.teams.isEmpty {
-                    if !Task.isCancelled, !lockedMembers.isEmpty {
-                        phase = .failed("No valid partners found for the locked Pokémon in this pool — try a larger pool or different picks.")
-                    }
-                    return
-                }
-                withAnimation(.spring(duration: 0.6)) { optimizerResults = final }
+                if Task.isCancelled { return }
+                results = final.teams
+                withAnimation(.spring(duration: 0.6)) { standings = final }
                 phase = .done
 
-                savedOptimizerRuns.save(SavedOptimizerRun(
-                    date: .now,
-                    formatTitle: format.title, cup: format.cup, cp: format.cp,
-                    poolSize: poolSize, metaSize: metaSize, restarts: restarts,
-                    exploreAlternateMovesets: exploreAlternateMovesets, lockedMembers: lockedMembers,
-                    strongAgainstMembers: strongAgainstMembers,
-                    teams: final.teams, broadFieldSize: broadFieldSize))
-                return
-            }
-
-            // Combined: the AAAA grade check seeds the tournament's field, so the
-            // round robin only ranks teams that already grade A across the board.
-            var seededField: [[Int]]?
-            if method == .combined {
-                let graded = await GradeFinder.findTopGradedTeams(
-                    pool: pool, cpCap: format.cp, movesById: movesById,
-                    maxResults: fieldSize,
-                    onProgress: { fraction in
-                        Task { @MainActor in self.noteProgress(fraction) }
-                    })
-                if Task.isCancelled { return }
-                let aaaa = graded.filter(\.isAAAA)
-                guard aaaa.count >= 2 else {
-                    phase = .failed(aaaa.isEmpty
-                        ? "No AAAA teams in this pool — try a larger pool."
-                        : "Only one AAAA team in this pool — nothing to battle. Try a larger pool.")
-                    return
+                // Only a finished round robin is worth keeping — a cancelled
+                // run's records aren't a full account of the field.
+                if final.isComplete {
+                    savedTournaments.save(SavedTournament(
+                        date: .now,
+                        formatTitle: format.title, cup: format.cup, cp: format.cp,
+                        poolSize: pool.count, fieldSize: final.totalEntrants,
+                        battlesFought: final.battlesFought,
+                        teams: final.teams))
                 }
-                seededField = aaaa.map(\.poolIndices)
-                eta.reset()
-            }
-
-            let final = await TeamFinder.findTeams(
-                pool: pool, movesById: movesById, fieldSize: fieldSize,
-                voluntarySwitching: simulateCounterswaps,
-                optimalShields: optimalShields,
-                learnedShields: learnedShields,
-                learnedSwitches: learnedSwitches,
-                learnedFarming: learnedFarming,
-                seededField: seededField,
-                onSeedingProgress: { fraction in
-                    Task { @MainActor in self.noteProgress(fraction) }
-                },
-                onStandings: { snapshot in
-                    Task { @MainActor in
-                        // Snapshots hop actors independently; never regress.
-                        guard snapshot.battlesFought >= (self.standings?.battlesFought ?? -1) else { return }
-                        // Battle speed differs from seeding speed: start a fresh
-                        // measurement when the round robin begins.
-                        if self.standings == nil { self.eta.reset() }
-                        self.eta.record(Double(snapshot.battlesFought) / Double(max(snapshot.totalBattles, 1)))
-                        withAnimation(.spring(duration: 0.6)) { self.standings = snapshot }
-                    }
-                })
-            if Task.isCancelled { return }
-            results = final.teams
-            withAnimation(.spring(duration: 0.6)) { standings = final }
-            phase = .done
-
-            // Only a finished round robin is worth keeping — a cancelled
-            // run's records aren't a full account of the field.
-            if final.isComplete {
-                savedTournaments.save(SavedTournament(
-                    date: .now,
-                    formatTitle: format.title, cup: format.cup, cp: format.cp,
-                    poolSize: pool.count, fieldSize: final.totalEntrants,
-                    battlesFought: final.battlesFought,
-                    teams: final.teams))
             }
         }
     }
@@ -545,42 +629,44 @@ final class TeamFinderModel {
         broadFieldMessage = nil
 
         validateTask = Task {
-            let entries: [RankingEntry]
-            do {
-                entries = try await DataService.shared.rankings(for: format)
-            } catch {
-                if !Task.isCancelled { isValidatingBroadField = false }
-                return
-            }
-            if Task.isCancelled { return }
+            await withTaskExecutorPreference(CoreLimit.executor) {
+                let entries: [RankingEntry]
+                do {
+                    entries = try await DataService.shared.rankings(for: format)
+                } catch {
+                    if !Task.isCancelled { isValidatingBroadField = false }
+                    return
+                }
+                if Task.isCancelled { return }
 
-            let pool = TeamOptimizer.buildPool(
-                entries: entries, poolSize: poolSize, cpCap: format.cp,
-                pokemonById: pokemonById, exploreAlternateMovesets: exploreAlternateMovesets,
-                lockedMembers: lockedMembers).pool
+                let pool = TeamOptimizer.buildPool(
+                    entries: entries, poolSize: poolSize, cpCap: format.cp,
+                    pokemonById: pokemonById, exploreAlternateMovesets: exploreAlternateMovesets,
+                    lockedMembers: lockedMembers).pool
 
-            // A run synced or shared from another device can predate a
-            // rankings update here; its pool indices would then point at
-            // different Pokémon, so refuse rather than battle the wrong teams.
-            guard Self.pool(pool, matches: teams) else {
-                broadFieldMessage = "This run was made with different rankings data than this device has now, so it can't be validated here. Re-run the AI Optimizer to validate."
+                // A run synced or shared from another device can predate a
+                // rankings update here; its pool indices would then point at
+                // different Pokémon, so refuse rather than battle the wrong teams.
+                guard Self.pool(pool, matches: teams) else {
+                    broadFieldMessage = "This run was made with different rankings data than this device has now, so it can't be validated here. Re-run the AI Optimizer to validate."
+                    isValidatingBroadField = false
+                    return
+                }
+
+                let final = await TeamOptimizer.evaluateBroadField(
+                    teams: teams, pool: pool, movesById: movesById, fieldSize: fieldSize,
+                    learnedShields: learnedShields, learnedSwitches: learnedSwitches,
+                    learnedFarming: learnedFarming,
+                    voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
+                    onResults: { snapshot in
+                        Task { @MainActor [self] in
+                            withAnimation(.spring(duration: 0.6)) { self.broadFieldResults = snapshot }
+                        }
+                    })
+                if Task.isCancelled { return }
+                withAnimation(.spring(duration: 0.6)) { broadFieldResults = final }
                 isValidatingBroadField = false
-                return
             }
-
-            let final = await TeamOptimizer.evaluateBroadField(
-                teams: teams, pool: pool, movesById: movesById, fieldSize: fieldSize,
-                learnedShields: learnedShields, learnedSwitches: learnedSwitches,
-                learnedFarming: learnedFarming,
-                voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
-                onResults: { snapshot in
-                    Task { @MainActor in
-                        withAnimation(.spring(duration: 0.6)) { self.broadFieldResults = snapshot }
-                    }
-                })
-            if Task.isCancelled { return }
-            withAnimation(.spring(duration: 0.6)) { broadFieldResults = final }
-            isValidatingBroadField = false
         }
     }
 

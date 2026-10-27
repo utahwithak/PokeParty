@@ -56,6 +56,24 @@ struct TeamFinderView: View {
             }
             .themedRow()
 
+            Section("Performance") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Slider(
+                        value: Binding(
+                            get: { Double(model.coreLimit) },
+                            set: { model.coreLimit = Int($0) }),
+                        in: 1...Double(max(2, CoreLimit.totalCores)),
+                        step: 1
+                    ) {
+                        Text("CPU cores")
+                    }
+                    Text("Use up to \(model.coreLimit) of \(CoreLimit.totalCores) cores — fewer keeps the Mac responsive while a long search runs in the background. Changes apply immediately.")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .themedRow()
+
             Section("Method") {
                 Picker("Method", selection: Bindable(model).method) {
                     ForEach(TeamFinderModel.Method.allCases) { method in

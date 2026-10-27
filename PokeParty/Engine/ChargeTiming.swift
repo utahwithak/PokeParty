@@ -33,9 +33,13 @@ nonisolated enum ChargeTiming {
         var timed: [Int]
         /// Fast moves needed purely for energy (first 5 throws).
         var ready: [Int]
-        /// False when timing changes nothing (aligned cycles, or the energy
-        /// count already lands in the window).
-        var timingMatters: Bool { timed != ready }
+        /// True when the two fast-move cycles are misaligned, so the throw has
+        /// to be timed against the opponent's fast move. The counts above
+        /// assume both sides started together; in a real battle the phase
+        /// differs, so this stays true even when the counts happen to match.
+        var timingMatters: Bool
+        /// True when the timed counts differ from the energy-only counts.
+        var changesCounts: Bool { timed != ready }
     }
 
     /// Simulates farming `pokeFast` against an opponent farming `opponentFast`
@@ -77,7 +81,7 @@ nonisolated enum ChargeTiming {
               let ready = pokeFast.energyGain > 0
                 ? Move.readyCounts(cost: cost, gain: pokeFast.energyGain, throwCount: throwCount) : nil
         else { return nil }
-        return Result(timed: timed, ready: ready)
+        return Result(timed: timed, ready: ready, timingMatters: target > 0)
     }
 
     /// Running fast-move tally at each throw, e.g. gaps [3, 2, 2, 2] → "3 · 5 · 7 · 9".

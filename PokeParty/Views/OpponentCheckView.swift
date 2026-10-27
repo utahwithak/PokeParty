@@ -51,6 +51,17 @@ struct OpponentCheckView: View {
                 resultsList
             }
             quickPicks
+            if slots.contains(where: { $0 != nil }) {
+                Button(role: .destructive) {
+                    slots = Array(repeating: nil, count: 3)
+                    activeSlot = 0
+                } label: {
+                    Label("Clear all opponents", systemImage: "xmark.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
             HStack(alignment: .top, spacing: 12) {
                 ForEach(0..<3, id: \.self) { slot in
                     OpponentColumn(
@@ -376,7 +387,9 @@ private struct OpponentColumn: View {
                         Text(ChargeTiming.formatThrowPoints(result.timed))
                             .font(.caption2.weight(.semibold).monospacedDigit())
                         if result.timingMatters {
-                            Text("(ready: \(ChargeTiming.formatThrowPoints(result.ready)))")
+                            Text(result.changesCounts
+                                 ? "(ready: \(ChargeTiming.formatThrowPoints(result.ready)))"
+                                 : "(time it)")
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         } else {
