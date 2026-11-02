@@ -27,6 +27,8 @@ struct ContentView: View {
     @State private var selectedBenchID: BenchEntry.ID?
     #if os(macOS)
     @State private var scanModel = ScanModel()
+    #else
+    @State private var opponentScan = OpponentScanModel()
     #endif
     #if os(macOS) && BETA_SCAN
     @State private var autoAdvance = AutoAdvanceModel()
@@ -53,6 +55,9 @@ struct ContentView: View {
         #endif
         .environment(entitlements)
         .environment(shareImport)
+        #if os(iOS)
+        .environment(opponentScan)
+        #endif
         .fileImporter(
             isPresented: Bindable(shareImport).isImporterPresented,
             allowedContentTypes: [.pokePartyResults],
@@ -154,6 +159,14 @@ struct ContentView: View {
                 PaywallView()
             }
         #endif
+        #if os(iOS)
+        case .screenScan:
+            if entitlements.isUnlocked {
+                OpponentScanView(store: store, scan: opponentScan, bench: bench)
+            } else {
+                PaywallView()
+            }
+        #endif
         #if os(macOS) && BETA_SCAN
         case .betaScan:
             if entitlements.isUnlocked {
@@ -217,6 +230,17 @@ struct ContentView: View {
                 })
             } else {
                 ContentUnavailableView("", systemImage: "camera.viewfinder")
+            }
+        #endif
+        #if os(iOS)
+        case .screenScan:
+            if entitlements.isUnlocked {
+                ContentUnavailableView(
+                    "Screen Scan",
+                    systemImage: "viewfinder",
+                    description: Text("Begin a scan, then open Pokémon GO. Opponents you face show up here and in Check Opponent."))
+            } else {
+                ContentUnavailableView("", systemImage: "viewfinder")
             }
         #endif
         #if os(macOS) && BETA_SCAN

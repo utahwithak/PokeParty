@@ -2,17 +2,17 @@
 //  ScanModel.swift
 //  PokeParty
 //
-//  Observable model backing the Scan tool. Runs a continuous capture + OCR
-//  loop against the iPhone Mirroring window and exposes the best currently-
-//  known IVs for whatever Pokémon is on screen. Staging a bench pick (via a
-//  tap on the IV grid) snapshots those IVs so the live loop can keep scanning
-//  the next Pokémon without disturbing a pick still under review.
+//  Observable model backing the Scan tool. Turns frames of a Pokémon GO
+//  detail/appraisal screen into the best currently-known IVs for whatever
+//  Pokémon is on screen. Staging a bench pick (via a tap on the IV grid)
+//  snapshots those IVs so scanning can continue with the next Pokémon
+//  without disturbing a pick still under review.
 //
-//  Built on ScreenScanner, which captures the iPhone Mirroring window and is
-//  macOS-only, so this whole file is unavailable on iOS.
+//  Frame reading (`processFrame`) is shared by both platforms. On macOS this
+//  model also drives its own capture loop against the iPhone Mirroring
+//  window; on iOS the Screen Scan tool feeds it frames from the on-device
+//  screen capture instead.
 //
-
-#if os(macOS)
 
 import Foundation
 import SwiftUI
@@ -94,7 +94,13 @@ final class ScanModel {
 
     func clearHistory() { history.removeAll() }
 
+    #if os(macOS)
     var isScanning: Bool { liveTask != nil }
+    #endif
+
+    /// Called once for each new distinct Pokémon recorded to `history`
+    /// (the iOS Screen Scan tool turns these into notifications).
+    var onNewHistoryEntry: (@MainActor (HistoryEntry) -> Void)?
 
     /// The best currently-known IV spread: bar readings when complete,
     /// otherwise the top guessed candidate, otherwise a neutral default.
@@ -134,7 +140,9 @@ final class ScanModel {
     /// tool hooks auto-advance in here. Compiled out of App Store builds.
     var onReadingCommitted: (@MainActor () async -> Void)?
     #endif
+    #if os(macOS)
     private var liveTask: Task<Void, Never>?
+    #endif
 
     /// One frame's OCR + bar reading, compared against the previous frame's
     /// to gate `liveStatus` updates on agreement rather than any single
@@ -161,6 +169,7 @@ final class ScanModel {
     /// out the transitional frame every swipe produces.
     private static let requiredStreak = 2
 
+    #if os(macOS)
     /// Starts the continuous frame-stream → OCR loop. Safe to call
     /// repeatedly; no-ops if already running.
     func startScanning(store: RankingsStore) {
@@ -220,11 +229,12 @@ final class ScanModel {
             }
         }
     }
+    #endif
 
     /// Runs OCR + bar reading on one streamed frame and, once the reading
     /// has agreed with itself for `requiredStreak` consecutive frames,
     /// commits it: updates `liveStatus` and records history.
-    private func processFrame(_ image: CGImage, store: RankingsStore) async throws {
+    func processFrame(_ image: CGImage, store: RankingsStore) async throws {
         do {
             guard let (info, barIVs) = try await scanner.scanFrame(image) else {
                 registerMiss()
@@ -296,10 +306,12 @@ final class ScanModel {
         let ivs = currentIVs
         if let last = history.first, last.speciesId == speciesId, last.ivs == ivs { return }
         let name = store.pokemonById[speciesId]?.speciesName ?? live.rawName
-        history.insert(HistoryEntry(
+        let entry = HistoryEntry(
             date: .now, speciesId: speciesId, speciesName: name,
-            ivs: ivs, bestRank: bestRankHit(store: store)), at: 0)
+            ivs: ivs, bestRank: bestRankHit(store: store))
+        history.insert(entry, at: 0)
         if history.count > Self.maxHistory { history.removeLast() }
+        onNewHistoryEntry?(entry)
     }
 
     struct RankHit {
@@ -559,5 +571,3 @@ final class ScanModel {
             .joined(separator: " ")
     }
 }
-
-#endif

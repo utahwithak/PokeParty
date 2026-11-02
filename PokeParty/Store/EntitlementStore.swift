@@ -18,13 +18,13 @@ final class EntitlementStore {
 
     static let productID = "com.freebits.pokeparty.pro"
 
-    /// The features the purchase unlocks on this platform — the Screen
-    /// Scanner is macOS-only, so it isn't advertised on iOS.
+    /// The features the purchase unlocks on this platform — the Mac Screen
+    /// Scanner (iPhone Mirroring) is macOS-only; Screen Scan is iOS.
     static var proFeatureList: String {
         #if os(macOS)
         return "Party Finder and Screen Scanner"
         #else
-        return "Party Finder and Themes"
+        return "Party Finder, Screen Scan and Themes"
         #endif
     }
 

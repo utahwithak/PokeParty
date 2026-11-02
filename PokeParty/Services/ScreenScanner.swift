@@ -2,22 +2,23 @@
 //  ScreenScanner.swift
 //  PokeParty
 //
-//  Captures a frame from the iPhone Mirroring window via ScreenCaptureKit
-//  and uses Vision OCR to extract the Pokémon's species, level, and HP
-//  shown on the detail screen.
+//  Uses Vision OCR and pixel analysis to extract a Pokémon's species, level,
+//  HP and IVs from a Pokémon GO detail/appraisal screen image. That reading
+//  is shared by macOS (frames captured from the iPhone Mirroring window) and
+//  iOS (frames from the on-device screen capture).
 //
-//  iPhone Mirroring and ScreenCaptureKit desktop-window capture are
-//  macOS-only, so this whole file is unavailable on iOS.
+//  Only the capture half — iPhone Mirroring window lookup and its
+//  ScreenCaptureKit stream — is macOS-only, and fenced off below.
 //
 
-#if os(macOS)
-
-import AppKit
 import CoreImage
-import CoreMedia
 import Foundation
-@preconcurrency import ScreenCaptureKit
 @preconcurrency import Vision
+#if os(macOS)
+import AppKit
+import CoreMedia
+@preconcurrency import ScreenCaptureKit
+#endif
 
 enum ScanError: LocalizedError {
     case windowNotFound
@@ -62,6 +63,7 @@ nonisolated struct BarIVs: Equatable {
 
 actor ScreenScanner {
 
+    #if os(macOS)
     // MARK: - Capture
 
     /// Finds the iPhone Mirroring window among `content`'s windows.
@@ -203,6 +205,7 @@ actor ScreenScanner {
         }
         return max(bestScale, 1.0)
     }
+    #endif
 
     // MARK: - OCR
 
@@ -757,11 +760,15 @@ actor ScreenScanner {
         let edges = [startX] + measurements.values.map { $0.endX }
         let toSave = annotated(cropped, verticalXs: edges, horizontalYs: rowYs.map { $0 - y }) ?? cropped
 
+        #if os(macOS)
         let rep = NSBitmapImageRep(cgImage: toSave)
         guard let data = rep.representation(using: .png, properties: [:]) else { return }
         let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("pokeparty_bar_debug.png")
         try? data.write(to: url)
         print("[ScreenScanner] Saved bar debug image (crop origin y=\(y), green rows at rel y=\(rowYs.map { $0 - y }), red edges at x=\(edges.sorted())) to \(url.path)")
+        #else
+        _ = toSave
+        #endif
     }
 
     /// Draws vertical (red) and horizontal (green) marker lines. Uses a
@@ -796,6 +803,7 @@ actor ScreenScanner {
     #endif
 }
 
+#if os(macOS)
 /// Forwards `SCStream` output into an `AsyncThrowingStream`. This exists
 /// only because `SCStreamOutput`/`SCStreamDelegate` require
 /// `NSObjectProtocol` conformance, which the `ScreenScanner` actor itself
@@ -826,6 +834,7 @@ nonisolated private final class FrameStreamRelay: NSObject, SCStreamOutput, SCSt
         continuation?.finish(throwing: error)
     }
 }
+#endif
 
 // `nonisolated` on both: they're pure pixel math used from `ScreenScanner`'s
 // actor context, and would otherwise pick up the project's default main-actor
@@ -889,5 +898,3 @@ nonisolated private struct PixelSampler {
         return PixelColor(r: Double(data[offset]), g: Double(data[offset + 1]), b: Double(data[offset + 2]))
     }
 }
-
-#endif

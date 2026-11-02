@@ -21,6 +21,10 @@ enum SidebarSelection: Hashable {
     /// captures the iPhone Mirroring window via ScreenCaptureKit.
     case scan
     #endif
+    #if os(iOS)
+    /// Reads the opponent off the Pokémon GO battle screen (iOS 27 screen capture).
+    case screenScan
+    #endif
     #if os(macOS) && BETA_SCAN
     /// Scan plus auto-advance swipes (synthetic input) — non-App Store builds only.
     case betaScan
@@ -41,6 +45,9 @@ enum SidebarSelection: Hashable {
         case .bench: return "bench"
         #if os(macOS)
         case .scan: return "scan"
+        #endif
+        #if os(iOS)
+        case .screenScan: return "screenScan"
         #endif
         #if os(macOS) && BETA_SCAN
         case .betaScan: return "betaScan"
@@ -67,6 +74,9 @@ enum SidebarSelection: Hashable {
         case "bench": return .bench
         #if os(macOS)
         case "scan": return .scan
+        #endif
+        #if os(iOS)
+        case "screenScan": return .screenScan
         #endif
         #if os(macOS) && BETA_SCAN
         case "betaScan": return .betaScan
@@ -122,6 +132,9 @@ struct LeagueSidebar: View {
                 #if os(macOS)
                 Label("Scan", systemImage: "camera.viewfinder")
                     .tag(SidebarSelection.scan)
+                #else
+                Label("Screen Scan", systemImage: "viewfinder")
+                    .tag(SidebarSelection.screenScan)
                 #endif
                 #if os(macOS) && BETA_SCAN
                 Label("Beta Scan", systemImage: "hand.draw")

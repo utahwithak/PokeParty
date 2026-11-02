@@ -11,6 +11,7 @@
 //  `TeamBuilderDetailView`.
 //
 
+import StoreKit
 import SwiftUI
 
 struct OpponentCheckView: View {
@@ -24,6 +25,21 @@ struct OpponentCheckView: View {
     @State private var activeSlot = 0
     /// `ratings[slot][teamIndex]`, recomputed when the inputs change.
     @State private var ratings: [[Int?]] = Array(repeating: [], count: 3)
+    /// Forms of a just-detected opponent when the screen's name alone can't
+    /// say which one it is (Zacian, Kyurem, Necrozma…); the user taps one.
+    @State private var formChoices: [Pokemon] = []
+    @State private var detectionNote: String?
+    #if DEBUG
+    /// Measured type-icon colours of the last detection, for calibrating `TypeColors`.
+    @State private var lastIconSummary = ""
+    #endif
+    #if os(iOS)
+    @Environment(OpponentScanModel.self) private var scan
+    #else
+    @Environment(EntitlementStore.self) private var entitlements
+    @State private var phoneLink = PhoneLinkServer()
+    @State private var showPhoneLinkInfo = false
+    #endif
 
     /// Ranked opponents matching the search — restricting to `store.entries`
     /// (rather than every released species) guarantees a moveset + stats
@@ -46,6 +62,16 @@ struct OpponentCheckView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            #if os(iOS)
+            scanHint
+            #else
+            if entitlements.isUnlocked {
+                phoneLinkRow
+            } else {
+                lockedPhoneLinkRow
+            }
+            #endif
+            detectionFeedback
             searchField
             if !searchResults.isEmpty {
                 resultsList
@@ -82,7 +108,202 @@ struct OpponentCheckView: View {
             // Movesets and rankings are per format, so start fresh.
             slots = Array(repeating: nil, count: 3)
             activeSlot = 0
+            formChoices = []
         }
+        #if os(iOS)
+        .onAppear { takeScanned() }
+        .onChange(of: scan.detections.first?.id) { takeScanned() }
+        #else
+        // The listener only runs while this screen is up.
+        // Pro only: without it the row below just explains the feature.
+        .onAppear { if entitlements.isUnlocked { phoneLink.start() } }
+        .onDisappear { phoneLink.stop() }
+        .onChange(of: entitlements.isUnlocked) { _, unlocked in
+            if unlocked { phoneLink.start() } else { phoneLink.stop() }
+        }
+        .onChange(of: phoneLink.latest) { _, detection in
+            if let detection { handle(detection) }
+        }
+        #endif
+    }
+
+    // MARK: - Detection feedback (both platforms)
+
+    /// What was just detected, plus a form picker when the name alone is ambiguous.
+    @ViewBuilder
+    private var detectionFeedback: some View {
+        if detectionNote != nil || !formChoices.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                if let detectionNote {
+                    Text(detectionNote).font(.caption).foregroundStyle(.secondary)
+                }
+                if !formChoices.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Which form?")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(formChoices) { form in
+                                    Button {
+                                        pick(form.speciesId)
+                                        formChoices = []
+                                    } label: {
+                                        Text(form.speciesName)
+                                            .font(.caption.weight(.medium))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(Color.accentColor.opacity(0.18), in: Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #if os(macOS)
+    // MARK: - iPhone link (macOS)
+
+    private var phoneLinkStatus: (text: String, color: Color) {
+        if let name = phoneLink.phoneName { return ("Connected to \(name)", .green) }
+        switch phoneLink.state {
+        case .listening: return ("Waiting for iPhone", .orange)
+        case .failed: return ("iPhone link unavailable", .red)
+        case .stopped: return ("iPhone link off", .secondary)
+        }
+    }
+
+    /// Shown instead of the connection row when Pro isn't unlocked, so the
+    /// feature is discoverable while Check Opponent itself stays fully usable.
+    private var lockedPhoneLinkRow: some View {
+        DisclosureGroup(isExpanded: $showPhoneLinkInfo) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("With PokeParty Pro, Screen Scan on your iPhone reads the opponent from your Pokémon GO battle and sends it here, filling in these slots automatically.")
+                Text("One purchase unlocks Pro on iPhone and Mac. Check Opponent works the same without it — just pick opponents yourself.")
+                Button {
+                    Task { await entitlements.purchase() }
+                } label: {
+                    if let price = entitlements.product?.displayPrice {
+                        Text("Unlock PokeParty Pro · \(price)")
+                    } else {
+                        Text("Unlock PokeParty Pro")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(entitlements.isPurchasing || entitlements.product == nil)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                    .foregroundStyle(.yellow)
+                Text("Detect opponents from your iPhone — Pro")
+                    .font(.subheadline.weight(.medium))
+            }
+        }
+        .padding(10)
+        .background(Color.yellow.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.yellow.opacity(0.45), lineWidth: 1))
+    }
+
+    /// "Connected to <phone>" with a disclosure explaining the feature.
+    private var phoneLinkRow: some View {
+        let status = phoneLinkStatus
+        return DisclosureGroup(isExpanded: $showPhoneLinkInfo) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Your iPhone can send the opponent it sees in a Pokémon GO battle straight to this Mac, which fills in the opponent slots below.")
+                Text("On iPhone: open PokeParty → Check Opponent → Detect from screen, choose Entire Screen, then start a battle. Both devices need to be on the same Wi-Fi network, and the iPhone needs iOS 27.")
+                if case .failed(let message) = phoneLink.state {
+                    Text(message).foregroundStyle(.red)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                    .foregroundStyle(.secondary)
+                Text(status.text)
+                    .font(.subheadline.weight(.medium))
+                Circle().fill(status.color).frame(width: 8, height: 8)
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+    }
+    #endif
+
+    #if os(iOS)
+    // MARK: - Screen Scan hand-off (iOS)
+
+    /// Points at the Screen Scan tool until a scan is running.
+    @ViewBuilder
+    private var scanHint: some View {
+        if scan.isScanning {
+            Label("Screen Scan is running — opponents appear here as you battle.", systemImage: "dot.radiowaves.left.and.right")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Label("Open Screen Scan to detect opponents from Pokémon GO.", systemImage: "viewfinder")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Resolves anything Screen Scan found since this screen last looked.
+    private func takeScanned() {
+        for detection in scan.takeUntaken() { handle(detection) }
+    }
+    #endif
+
+    // MARK: - Resolving a detection
+
+    /// Resolves a detected name to a species: a single match fills the next
+    /// slot straight away, several (alternate forms) ask the user to choose.
+    private func handle(_ detection: OpponentDetection) {
+        let ranked = store.entries.compactMap { store.pokemonById[$0.speciesId] }
+        let byName = OpponentNameMatcher.candidates(for: detection.name, in: ranked)
+        // The type icons separate regional variants the name can't (Ninetales, Golem…).
+        let matches = OpponentNameMatcher.narrow(byName, byIcons: detection.icons)
+        let usedTypes = matches.count < byName.count
+        let cp = detection.cp.map { " (CP \($0))" } ?? ""
+
+        // Opponents swap in and out mid-battle, so the same one is seen again
+        // and again. If any form of it already sits in a slot — including a
+        // variant the user switched it to — leave the slots alone.
+        let matchIds = Set(matches.map(\.speciesId))
+        if let existing = slots.firstIndex(where: { $0.map { matchIds.contains($0.speciesId) } ?? false }),
+           let present = slots[existing] {
+            formChoices = []
+            detectionNote = "\(store.name(forSpeciesId: present.speciesId))\(cp) is already in slot \(existing + 1)."
+            return
+        }
+        switch matches.count {
+        case 0:
+            formChoices = []
+            detectionNote = "Saw “\(detection.name)”\(cp) but couldn't match it to a ranked Pokémon in this format."
+        case 1:
+            formChoices = []
+            detectionNote = "Detected \(matches[0].speciesName)\(cp)\(usedTypes ? ", form chosen by type" : "")."
+            pick(matches[0].speciesId)
+        default:
+            let rank = store.rankBySpeciesId
+            formChoices = matches.sorted { (rank[$0.speciesId] ?? .max) < (rank[$1.speciesId] ?? .max) }
+            detectionNote = "Detected \(detection.name)\(cp) — pick the form."
+        }
+        #if DEBUG
+        lastIconSummary = detection.iconSummary
+        #endif
     }
 
     // MARK: - Picking
@@ -268,10 +489,7 @@ private struct OpponentColumn: View {
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
                     HStack(spacing: 4) {
-                        Text(species.speciesName)
-                            .font(.headline)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
+                        speciesTitle(member: member, species: species)
                         if member.shadow { ShadowBadge() }
                     }
                 }
@@ -308,6 +526,66 @@ private struct OpponentColumn: View {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), lineWidth: 2)
         )
+    }
+
+    /// Ranked species whose name contains this one's base name — "Palkia"
+    /// offers "Palkia (Origin)" and vice versa — so a wrong form, whether
+    /// auto-detected or picked, can be switched in place.
+    private func variants(of species: Pokemon) -> [RankingEntry] {
+        let base = species.speciesName
+            .split(separator: "(", maxSplits: 1, omittingEmptySubsequences: false).first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? species.speciesName
+        guard !base.isEmpty else { return [] }
+        let rank = store.rankBySpeciesId
+        return store.entries
+            .filter { $0.speciesName.localizedCaseInsensitiveContains(base) }
+            .sorted { (rank[$0.speciesId] ?? .max) < (rank[$1.speciesId] ?? .max) }
+    }
+
+    /// The species name — a drop-down of its variants when there are any.
+    @ViewBuilder
+    private func speciesTitle(member: TeamMember, species: Pokemon) -> some View {
+        let options = variants(of: species)
+        if options.count > 1 {
+            Menu {
+                ForEach(options) { option in
+                    Button {
+                        guard option.speciesId != species.speciesId,
+                              var replacement = store.makeMember(speciesId: option.speciesId) else { return }
+                        // Keep the Shadow toggle across forms that can still be Shadow.
+                        let target = store.pokemonById[option.speciesId]
+                        replacement.shadow = member.shadow && (target?.isShadowEligible ?? false)
+                        onChange(replacement)
+                    } label: {
+                        if option.speciesId == species.speciesId {
+                            Label(option.speciesName, systemImage: "checkmark")
+                        } else {
+                            Text(option.speciesName)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Text(species.speciesName)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Switch to a different form")
+        } else {
+            Text(species.speciesName)
+                .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
     }
 
     private func movesetEditor(member: TeamMember, species: Pokemon) -> some View {

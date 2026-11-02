@@ -20,6 +20,7 @@ struct PaywallView: View {
         #if os(macOS)
         features.append((icon: "camera.viewfinder", text: "Screen Scanner — read IVs from iPhone Mirroring automatically"))
         #else
+        features.append((icon: "viewfinder", text: "Screen Scan — detect your opponent from the Pokémon GO battle screen"))
         features.append((icon: "paintpalette", text: "Themes — recolor the app with a palette of your choice"))
         #endif
         return features

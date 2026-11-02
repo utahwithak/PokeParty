@@ -31,6 +31,16 @@
 			<string>Any</string>
 		</dict>
 	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_pokeparty._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>PokeParty sends the opponent it spots in Pokémon GO to PokeParty on your Mac.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>screen-capture</string>
+	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
