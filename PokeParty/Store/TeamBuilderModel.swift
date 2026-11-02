@@ -7,6 +7,10 @@
 //  the grades / threats / suggested teammates, using data from the shared
 //  `RankingsStore`.
 //
+//  Each league (format) remembers the team last used in it — not a *saved*
+//  team, just wherever the user left off — and restores it when they come
+//  back, including after a relaunch.
+//
 
 import SwiftUI
 
@@ -30,6 +34,48 @@ final class TeamBuilderModel {
     private(set) var phase: Phase = .empty
 
     private var analyzeTask: Task<Void, Never>?
+
+    // MARK: - Last used team per league
+
+    /// The last-used team for each format, keyed by `RankingFormat.id`.
+    private var lastUsed: [String: [TeamMember]]
+    /// The format `members` currently belongs to; nil until `activate` runs.
+    private var activeFormatId: String?
+    private let lastUsedURL: URL
+
+    init(lastUsedURL: URL? = nil) {
+        self.lastUsedURL = lastUsedURL ?? JSONFileStore.defaultFileURL(filename: "LastUsedTeams.json")
+        let data = try? Data(contentsOf: self.lastUsedURL)
+        lastUsed = data.flatMap { try? JSONDecoder().decode([String: [TeamMember]].self, from: $0) } ?? [:]
+    }
+
+    /// Points the builder at `format`, swapping in that league's last-used
+    /// team (empty if there isn't one). Call whenever the selected league
+    /// changes, and once at launch. A no-op if already on that format.
+    func activate(format: RankingFormat) {
+        guard format.id != activeFormatId else { return }
+        let first = activeFormatId == nil
+        activeFormatId = format.id
+        if first, !members.isEmpty {
+            // Members were added before the format was known — keep them.
+            lastUsed[format.id] = members
+        } else {
+            members = lastUsed[format.id] ?? []
+        }
+        invalidate()
+    }
+
+    private func persistLastUsed() {
+        guard let activeFormatId else { return }
+        if members.isEmpty {
+            lastUsed[activeFormatId] = nil
+        } else {
+            lastUsed[activeFormatId] = members
+        }
+        if let data = try? JSONEncoder().encode(lastUsed) {
+            JSONFileStore.write(data, to: lastUsedURL)
+        }
+    }
 
     var hasMembers: Bool { !members.isEmpty }
     var isFull: Bool { members.count >= Self.maxMembers }
@@ -76,8 +122,11 @@ final class TeamBuilderModel {
         invalidate()
     }
 
-    /// Replaces the whole team (used when loading a saved team).
-    func setTeam(_ newMembers: [TeamMember]) {
+    /// Replaces the whole team (used when loading a saved team). Pass
+    /// `format` when the caller is also switching the league, so the team
+    /// lands in that league's slot rather than the one being left.
+    func setTeam(_ newMembers: [TeamMember], for format: RankingFormat? = nil) {
+        if let format { activeFormatId = format.id }
         members = Array(newMembers.prefix(Self.maxMembers))
         invalidate()
     }
@@ -89,6 +138,7 @@ final class TeamBuilderModel {
     }
 
     private func invalidate() {
+        persistLastUsed()
         analysis = nil
         analyzeTask?.cancel()
         phase = hasMembers ? .ready : .empty

@@ -24,20 +24,24 @@ struct OpponentScanView: View {
 
     var body: some View {
         List {
+            // The button gets its own section with no row chrome, so it reads as
+            // a standalone action rather than a button inside a list cell; the
+            // status lines sit underneath as the section's footer.
             Section {
                 beginButton
-                if let message = scan.stream.errorMessage {
-                    Text(message).font(.caption).foregroundStyle(.red)
-                }
-                if scan.isScanning {
-                    Label("Scanning — switch to Pokémon GO and start a battle.", systemImage: "dot.radiowaves.left.and.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let mac = scan.link.macName {
-                    Label("Sending to \(mac)", systemImage: "desktopcomputer")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+            } footer: {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let message = scan.stream.errorMessage {
+                        Text(message).foregroundStyle(.red)
+                    }
+                    if scan.isScanning {
+                        Label("Scanning — switch to Pokémon GO and start a battle.", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                    if let mac = scan.link.macName {
+                        Label("Sending to \(mac)", systemImage: "desktopcomputer")
+                    }
                 }
             }
 
@@ -153,11 +157,16 @@ struct OpponentScanView: View {
                 scan.begin(store: store)
             }
         } label: {
-            Label(scan.isScanning ? "Stop Scan" : "Begin Scan",
-                  systemImage: scan.isScanning ? "stop.circle.fill" : "viewfinder")
-                .frame(maxWidth: .infinity)
+            // An HStack rather than a `Label`: inside a List, `Label` lays its
+            // icon out in a fixed leading column, so the content never centres.
+            HStack(spacing: 8) {
+                Image(systemName: scan.isScanning ? "stop.circle.fill" : "viewfinder")
+                Text(scan.isScanning ? "Stop Scan" : "Begin Scan")
+            }
+            .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
+        .buttonBorderShape(.capsule)
         .tint(scan.isScanning ? .red : .accentColor)
         .controlSize(.large)
     }

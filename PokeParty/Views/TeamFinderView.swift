@@ -623,7 +623,7 @@ struct TeamFinderResultsView: View {
         if let format = model.resultsFormat {
             store.format = format
         }
-        teamBuilder.setTeam(members)
+        teamBuilder.setTeam(members, for: model.resultsFormat)
         selection = .teamBuilder
     }
 }

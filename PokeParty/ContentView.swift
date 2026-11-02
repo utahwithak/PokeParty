@@ -82,8 +82,13 @@ struct ContentView: View {
         .frame(minWidth: 1040, minHeight: 600)
         #endif
         .task {
+            teamBuilder.activate(format: store.format)
             await store.load()
             restoreSavedSelection()
+        }
+        // Each league keeps the team last used in it.
+        .onChange(of: store.format) { _, format in
+            teamBuilder.activate(format: format)
         }
         .task { await store.observeDataUpdates() }
         .task { await entitlements.load() }
@@ -148,7 +153,7 @@ struct ContentView: View {
             BenchView(bench: bench, store: store, selectedID: $selectedBenchID,
                       openTeamInBuilder: { league, members in
                           store.format = league.format
-                          teamBuilder.setTeam(members)
+                          teamBuilder.setTeam(members, for: league.format)
                           selection = .teamBuilder
                       })
         #if os(macOS)
