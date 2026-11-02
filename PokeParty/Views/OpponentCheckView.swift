@@ -378,24 +378,18 @@ private struct OpponentColumn: View {
             ForEach(teamMember.chargedMoveIds.filter { !$0.isEmpty }, id: \.self) { id in
                 if let move = store.move(id: id),
                    let result = ChargeTiming.throwCounts(cost: move.energy, pokeFast: myFast, opponentFast: oppFast) {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(move.name)
-                            .font(.caption2.weight(.semibold))
-                        Text("throw on")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(ChargeTiming.formatThrowPoints(result.timed))
-                            .font(.caption2.weight(.semibold).monospacedDigit())
-                        if result.timingMatters {
-                            Text(result.changesCounts
-                                 ? "(ready: \(ChargeTiming.formatThrowPoints(result.ready)))"
-                                 : "(time it)")
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("no timing needed")
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text(move.name)
+                                .font(.caption2.weight(.semibold))
+                            Text("throw after")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                            Text(ChargeTiming.formatThrowPoints(Array(result.timed.prefix(3))))
+                                .font(.caption2.weight(.semibold).monospacedDigit())
+                        }
+                        if result.timingMatters {
+                            ThrowTimingDiagram(timed: Array(result.timed.prefix(3)), pokeFast: myFast, opponentFast: oppFast)
                         }
                     }
                     .help("Fast-move number to throw on, timed so the opponent's fast move can't land during your charged move. Assumes both sides are farming from the same start.")
@@ -428,5 +422,70 @@ private struct OpponentColumn: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// Two-lane timeline of the optimal throw timing: the top lane is your fast
+/// moves (the highlighted cell is where the charged move goes), the bottom
+/// lane is the opponent's fast moves. Cell widths are proportional to
+/// duration, so you can see where the opponent's move lands relative to yours.
+private struct ThrowTimingDiagram: View {
+    let timed: [Int]
+    let pokeFast: Move
+    let opponentFast: Move
+
+    private static let laneHeight: CGFloat = 14
+
+    private struct Cell: Identifiable {
+        let id: Int
+        let turns: Int
+        let isCharged: Bool
+    }
+
+    /// Own lane: `timed[i]` fast moves then a one-turn charged move,     /// many throws as fit (at least one, at most three).
+    private var ownCells: [Cell] {
+        var cells: [Cell] = []
+        let pokeTurns = pokeFast.cooldown / 500
+        for count in timed {
+            for _ in 0..<count { cells.append(Cell(id: cells.count, turns: pokeTurns, isCharged: false)) }
+            cells.append(Cell(id: cells.count, turns: 1, isCharged: true))
+        }
+        return cells
+    }
+
+    var body: some View {
+        let own = ownCells
+        let totalTurns = max(1, own.reduce(0) { $0 + $1.turns })
+        let oppTurns = max(1, opponentFast.cooldown / 500)
+        let oppCells = (0..<Int((Double(totalTurns) / Double(oppTurns)).rounded(.up)))
+            .map { Cell(id: $0, turns: oppTurns, isCharged: false) }
+
+        VStack(spacing: 2) {
+            lane(own, totalTurns: totalTurns, fill: Color.yellow.opacity(0.25), highlight: Color.yellow.opacity(0.85))
+            lane(oppCells, totalTurns: totalTurns, fill: Color.orange.opacity(0.65), highlight: .orange)
+        }
+        .padding(3)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.4), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .accessibilityLabel("Optimal move timing: throw after \(ChargeTiming.formatThrowPoints(timed)) fast moves")
+    }
+
+    private func lane(_ cells: [Cell], totalTurns: Int, fill: Color, highlight: Color) -> some View {
+        GeometryReader { geo in
+            let unit = geo.size.width / CGFloat(totalTurns)
+            HStack(spacing: 0) {
+                ForEach(cells) { cell in
+                    Rectangle()
+                        .fill(cell.isCharged ? highlight : fill)
+                        .overlay(Rectangle().stroke(cell.isCharged ? Color.primary.opacity(0.8) : Color.secondary.opacity(0.5),
+                                                    lineWidth: cell.isCharged ? 1.5 : 1))
+                        .frame(width: unit * CGFloat(cell.turns))
+                }
+            }
+            .frame(width: geo.size.width, alignment: .leading)
+            .clipped()
+        }
+        .frame(height: Self.laneHeight)
     }
 }

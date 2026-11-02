@@ -46,6 +46,9 @@ nonisolated struct PokemonScanInfo {
     var maxHP: Int?
     /// CP value if successfully read (the gold badge is often OCR-unreliable).
     var cp: Int?
+    /// Lowercased type labels read from the detail screen (e.g. ["ice"]), used
+    /// to tell regional forms apart ("Vulpix" vs Alolan Vulpix share a name).
+    var types: [String] = []
 }
 
 /// IVs read directly off the Attack/Defense/HP fill bars on the detail
@@ -385,9 +388,20 @@ actor ScreenScanner {
         var cp: Int?
         var level: Double?
         var maxHP: Int?
+        var types: [String] = []
+        let typeNames: Set<String> = [
+            "normal", "fire", "water", "grass", "electric", "ice", "fighting", "poison",
+            "ground", "flying", "psychic", "bug", "rock", "ghost", "dragon", "dark",
+            "steel", "fairy"
+        ]
 
         for (i, text) in strings.enumerated() {
             let upper = text.uppercased()
+
+            // Type labels sit under the type icons ("ICE"); a dual-type Pokémon
+            // shows two. Exact match only, so prose like "Ice Beam" is ignored.
+            let lowered = text.lowercased()
+            if typeNames.contains(lowered), !types.contains(lowered) { types.append(lowered) }
 
             // Catch message: "This {name} was caught on …" — the reliable
             // species name, even for a nicknamed Pokémon.
@@ -452,7 +466,7 @@ actor ScreenScanner {
         }
 
         guard let name = caughtName ?? fallbackName else { return nil }
-        return PokemonScanInfo(name: name, level: level, maxHP: maxHP, cp: cp)
+        return PokemonScanInfo(name: name, level: level, maxHP: maxHP, cp: cp, types: types)
     }
 
     /// Returns the first capture group (default group 1) of the first regex match in `text`.

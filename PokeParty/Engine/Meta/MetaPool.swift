@@ -86,7 +86,7 @@ nonisolated enum MetaPool {
     /// circuits (matches everything in its own list at once) and, on the
     /// include side, marks `includeIDFilter` so the exclude pass can't
     /// override an explicit inclusion.
-    private static func matchesFilters(_ pokemon: Pokemon, cup: Cup, cpCap: Int) -> Bool {
+    static func matchesFilters(_ pokemon: Pokemon, cup: Cup, cpCap: Int) -> Bool {
         var allowed = false
         var includeIDFilter = false
 

@@ -83,7 +83,7 @@ final class RankingsStore {
 
     /// Where the displayed ranking ORDER comes from — PvPoke's own
     /// precomputed list, or the locally-computed `Ranker`. Persisted
-    /// locally, same inline pattern as `showMegaEvolutions`.
+    /// locally.
     enum RankingSource: String {
         case pvpoke
         case local
@@ -114,17 +114,6 @@ final class RankingsStore {
             Task { await self.loadRankings() }
         }
     }
-
-    /// User preference (Settings): let Mega Evolutions be picked in any
-    /// format/tool, not just a dedicated Mega cup — lets players compare or
-    /// build with Megas even when no Mega cup is active. Persisted locally.
-    var showMegaEvolutions: Bool = UserDefaults.standard.bool(forKey: RankingsStore.showMegaEvolutionsKey) {
-        didSet {
-            guard showMegaEvolutions != oldValue else { return }
-            UserDefaults.standard.set(showMegaEvolutions, forKey: RankingsStore.showMegaEvolutionsKey)
-        }
-    }
-    private static let showMegaEvolutionsKey = "ShowMegaEvolutions"
 
     /// Per-format cache so switching back to a format is instant.
     private var rankingsCache: [RankingFormat: [RankingEntry]] = [:]
@@ -277,18 +266,29 @@ final class RankingsStore {
         pokemonById[entry.speciesId]
     }
 
-    /// The roster to offer for a given format: includes Mega Evolutions when
-    /// that format's cup allows them, or when the user's turned on "Show
-    /// Mega Evolutions" in Settings regardless of format.
+    /// The roster to offer for a given format: includes Mega Evolutions only
+    /// when that format's cup rules allow them.
     func eligiblePokemon(for format: RankingFormat) -> [Pokemon] {
-        format.allowsMegaEvolution ? allPokemonIncludingMegas : pokemonForPicker
+        cupAllowsMegas(format) ? allPokemonIncludingMegas : allPokemon
     }
 
-    /// `allPokemon`, plus Mega Evolutions when "Show Mega Evolutions" is on —
-    /// for tools (Rank Checker, 1v1 Simulator, Breakpoints, Bench) that pick
-    /// a Pokémon without a specific format/cup in play.
+    /// Whether a format's cup rules admit Mega Evolutions: the dedicated
+    /// "mega" cups, or any cup (e.g. Mega Halloween) whose include/exclude
+    /// filters let at least one Mega through.
+    func cupAllowsMegas(_ format: RankingFormat) -> Bool {
+        if format.allowsMegaEvolution { return true }
+        guard !format.isCoreLeague,
+              let cup = cups.first(where: { $0.name == format.cup }) else { return false }
+        return allPokemonIncludingMegas.contains {
+            $0.isMegaEvolution && MetaPool.matchesFilters($0, cup: cup, cpCap: format.cp)
+        }
+    }
+
+    /// The roster for the currently selected format — for tools (Rank
+    /// Checker, 1v1 Simulator, Breakpoints, Bench) that pick a Pokémon
+    /// without their own format picker.
     var pokemonForPicker: [Pokemon] {
-        showMegaEvolutions ? allPokemonIncludingMegas : allPokemon
+        eligiblePokemon(for: format)
     }
 
     /// The Mega Evolution(s) available for an owned species (e.g. a bench

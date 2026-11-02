@@ -30,10 +30,10 @@ struct TeamBuilderView: View {
     /// Bench entries rated for the team's current league (CP cap) and not
     /// already on the team, plus a Mega-form option for each bench entry
     /// whose species can mega evolve, when the current format allows Megas
-    /// (its own cup, or the "Show Mega Evolutions" setting).
+    /// (its own cup).
     private var benchResults: [BenchOption] {
         let league = League(cpCap: store.format.cp)
-        let allowsMega = store.format.allowsMegaEvolution || store.showMegaEvolutions
+        let allowsMega = store.cupAllowsMegas(store.format)
         return bench.entries
             .filter { $0.league == league }
             .flatMap { entry -> [BenchOption] in

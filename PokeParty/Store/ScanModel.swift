@@ -149,6 +149,7 @@ final class ScanModel {
         var level: Double?
         var maxHP: Int?
         var barIVs: BarIVs?
+        var types: [String] = []
     }
 
     private var pendingReading: FrameReading?
@@ -230,10 +231,10 @@ final class ScanModel {
                 return
             }
 
-            let speciesId = fuzzyMatch(info.name, in: store.pokemonById)
+            let speciesId = fuzzyMatch(info.name, types: info.types, in: store.pokemonById)
             let reading = FrameReading(
                 rawName: info.name, speciesId: speciesId, cp: info.cp,
-                level: info.level, maxHP: info.maxHP, barIVs: barIVs)
+                level: info.level, maxHP: info.maxHP, barIVs: barIVs, types: info.types)
 
             missStreak = 0
             if reading == pendingReading {
@@ -513,17 +514,27 @@ final class ScanModel {
 
     /// Fuzzy-matches a raw OCR string against every species name in the game master.
     /// Score 3 = exact, 2 = prefix, 1 = substring; returns the highest-scoring species id.
-    private func fuzzyMatch(_ raw: String, in pokemonById: [String: Pokemon]) -> String? {
+    /// Regional forms share the base species' on-screen name ("Vulpix" for Alolan
+    /// Vulpix), so when types were read, a prefix-or-better match whose types agree
+    /// outranks a higher-scoring name match with different types.
+    private func fuzzyMatch(_ raw: String, types: [String], in pokemonById: [String: Pokemon]) -> String? {
         let needle = normalized(raw)
         guard !needle.isEmpty else { return nil }
-        var best: (id: String, score: Int)? = nil
+        let scanned = Set(types)
+        var best: (id: String, score: Int, typeMatch: Bool, nameLength: Int)? = nil
         for (id, hay) in normalizedNames(for: pokemonById) {
             let score: Int
             if      hay == needle                                      { score = 3 }
             else if hay.hasPrefix(needle) || needle.hasPrefix(hay)     { score = 2 }
             else if hay.contains(needle)  || needle.contains(hay)      { score = 1 }
             else { continue }
-            if best == nil || score > best!.score { best = (id, score) }
+            let typeMatch = score >= 2 && !scanned.isEmpty
+                && Set(pokemonById[id]?.displayTypes ?? []) == scanned
+            if let b = best {
+                // Ties go to the shortest name, so "Vulpix (Alolan)" beats its Shadow variant.
+                if (typeMatch ? 1 : 0, score, -hay.count) <= (b.typeMatch ? 1 : 0, b.score, -b.nameLength) { continue }
+            }
+            best = (id, score, typeMatch, hay.count)
         }
         return best?.id
     }
