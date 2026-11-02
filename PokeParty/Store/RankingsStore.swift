@@ -534,17 +534,18 @@ final class RankingsStore {
     }
 
     private func teamRatings(for members: [TeamMember], against oppCombatant: MatchupSimulator.Combatant) -> [Int?] {
-        guard let oppStats = MatchupSimulator.optimalStats(for: oppCombatant, cpCap: format.cp)
-        else { return members.map { _ in nil } }
         let cpCap = format.cp
+        // Both sides use exact IV-optimal stats. The entry's `stats` are rounded
+        // to 0.1, and mixing the two makes a mirror match unequal (damage floors
+        // flip) instead of 500.
+        guard let oppStats = MatchupSimulator.optimalStats(for: oppCombatant, cpCap: cpCap)
+        else { return members.map { _ in nil } }
         return members.map { member in
             guard let species = pokemonById[member.speciesId], !member.chargedMoveIds.isEmpty else { return nil }
             let combatant = MatchupSimulator.Combatant(
                 species: species, shadow: member.shadow,
                 fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
-            let stats = entry(id: member.speciesId)?.stats.map { BattlePokemon.Stats(atk: $0.atk, def: $0.def, hp: Int($0.hp)) }
-                ?? MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap)
-            guard let stats else { return nil }
+            guard let stats = MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap) else { return nil }
             return MatchupSimulator.rate(
                 combatant, statsA: stats, oppCombatant, statsB: oppStats,
                 movesById: movesById, shieldsA: 1, shieldsB: 1)?.a
