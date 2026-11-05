@@ -106,6 +106,19 @@ struct BreakpointResultsView: View {
                 species: species,
                 store: store,
                 onSelect: { model.setChargedMove($0, slot: 1) })
+            if species.hasThirdChargedMove {
+                TeamMovePicker(
+                    label: "Charged 3",
+                    currentId: member.chargedMoveIds.count > 2 ? member.chargedMoveIds[2] : "",
+                    optionIds: species.extraChargedMoves ?? [],
+                    recommendedId: model.recommendedMoveset.count > 3 ? model.recommendedMoveset[3] : nil,
+                    includesNone: true,
+                    species: species,
+                    store: store,
+                    onSelect: { model.setChargedMove($0, slot: 2) })
+                MegaLevelPicker(level: member.megaLevel ?? species.megaLevel,
+                                onSelect: { model.setMegaLevel($0) })
+            }
         }
         .themedRow()
     }

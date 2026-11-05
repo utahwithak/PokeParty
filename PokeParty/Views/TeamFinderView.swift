@@ -398,6 +398,12 @@ struct TeamFinderView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Toggle("Include opponents from my meta", isOn: Bindable(model).useObservedMeta)
+                .disabled(model.isRunning)
+            Text("When on, the Pokémon you've logged in Opponent Check for this format are added as extra threats to beat — leads count the most. Does nothing until you've checked some opponents.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Toggle("Explore alternate movesets", isOn: Bindable(model).exploreAlternateMovesets)
                 .disabled(model.isRunning)
             Text("When on, each Pokémon can also appear with alternate fast/charged move combos, expanding the candidate pool and search space for slower but more thorough runs. Off by default (recommended movesets only).")

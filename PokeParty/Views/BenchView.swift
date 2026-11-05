@@ -94,7 +94,7 @@ struct BenchView: View {
                 // defaults below and sinks them to the bottom.
                 guard let league = entry.league else { continue }
                 let cap = league.cp
-                let levelCap: Double = entry.isBestBuddy ? 51 : 50
+                let levelCap = sp.levelCap(megaLevel: entry.megaLevel, isBestBuddy: entry.isBestBuddy, cpCap: cap)
                 if let ivs = entry.ivs {
                     let result = IVCalculator.rank(
                         baseAtk: sp.baseStats.atk, baseDef: sp.baseStats.def, baseHp: sp.baseStats.hp,
@@ -475,7 +475,7 @@ struct BenchDetailView: View {
         }
         let base = sp.baseStats
         let cap = league.cp
-        let levelCap: Double = e.isBestBuddy ? 51 : 50
+        let levelCap = sp.levelCap(megaLevel: e.megaLevel, isBestBuddy: e.isBestBuddy, cpCap: cap)
         rankTask = Task.detached(priority: .userInitiated) {
             let result = IVCalculator.rank(
                 baseAtk: base.atk, baseDef: base.def, baseHp: base.hp,
@@ -586,11 +586,37 @@ struct BenchDetailView: View {
                                 local?.chargedMoveIds.append(id)
                             }
                         } else {
-                            if (local?.chargedMoveIds.count ?? 0) > 1 {
+                            // Only clear when slot 2 is the last move; a third
+                            // (mega) move has to be cleared first.
+                            if local?.chargedMoveIds.count == 2 {
                                 local?.chargedMoveIds.removeLast()
                             }
                         }
                     })
+
+                if sp.hasThirdChargedMove {
+                    TeamMovePicker(
+                        label: "Charged 3",
+                        currentId: entry.chargedMoveIds.count > 2 ? entry.chargedMoveIds[2] : "",
+                        optionIds: sp.extraChargedMoves ?? [],
+                        recommendedId: recommended.count > 3 ? recommended[3] : nil,
+                        includesNone: true,
+                        species: sp,
+                        store: store,
+                        onSelect: { id in
+                            guard var ids = local?.chargedMoveIds else { return }
+                            if let id {
+                                // Needs both normal slots filled first.
+                                guard ids.count >= 2 else { return }
+                                if ids.count > 2 { ids[2] = id } else { ids.append(id) }
+                            } else if ids.count > 2 {
+                                ids.removeLast()
+                            }
+                            local?.chargedMoveIds = ids
+                        })
+                    MegaLevelPicker(level: entry.megaLevel ?? sp.megaLevel,
+                                    onSelect: { local?.megaLevel = $0 })
+                }
             }
         }
     }

@@ -58,9 +58,21 @@ nonisolated struct BattleMove {
     var dpe: Double = 0      // damage per energy
     var buffApplyMeter: Double = 0
 
+    /// Damage multiplier for a Mega's "+" move at its mega level (PvPoke's
+    /// `MEGA_BONUS`); 1 for every other move.
+    let megaBonus: Double
+
+    /// PvPoke's `DamageMultiplier.MEGA_BONUS`, indexed by `megaLevel - 1`.
+    static let megaBonuses: [Double] = [1, 1.10000002384185791015625, 1.2000000476837158203125, 1.2999999523162841796875]
+
     var isFast: Bool { energy == 0 }
 
-    init(from move: Move) {
+    init(from move: Move, megaLevel: Int = 3) {
+        if move.isMegaMove == true {
+            megaBonus = Self.megaBonuses[min(max(megaLevel, 1), Self.megaBonuses.count) - 1]
+        } else {
+            megaBonus = 1
+        }
         let lowercasedType = move.type.lowercased()
         typeIndex = TypeChart.index(of: lowercasedType)
         power = move.power

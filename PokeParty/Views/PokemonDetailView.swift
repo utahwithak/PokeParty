@@ -25,6 +25,7 @@ struct PokemonDetailView: View {
     @State private var fastMoveId: String
     @State private var charged1Id: String
     @State private var charged2Id: String   // "" == none
+    @State private var charged3Id: String   // a Mega's exclusive move; "" == none
 
     /// How deep into the meta (by rank) to consider simulated matchups.
     private enum MetaScope: Int, CaseIterable, Identifiable {
@@ -48,10 +49,11 @@ struct PokemonDetailView: View {
         _fastMoveId = State(initialValue: entry.moveset.first ?? "")
         _charged1Id = State(initialValue: entry.moveset.count > 1 ? entry.moveset[1] : "")
         _charged2Id = State(initialValue: entry.moveset.count > 2 ? entry.moveset[2] : "")
+        _charged3Id = State(initialValue: entry.moveset.count > 3 ? entry.moveset[3] : "")
     }
 
     private var chargedMoveIds: [String] {
-        [charged1Id] + (charged2Id.isEmpty ? [] : [charged2Id])
+        [charged1Id] + [charged2Id, charged3Id].filter { !$0.isEmpty }
     }
 
     private var pokemon: Pokemon? { store.pokemon(for: entry) }
@@ -127,6 +129,7 @@ struct PokemonDetailView: View {
         .onChange(of: fastMoveId) { simulated = nil }
         .onChange(of: charged1Id) { simulated = nil }
         .onChange(of: charged2Id) { simulated = nil }
+        .onChange(of: charged3Id) { simulated = nil }
         .sheet(item: $timelineOpponent) { matchup in
             timelineSheet(for: matchup)
         }
@@ -312,6 +315,18 @@ struct PokemonDetailView: View {
                     species: pokemon,
                     store: store
                 )
+                if pokemon.hasThirdChargedMove {
+                    MoveSelectorRow(
+                        slot: "Charged",
+                        selection: $charged3Id,
+                        optionIds: pokemon.extraChargedMoves ?? [],
+                        recommendedId: entry.moveset.count > 3 ? entry.moveset[3] : nil,
+                        includesNone: true,
+                        fastEnergyGain: fastEnergyGain,
+                        species: pokemon,
+                        store: store
+                    )
+                }
             } else {
                 Text("No moveset data available.")
                     .foregroundStyle(.secondary)

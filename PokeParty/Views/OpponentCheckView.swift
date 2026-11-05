@@ -23,6 +23,11 @@ struct OpponentCheckView: View {
     @State private var slots: [TeamMember?] = Array(repeating: nil, count: 3)
     /// Slot replaced when all three are full.
     @State private var activeSlot = 0
+    /// Slot holding the opponent's lead — the first one picked or detected
+    /// once the slots were empty (a new battle). The user can reassign it.
+    @State private var leadSlot: Int?
+    /// Species credited as lead in `usage`, so reassigning the lead moves the credit.
+    @State private var recordedLead: String?
     /// `ratings[slot][teamIndex]`, recomputed when the inputs change.
     @State private var ratings: [[Int?]] = Array(repeating: [], count: 3)
     /// Forms of a just-detected opponent when the screen's name alone can't
@@ -77,10 +82,13 @@ struct OpponentCheckView: View {
                 resultsList
             }
             quickPicks
+            leadHistory
             if slots.contains(where: { $0 != nil }) {
                 Button(role: .destructive) {
                     slots = Array(repeating: nil, count: 3)
                     activeSlot = 0
+                    leadSlot = nil
+                    recordedLead = nil
                 } label: {
                     Label("Clear all opponents", systemImage: "xmark.circle")
                         .font(.caption)
@@ -95,8 +103,10 @@ struct OpponentCheckView: View {
                         member: slots[slot],
                         ratings: ratings[slot],
                         isActive: activeSlot == slot,
+                        isLead: isLead(slot),
                         onActivate: { activeSlot = slot },
-                        onChange: { slots[slot] = $0 })
+                        onSetLead: { setLead(slot) },
+                        onChange: { change(slot, to: $0) })
                 }
             }
         }
@@ -108,6 +118,8 @@ struct OpponentCheckView: View {
             // Movesets and rankings are per format, so start fresh.
             slots = Array(repeating: nil, count: 3)
             activeSlot = 0
+            leadSlot = nil
+            recordedLead = nil
             formChoices = []
         }
         #if os(iOS)
@@ -273,15 +285,20 @@ struct OpponentCheckView: View {
     private func handle(_ detection: OpponentDetection) {
         let ranked = store.entries.compactMap { store.pokemonById[$0.speciesId] }
         let byName = OpponentNameMatcher.candidates(for: detection.name, in: ranked)
+        // An exact name ("Corsola") doesn't list its regional variants, but the
+        // screen may not show the prefix, so let the icons choose among the family.
+        let family = OpponentNameMatcher.family(of: byName, in: ranked)
         // The type icons separate regional variants the name can't (Ninetales, Golem…).
-        let matches = OpponentNameMatcher.narrow(byName, byIcons: detection.icons)
-        let usedTypes = matches.count < byName.count
+        let matches = OpponentNameMatcher.narrow(detection.icons.isEmpty ? byName : family, byIcons: detection.icons)
+        let usedTypes = matches.count < family.count
         let cp = detection.cp.map { " (CP \($0))" } ?? ""
 
         // Opponents swap in and out mid-battle, so the same one is seen again
         // and again. If any form of it already sits in a slot — including a
-        // variant the user switched it to — leave the slots alone.
-        let matchIds = Set(matches.map(\.speciesId))
+        // variant the user switched it to — leave the slots alone. The whole
+        // family counts, not just the forms this sighting resolved to: after
+        // switching Corsola to Galarian, the name still reads "Corsola".
+        let matchIds = Set(family.map(\.speciesId))
         if let existing = slots.firstIndex(where: { $0.map { matchIds.contains($0.speciesId) } ?? false }),
            let present = slots[existing] {
             formChoices = []
@@ -308,12 +325,43 @@ struct OpponentCheckView: View {
 
     // MARK: - Picking
 
+    /// The marked lead, or — before anything is picked — the first slot,
+    /// since whatever is picked first will become the lead.
+    private func isLead(_ slot: Int) -> Bool {
+        if let leadSlot { return leadSlot == slot }
+        return slot == 0 && slots.allSatisfy { $0 == nil }
+    }
+
+    /// Marks `slot` as the lead and credits it in the lead history, moving
+    /// the credit from any previously marked lead.
+    private func setLead(_ slot: Int) {
+        guard let id = slots[slot]?.speciesId else { return }
+        leadSlot = slot
+        if let recordedLead { usage.unrecordLead(recordedLead, in: store.format) }
+        usage.recordLead(id, in: store.format)
+        recordedLead = id
+    }
+
+    /// Applies an edit to a slot. Switching to another form moves the usage
+    /// counts to it; clearing the lead slot unmarks the lead.
+    private func change(_ slot: Int, to member: TeamMember?) {
+        if let old = slots[slot]?.speciesId, let new = member?.speciesId, old != new {
+            let wasLead = leadSlot == slot
+            usage.replace(old, with: new, isLead: wasLead, in: store.format)
+            if wasLead { recordedLead = new }
+        }
+        slots[slot] = member
+        if member == nil, leadSlot == slot { leadSlot = nil }
+    }
+
     private func pick(_ speciesId: String) {
         guard let member = store.makeMember(speciesId: speciesId) else { return }
         let target = slots.firstIndex(where: { $0 == nil }) ?? activeSlot
+        let isNewBattle = slots.allSatisfy { $0 == nil }
         slots[target] = member
         activeSlot = slots.firstIndex(where: { $0 == nil }) ?? target
         usage.record(speciesId, in: store.format)
+        if isNewBattle { setLead(target) }
         searchText = ""
     }
 
@@ -393,6 +441,15 @@ struct OpponentCheckView: View {
         }
     }
 
+    /// Recent leads with how often each has led — a very common starter stands out.
+    @ViewBuilder
+    private var leadHistory: some View {
+        let leads = usage.recentLeads(in: store.format).filter { store.pokemonById[$0.speciesId] != nil }
+        if !leads.isEmpty {
+            chipRow(title: "Leads", items: leads.map { ($0.speciesId, $0.count) })
+        }
+    }
+
     private func chipRow(title: String, items: [(String, Int?)]) -> some View {
         HStack(spacing: 8) {
             Text(title)
@@ -435,7 +492,9 @@ private struct OpponentColumn: View {
     let member: TeamMember?
     let ratings: [Int?]
     let isActive: Bool
+    let isLead: Bool
     let onActivate: () -> Void
+    let onSetLead: () -> Void
     let onChange: (TeamMember?) -> Void
 
     private var species: Pokemon? { member.flatMap { store.pokemonById[$0.speciesId] } }
@@ -456,7 +515,7 @@ private struct OpponentColumn: View {
         .onTapGesture(perform: onActivate)
     }
 
-    private var slotLabel: String { slot == 0 ? "LEAD" : "#\(slot + 1)" }
+    private var slotLabel: String { isLead ? "LEAD" : "#\(slot + 1)" }
 
     private var empty: some View {
         VStack(spacing: 6) {
@@ -485,9 +544,17 @@ private struct OpponentColumn: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(slotLabel)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text(slotLabel)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(isLead ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        if !isLead {
+                            Button("Set lead", action: onSetLead)
+                                .font(.caption2)
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.tint)
+                        }
+                    }
                     HStack(spacing: 4) {
                         speciesTitle(member: member, species: species)
                         if member.shadow { ShadowBadge() }
@@ -619,6 +686,20 @@ private struct OpponentColumn: View {
                     var m = member; m.setChargedMove(id, slot: 1); onChange(m)
                 },
                 showsDetail: true, fastEnergyGain: fastGain)
+            if species.hasThirdChargedMove {
+                TeamMovePicker(
+                    label: "Charged 3",
+                    currentId: member.chargedMoveIds.count > 2 ? member.chargedMoveIds[2] : "",
+                    optionIds: species.extraChargedMoves ?? [],
+                    recommendedId: recommended.count > 3 ? recommended[3] : nil,
+                    includesNone: true, species: species, store: store,
+                    onSelect: { id in
+                        var m = member; m.setChargedMove(id, slot: 2); onChange(m)
+                    },
+                    showsDetail: true, fastEnergyGain: fastGain)
+                MegaLevelPicker(level: member.megaLevel ?? species.megaLevel,
+                                onSelect: { var m = member; m.megaLevel = $0; onChange(m) })
+            }
         }
     }
 

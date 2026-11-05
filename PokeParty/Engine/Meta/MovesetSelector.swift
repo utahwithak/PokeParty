@@ -131,6 +131,12 @@ nonisolated enum MovesetSelector {
         }
         guard !chargedCombos.isEmpty else { return [] }
 
+        // A Mega's exclusive move is a free third slot, so it's always run
+        // alongside whichever two normal moves are being compared.
+        if species.hasThirdChargedMove, let extra = species.extraChargedMoves?.first {
+            chargedCombos = chargedCombos.map { $0 + [extra] }
+        }
+
         var results: [Result] = []
         for fast in species.fastMoves {
             for combo in chargedCombos {

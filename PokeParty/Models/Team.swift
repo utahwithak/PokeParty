@@ -14,17 +14,21 @@ nonisolated struct TeamMember: Identifiable, Hashable, Codable {
     /// The gamemaster species id (e.g. "azumarill").
     var speciesId: String
     var fastMoveId: String
-    /// Charged move ids (usually two; one is allowed).
+    /// Charged move ids (usually two; one is allowed; a Mega may add a
+    /// third — its exclusive "+" move — in slot 3).
     var chargedMoveIds: [String]
     var shadow: Bool = false
     /// The player's actual IVs for this Pokémon. nil = use PvP-optimal stats.
     var ivs: IVs? = nil
     /// Best Buddy level bonus: powers the Pokémon up one extra level (51 vs 50).
     var isBestBuddy: Bool = false
+    /// The player's mega level (1–4) for a Mega with a third move; nil uses
+    /// the species default (`Pokemon.megaLevel`). Scales the mega move's damage.
+    var megaLevel: Int? = nil
 
     init(id: UUID = UUID(), speciesId: String, fastMoveId: String,
          chargedMoveIds: [String], shadow: Bool = false, ivs: IVs? = nil,
-         isBestBuddy: Bool = false) {
+         isBestBuddy: Bool = false, megaLevel: Int? = nil) {
         self.id = id
         self.speciesId = speciesId
         self.fastMoveId = fastMoveId
@@ -32,10 +36,11 @@ nonisolated struct TeamMember: Identifiable, Hashable, Codable {
         self.shadow = shadow
         self.ivs = ivs
         self.isBestBuddy = isBestBuddy
+        self.megaLevel = megaLevel
     }
 
     fileprivate enum CodingKeys: String, CodingKey {
-        case id, speciesId, fastMoveId, chargedMoveIds, shadow, ivs, isBestBuddy
+        case id, speciesId, fastMoveId, chargedMoveIds, shadow, ivs, isBestBuddy, megaLevel
     }
 
     /// Sets (or clears, with `nil`) a charged-move slot (0 = first, 1 =
@@ -57,6 +62,9 @@ nonisolated struct TeamMember: Identifiable, Hashable, Codable {
                 charged.append(id)
             }
         } else if slot < charged.count {
+            // Slot 3 holds a Mega's exclusive move; clearing an earlier slot
+            // would shift it into a normal slot, so clear it first.
+            if slot < 2, charged.count > 2 { return }
             charged.remove(at: slot)
         }
         // Drop trailing placeholders left behind by a removal (e.g. slot 1
@@ -78,6 +86,7 @@ nonisolated extension TeamMember {
         shadow         = try c.decodeIfPresent(Bool.self,      forKey: .shadow)         ?? false
         ivs            = try c.decodeIfPresent(IVs.self,       forKey: .ivs)
         isBestBuddy    = try c.decodeIfPresent(Bool.self,      forKey: .isBestBuddy)    ?? false
+        megaLevel      = try c.decodeIfPresent(Int.self,       forKey: .megaLevel)
     }
 }
 

@@ -192,7 +192,7 @@ struct BattleTimelineView: View {
                         }
                         .frame(height: 8)
                 } else {
-                    ForEach(p.chargedMoveIds.prefix(2), id: \.self) { id in
+                    ForEach(p.chargedMoveIds.prefix(3), id: \.self) { id in
                         chargeCircle(moveId: id, energy: energy, side: side)
                     }
                 }

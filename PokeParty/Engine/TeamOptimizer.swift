@@ -111,6 +111,13 @@ nonisolated enum TeamOptimizer {
         var isComplete: Bool
     }
 
+    /// An opponent the user has actually faced, with its weight relative to
+    /// the top-ranked automatic threat (1.0).
+    struct ObservedThreat: Sendable {
+        let member: TeamMember
+        let weight: Double
+    }
+
     // MARK: - Entry point
 
     /// Runs the multi-start hill-climb and returns the best teams found.
@@ -124,6 +131,7 @@ nonisolated enum TeamOptimizer {
         movesById: [String: Move],
         lockedMembers: [TeamMember] = [],
         strongAgainstMembers: [TeamMember] = [],
+        observedMeta: [ObservedThreat] = [],
         metaSize: Int = 15,
         restarts: Int = 20,
         maxResults: Int = 50,
@@ -155,10 +163,19 @@ nonisolated enum TeamOptimizer {
             makeLockedCandidate(member: $0, cpCap: cpCap, pokemonById: pokemonById)
         }
 
+        // Opponents seen in the user's own meta join the field too, weighted
+        // by how often they appeared (leads count extra).
+        let observedCandidates: [(Candidate, Double)] = observedMeta.compactMap { threat in
+            makeLockedCandidate(member: threat.member, cpCap: cpCap, pokemonById: pokemonById)
+                .map { ($0, threat.weight) }
+        }
+        let extraTargets: [(Candidate, Double)] =
+            strongAgainstCandidates.map { ($0, 1.0) } + observedCandidates
+
         onProgress?(0.0)
         let metaField = await buildMetaField(
             pool: pool, metaSize: metaSize, movesById: movesById, shieldNet: shieldNet,
-            extraTargets: Array(strongAgainstCandidates))
+            extraTargets: extraTargets)
         guard !metaField.isEmpty else {
             return Results(teams: [], completedClimbers: 0, totalClimbers: restarts, isComplete: true)
         }
@@ -349,8 +366,9 @@ nonisolated enum TeamOptimizer {
         guard let r = Pokemon.resolve(speciesId: member.speciesId, pokemonById: pokemonById) else { return nil }
         let combatant = MatchupSimulator.Combatant(
             species: r.species, shadow: member.shadow,
-            fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
-        let levelCap: Double = member.isBestBuddy ? 51 : 50
+            fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds,
+            megaLevel: member.megaLevel)
+        let levelCap = r.species.levelCap(megaLevel: member.megaLevel, isBestBuddy: member.isBestBuddy, cpCap: cpCap)
         let stats: BattlePokemon.Stats
         if let ivs = member.ivs,
            let s = IVCalculator.stats(
@@ -398,7 +416,7 @@ nonisolated enum TeamOptimizer {
             speciesCount += 1
 
             let recFast = entry.moveset[0]
-            let recCharged = Array(entry.moveset[1...].prefix(2))
+            let recCharged = Array(entry.moveset[1...].prefix(3))
 
             guard exploreAlternateMovesets else {
                 addCandidate(entry: entry, r: r, fast: recFast, charged: recCharged,
@@ -416,7 +434,11 @@ nonisolated enum TeamOptimizer {
             var viableCharged: [String] = entry.moves?.chargedMoves
                 .filter { ($0.uses ?? 0) >= usageThreshold }
                 .map(\.moveId) ?? []
-            for c in recCharged where !viableCharged.contains(c) { viableCharged.append(c) }
+            // A Mega's third-slot move rides along with every moveset rather
+            // than competing for one of the two searched slots.
+            let thirdCharged = Array(recCharged.dropFirst(2))
+            viableCharged.removeAll { thirdCharged.contains($0) }
+            for c in recCharged.prefix(2) where !viableCharged.contains(c) { viableCharged.append(c) }
 
             // Must have at least 2 charged moves to build a valid moveset.
             if viableCharged.count < 2 {
@@ -439,7 +461,7 @@ nonisolated enum TeamOptimizer {
                         let k = movesetKey(fast, c1, c2)
                         guard !seen.contains(k) else { continue }
                         seen.insert(k)
-                        addCandidate(entry: entry, r: r, fast: fast, charged: [c1, c2],
+                        addCandidate(entry: entry, r: r, fast: fast, charged: [c1, c2] + thirdCharged,
                                      cpCap: cpCap, isAlternate: true, to: &result)
                     }
                 }
@@ -506,7 +528,7 @@ nonisolated enum TeamOptimizer {
         metaSize: Int,
         movesById: [String: Move],
         shieldNet: ShieldPolicyNet?,
-        extraTargets: [Candidate] = []
+        extraTargets: [(Candidate, Double)] = []
     ) async -> [MetaTeam] {
         // One recommended-moveset candidate per unique species, up to metaSize.
         var metaCandidates: [Candidate] = []
@@ -524,7 +546,10 @@ nonisolated enum TeamOptimizer {
         // Extra "strong against" targets are appended as additional threats,
         // skipping any that duplicate an automatic threat already in the field.
         let autoKeys = Set(metaCandidates.map(candidateKey))
-        let dedupedExtras = extraTargets.filter { !autoKeys.contains(candidateKey($0)) }
+        var seenExtraKeys = autoKeys
+        let dedupedPairs = extraTargets.filter { seenExtraKeys.insert(candidateKey($0.0)).inserted }
+        let dedupedExtras = dedupedPairs.map(\.0)
+        let extraWeights = dedupedPairs.map(\.1)
         for (i, extra) in dedupedExtras.enumerated() {
             metaCandidates.append(extra)
             metaCandidateIndices.append(pool.count + i)
@@ -596,7 +621,7 @@ nonisolated enum TeamOptimizer {
             teams.append(MetaTeam(
                 members: [metaCandidates[i], matrixPool[bestJ], matrixPool[bestK]],
                 weight: 1.0))
-            rawWeights.append(i < autoCount ? 1.0 / Double(i + 1) : 1.0)
+            rawWeights.append(i < autoCount ? 1.0 / Double(i + 1) : extraWeights[i - autoCount])
         }
         guard !teams.isEmpty else { return [] }
         let totalWeight = rawWeights.reduce(0, +)

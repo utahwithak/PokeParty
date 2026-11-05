@@ -31,6 +31,8 @@ struct BenchEntry: Identifiable, Hashable, Codable {
     /// bench entries (same evolution family + same IVs + same day) — a mon
     /// can evolve between scans, so identity is tracked by family, not species.
     var capturedDate: Date? = nil
+    /// Mega level (1–4) for a Mega with a third move; nil = species default.
+    var megaLevel: Int? = nil
 
     /// Converts this bench entry into a team member, carrying IVs and Best Buddy flag.
     /// `speciesId` overrides the member's species — used to add a Mega
@@ -42,12 +44,13 @@ struct BenchEntry: Identifiable, Hashable, Codable {
             chargedMoveIds: chargedMoveIds,
             shadow: shadow,
             ivs: ivs,
-            isBestBuddy: isBestBuddy
+            isBestBuddy: isBestBuddy,
+            megaLevel: megaLevel
         )
     }
 
     fileprivate enum CodingKeys: String, CodingKey {
-        case id, speciesId, nickname, fastMoveId, chargedMoveIds, shadow, league, ivs, isBestBuddy, capturedDate
+        case id, speciesId, nickname, fastMoveId, chargedMoveIds, shadow, league, ivs, isBestBuddy, capturedDate, megaLevel
     }
 }
 
@@ -68,6 +71,7 @@ extension BenchEntry {
         league         = try c.decodeIfPresent(League.self,   forKey: .league)
         ivs            = try c.decodeIfPresent(IVs.self,      forKey: .ivs)
         isBestBuddy    = try c.decodeIfPresent(Bool.self,     forKey: .isBestBuddy)    ?? false
+        megaLevel      = try c.decodeIfPresent(Int.self,      forKey: .megaLevel)
         capturedDate   = try c.decodeIfPresent(Date.self,     forKey: .capturedDate)
     }
 }

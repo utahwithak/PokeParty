@@ -94,7 +94,11 @@ struct IVLeagueGridView: View {
         // that can't be reached (you can't power a Pokémon down), so showing
         // them next to a red "over cap" marker is misleading. Show just the
         // over-cap marker and the real current CP instead.
-        if let cp = nowCP, nowFits == false {
+        // Megas are scaled down to fit the league, so being over the cap at
+        // the current level doesn't rule them out — the rank result below
+        // already holds the scaled level and CP.
+        let isScaledMega = pokemon.isMegaEvolution && nowFits == false
+        if let cp = nowCP, nowFits == false, !isScaledMega {
             VStack(spacing: 2) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 16))
@@ -135,7 +139,17 @@ struct IVLeagueGridView: View {
 
                 // Current-level eligibility badge — shows this form already
                 // fits under the cap right now without any powering up.
-                if let cp = nowCP {
+                if isScaledMega {
+                    HStack(spacing: 2) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.blue)
+                        Text("scaled")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(Color.gray)
+                    }
+                    .help("Mega scales down to fit the \(league.title) League cap (CP \(nowCP ?? 0) → \(result?.combo.cp ?? 0))")
+                } else if let cp = nowCP {
                     HStack(spacing: 2) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 9))

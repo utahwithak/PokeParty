@@ -47,6 +47,17 @@ nonisolated enum OpponentNameMatcher {
         return best?.matches ?? []
     }
 
+    /// Every non-shadow, non-Mega form sharing a base name with `matches` —
+    /// "Corsola" and "Corsola (Galarian)" are one family. An exact name match
+    /// ("Corsola") never lists its regional variants, so this widens it for
+    /// icon narrowing and for spotting an opponent that's already in a slot.
+    static func family(of matches: [Pokemon], in species: [Pokemon]) -> [Pokemon] {
+        let bases = Set(matches.map { baseWords($0.speciesName) })
+        return species.filter {
+            !$0.isShadow && !$0.isMegaEvolution && bases.contains(baseWords($0.speciesName))
+        }
+    }
+
     /// Narrows name-matched forms using the opponent's type icons: each form
     /// is scored by how well its types' colours line up with the icons
     /// seen (the icon count must match too), and only the best-fitting forms

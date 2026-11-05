@@ -379,17 +379,53 @@ nonisolated enum IVCalculator {
 /// BenchView's background sort-cache task) calls `IVCalculator.rank` directly.
 @MainActor
 enum IVRankCache {
-    private static var storage: [String: IVCalculator.RankResult?] = [:]
+    /// The full sorted table for one (base stats, cap, level cap), plus each
+    /// IV spread's position in it. Caching the table rather than single
+    /// results means a repeat species with *different* IVs — the common case
+    /// when scanning a box — skips the 4096-combo sweep entirely.
+    private struct Table {
+        let combos: [IVCalculator.Combo]
+        let indexByIVs: [IVs: Int]
+    }
+
+    private static var tables: [String: Table] = [:]
+
+    private static func table(
+        baseAtk: Int, baseDef: Int, baseHp: Int, cpCap: Int, levelCap: Double
+    ) -> Table {
+        let key = "\(baseAtk),\(baseDef),\(baseHp),\(cpCap),\(levelCap)"
+        if let cached = tables[key] { return cached }
+        let combos = IVCalculator.rankedCombos(
+            baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, cpCap: cpCap, levelCap: levelCap)
+        var index: [IVs: Int] = [:]
+        index.reserveCapacity(combos.count)
+        for (i, combo) in combos.enumerated() { index[combo.ivs] = i }
+        let table = Table(combos: combos, indexByIVs: index)
+        tables[key] = table
+        return table
+    }
+
+    /// Cached `IVCalculator.rankedCombos` (default floor).
+    static func rankedCombos(
+        baseAtk: Int, baseDef: Int, baseHp: Int, cpCap: Int,
+        levelCap: Double = IVCalculator.defaultLevelCap
+    ) -> [IVCalculator.Combo] {
+        table(baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, cpCap: cpCap, levelCap: levelCap).combos
+    }
 
     static func rank(
         baseAtk: Int, baseDef: Int, baseHp: Int, cpCap: Int, ivs: IVs,
         levelCap: Double = IVCalculator.defaultLevelCap
     ) -> IVCalculator.RankResult? {
-        let key = "\(baseAtk),\(baseDef),\(baseHp),\(cpCap),\(ivs.atk),\(ivs.def),\(ivs.hp),\(levelCap)"
-        if let cached = storage[key] { return cached }
-        let result = IVCalculator.rank(
-            baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, cpCap: cpCap, ivs: ivs, levelCap: levelCap)
-        storage[key] = result
-        return result
+        let table = table(baseAtk: baseAtk, baseDef: baseDef, baseHp: baseHp, cpCap: cpCap, levelCap: levelCap)
+        guard let best = table.combos.first, let index = table.indexByIVs[ivs] else { return nil }
+        let combo = table.combos[index]
+        return IVCalculator.RankResult(
+            rank: index + 1,
+            total: table.combos.count,
+            percent: combo.statProduct / best.statProduct * 100,
+            combo: combo,
+            best: best
+        )
     }
 }

@@ -20,10 +20,14 @@ nonisolated enum MatchupSimulator {
         let shadow: Bool
         let fastMoveId: String
         let chargedMoveIds: [String]
+        /// The player's mega level (1–4); nil uses the species default.
+        var megaLevel: Int? = nil
     }
 
     /// The IV-optimal battle stats for a combatant at a CP cap (compute once).
-    static func optimalStats(for c: Combatant, cpCap: Int, levelCap: Double = 50) -> BattlePokemon.Stats? {
+    /// `levelCap` defaults to the species' own cap (50, or 52 for a super Mega in Master League).
+    static func optimalStats(for c: Combatant, cpCap: Int, levelCap: Double? = nil) -> BattlePokemon.Stats? {
+        let levelCap = levelCap ?? c.species.levelCap(megaLevel: c.megaLevel, isBestBuddy: false, cpCap: cpCap)
         let base = c.species.baseStats
         guard let s = IVCalculator.optimalStats(
             baseAtk: base.atk, baseDef: base.def, baseHp: base.hp,
@@ -55,7 +59,7 @@ nonisolated enum MatchupSimulator {
             stats: stats,
             formShift: formShift(for: c.species, stats: stats),
             fastMove: BattleMove(from: fastMoveData),
-            chargedMoves: chargedData.map(BattleMove.init)
+            chargedMoves: chargedData.map { BattleMove(from: $0, megaLevel: c.megaLevel ?? c.species.megaLevel) }
         )
         bp.startingShields = shields
         bp.startEnergy = startEnergy

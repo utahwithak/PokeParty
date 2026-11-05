@@ -153,6 +153,32 @@ final class TeamFinderModel {
     /// runs care about recommended-moveset teams.
     var exploreAlternateMovesets = false { didSet { persistSettings() } }
 
+    /// When on, the AI Optimizer also hill-climbs against the opponents logged
+    /// in Opponent Check for the chosen format (see `OpponentUsageStore`), the
+    /// opponent's leads weighted most.
+    var useObservedMeta = false { didSet { persistSettings() } }
+
+    /// Opponent Pokémon to add as threats, weighted against the top automatic
+    /// threat (1.0): seen species 0.5–1.5 by frequency, plus up to +1.5 for lead frequency.
+    private func observedThreats(using store: RankingsStore) -> [TeamOptimizer.ObservedThreat] {
+        let usage = OpponentUsageStore()
+        let seen = usage.mostUsed(in: format, limit: 8)
+        let leads = usage.recentLeads(in: format)
+        let maxSeen = Double(seen.map(\.count).max() ?? 1)
+        let maxLead = Double(leads.map(\.count).max() ?? 1)
+        var weights: [String: Double] = [:]
+        for s in seen { weights[s.speciesId] = 0.5 + Double(s.count) / maxSeen }
+        for l in leads.sorted(by: { $0.count > $1.count }).prefix(4) {
+            weights[l.speciesId, default: 0.5] += 1.5 * Double(l.count) / maxLead
+        }
+        let picked = Set(strongAgainstMembers.map(\.speciesId))
+        return weights.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .compactMap { id, weight in
+                guard !picked.contains(id), let member = store.makeMember(speciesId: id) else { return nil }
+                return TeamOptimizer.ObservedThreat(member: member, weight: weight)
+            }
+    }
+
     /// Simulate voluntary switching in tournament battles (turn-0 safe swaps,
     /// counterswaps onto switch-locked opponents, switch-timer escapes, catch
     /// swaps onto a resist, and sac swaps that spend a nearly-fainted mon as an
@@ -213,6 +239,7 @@ final class TeamFinderModel {
         var fieldSize: Int
         var restarts: Int
         var exploreAlternateMovesets: Bool
+        var useObservedMeta: Bool?
         var simulateCounterswaps: Bool
         var optimalShields: Bool
         var learnedShields: Bool
@@ -238,6 +265,7 @@ final class TeamFinderModel {
             lockedMembers: lockedMembers, strongAgainstMembers: strongAgainstMembers,
             fieldSize: fieldSize, restarts: restarts,
             exploreAlternateMovesets: exploreAlternateMovesets,
+            useObservedMeta: useObservedMeta,
             simulateCounterswaps: simulateCounterswaps, optimalShields: optimalShields,
             learnedShields: learnedShields, learnedSwitches: learnedSwitches,
             learnedFarming: learnedFarming, broadFieldSize: broadFieldSize,
@@ -262,6 +290,7 @@ final class TeamFinderModel {
         fieldSize = saved.fieldSize
         restarts = saved.restarts
         exploreAlternateMovesets = saved.exploreAlternateMovesets
+        useObservedMeta = saved.useObservedMeta ?? false
         simulateCounterswaps = saved.simulateCounterswaps
         optimalShields = saved.optimalShields
         learnedShields = saved.learnedShields
@@ -402,6 +431,7 @@ final class TeamFinderModel {
         let exploreAlternateMovesets = exploreAlternateMovesets
         let lockedMembers = lockedMembers
         let strongAgainstMembers = strongAgainstMembers
+        let observedMeta = (method == .aiOptimizer && useObservedMeta) ? observedThreats(using: store) : []
         let broadFieldSize = broadFieldSize
 
         phase = .loadingRankings
@@ -470,6 +500,7 @@ final class TeamFinderModel {
                         movesById: movesById,
                         lockedMembers: lockedMembers,
                         strongAgainstMembers: strongAgainstMembers,
+                        observedMeta: observedMeta,
                         metaSize: metaSize,
                         restarts: restarts,
                         learnedShields: learnedShields,
@@ -708,7 +739,7 @@ final class TeamFinderModel {
             let combatant = MatchupSimulator.Combatant(
                 species: r.species, shadow: r.shadow,
                 fastMoveId: entry.moveset[0],
-                chargedMoveIds: Array(entry.moveset[1...].prefix(2)))
+                chargedMoveIds: Array(entry.moveset[1...].prefix(3)))
             let stats = entry.stats.map {
                 BattlePokemon.Stats(atk: $0.atk, def: $0.def, hp: Int($0.hp))
             } ?? MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap)
@@ -773,8 +804,8 @@ final class TeamFinderModel {
         let combatant = MatchupSimulator.Combatant(
             species: species, shadow: entry.shadow,
             fastMoveId: entry.fastMoveId,
-            chargedMoveIds: entry.chargedMoveIds)
-        let levelCap: Double = entry.isBestBuddy ? 51 : 50
+            chargedMoveIds: entry.chargedMoveIds, megaLevel: entry.megaLevel)
+        let levelCap = species.levelCap(megaLevel: entry.megaLevel, isBestBuddy: entry.isBestBuddy, cpCap: cpCap)
         let stats: BattlePokemon.Stats
         if let ivs = entry.ivs,
            let s = IVCalculator.stats(

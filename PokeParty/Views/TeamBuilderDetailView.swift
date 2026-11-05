@@ -404,6 +404,20 @@ private struct TeamMemberCard: View {
                 store: store,
                 onSelect: { model.setChargedMove($0, slot: 1, at: index) },
                 showsDetail: true, fastEnergyGain: fastGain)
+            if species.hasThirdChargedMove {
+                TeamMovePicker(
+                    label: "Charged 3",
+                    currentId: member.chargedMoveIds.count > 2 ? member.chargedMoveIds[2] : "",
+                    optionIds: species.extraChargedMoves ?? [],
+                    recommendedId: recommended.count > 3 ? recommended[3] : nil,
+                    includesNone: true,
+                    species: species,
+                    store: store,
+                    onSelect: { model.setChargedMove($0, slot: 2, at: index) },
+                    showsDetail: true, fastEnergyGain: fastGain)
+                MegaLevelPicker(level: member.megaLevel ?? species.megaLevel,
+                                onSelect: { model.setMegaLevel($0, at: index) })
+            }
         }
     }
 
@@ -414,6 +428,31 @@ private struct TeamMemberCard: View {
         .toggleStyle(.switch)
         .controlSize(.mini)
         .font(.caption)
+    }
+}
+
+// MARK: - Mega level picker
+
+/// Mega level (1–4) for a Mega with a third charged move. The mega move's
+/// damage scales with it, and level 4 raises the level cap in Master League.
+struct MegaLevelPicker: View {
+    /// The level in effect (the member's own, else the species default).
+    let level: Int
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Mega Lv")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 58, alignment: .leading)
+            Picker("Mega level", selection: Binding(get: { level }, set: { onSelect($0) })) {
+                ForEach(1...4, id: \.self) { Text("\($0)").tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+        }
     }
 }
 

@@ -88,10 +88,10 @@ final class BenchStore {
     func addFromRankings(speciesId: String, store: RankingsStore, league: League? = .great) -> BenchEntry {
         let moveset: [String]
         if let ranking = store.entry(id: speciesId), ranking.moveset.count >= 2 {
-            moveset = Array(ranking.moveset.prefix(3))
+            moveset = Array(ranking.moveset.prefix(4))
         } else if let species = store.pokemonById[speciesId] {
             moveset = (species.fastMoves.first.map { [$0] } ?? [])
-                + Array(species.chargedMoves.prefix(2))
+                + species.defaultChargedMoveIds
         } else {
             moveset = []
         }

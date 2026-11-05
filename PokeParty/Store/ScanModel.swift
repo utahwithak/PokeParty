@@ -438,7 +438,7 @@ final class ScanModel {
         // Master League's cap barely constrains the level climb for any real
         // Pokémon, so this is a league-agnostic best guess — the IV grid
         // separately ranks the resolved IVs per league once known.
-        let combos = IVCalculator.rankedCombos(
+        let combos = IVRankCache.rankedCombos(
             baseAtk: species.baseStats.atk,
             baseDef: species.baseStats.def,
             baseHp:  species.baseStats.hp,
@@ -530,7 +530,7 @@ final class ScanModel {
     /// Vulpix), so when types were read, a prefix-or-better match whose types agree
     /// outranks a higher-scoring name match with different types.
     private func fuzzyMatch(_ raw: String, types: [String], in pokemonById: [String: Pokemon]) -> String? {
-        let needle = normalized(raw)
+        let needle = normalized(canonicalNidoran(raw))
         guard !needle.isEmpty else { return nil }
         let scanned = Set(types)
         var best: (id: String, score: Int, typeMatch: Bool, nameLength: Int)? = nil
@@ -548,7 +548,7 @@ final class ScanModel {
             }
             best = (id, score, typeMatch, hay.count)
         }
-        return best?.id
+        return best?.id ?? closestName(to: needle, in: pokemonById)
     }
 
     /// Folds diacritics before comparing — the game master stores some
@@ -562,6 +562,10 @@ final class ScanModel {
     /// Female", and mapping "♂" straight to "m" fuses it onto the previous
     /// word ("Nidoranm") with no token boundary, so it can never prefix-
     /// match "nidoran male" no matter how cleanly OCR reads the symbol.
+    ///
+    /// `i`, `l` and `1` collapse to one letter: sans-serif OCR can't tell
+    /// capital I from lowercase l ("Illumise" reads as "Ilumise", "llumise",
+    /// "IIlumise"…), and no two species differ only by those.
     private func normalized(_ s: String) -> String {
         s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
             .replacingOccurrences(of: "♀", with: " f")
@@ -569,5 +573,52 @@ final class ScanModel {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+            .map { "il1".contains($0) ? Character("l") : $0 }
+            .reduce(into: "") { $0.append($1) }
+    }
+
+    /// OCR often mangles the ♀/♂ in "Nidoran♀"/"Nidoran♂" into a lookalike
+    /// letter or digit (Q, 9, d, 3, &…) or drops it. Rewrites those to the
+    /// game master's spelled-out form so the usual matching can resolve them.
+    /// A dropped symbol stays ambiguous and is left alone.
+    private func canonicalNidoran(_ raw: String) -> String {
+        let lower = raw.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+        guard lower.hasPrefix("nidoran") else { return raw }
+        let rest = lower.dropFirst(7).drop { $0 == " " || $0 == "-" }
+        guard let mark = rest.first, !rest.hasPrefix("male"), !rest.hasPrefix("female") else { return raw }
+        if "♀q92f".contains(mark) { return "Nidoran Female" }
+        if "♂d3&8m".contains(mark) { return "Nidoran Male" }
+        return raw
+    }
+
+    /// Closest species name within a small edit distance — the last resort
+    /// when no substring tier matches ("Illuminase" → "Illumise"). Skips
+    /// Shadow/Mega variants so they can't win ties on a cleaner base name.
+    private func closestName(to needle: String, in pokemonById: [String: Pokemon]) -> String? {
+        var best: (id: String, distance: Int)?
+        for (id, hay) in normalizedNames(for: pokemonById) {
+            guard let pokemon = pokemonById[id], !pokemon.isShadow, !pokemon.isMegaEvolution else { continue }
+            let limit = hay.count >= 7 ? 2 : 1
+            guard abs(hay.count - needle.count) <= limit else { continue }
+            let distance = Self.editDistance(Array(needle), Array(hay))
+            guard distance <= limit else { continue }
+            if let b = best, (b.distance, b.id.count) <= (distance, id.count) { continue }
+            best = (id, distance)
+        }
+        return best?.id
+    }
+
+    private static func editDistance(_ a: [Character], _ b: [Character]) -> Int {
+        if a.isEmpty || b.isEmpty { return max(a.count, b.count) }
+        var previous = Array(0...b.count)
+        for i in 1...a.count {
+            var current = [i] + Array(repeating: 0, count: b.count)
+            for j in 1...b.count {
+                let cost = a[i - 1] == b[j - 1] ? 0 : 1
+                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            }
+            previous = current
+        }
+        return previous[b.count]
     }
 }

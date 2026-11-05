@@ -16,6 +16,9 @@ nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
     let types: [String]
     let fastMoves: [String]
     let chargedMoves: [String]
+    /// A Mega's exclusive third charged move(s) (the "+" moves), kept apart
+    /// from `chargedMoves` because they occupy their own third slot.
+    var extraChargedMoves: [String]? = nil
     /// Moves only obtainable with an Elite TM.
     let eliteMoves: [String]?
     /// Moves no longer obtainable at all (event/legacy exclusives).
@@ -67,6 +70,40 @@ nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
     /// (Great/Ultra/Master), only legal in dedicated Mega cups.
     var isMegaEvolution: Bool {
         tags?.contains("mega") ?? false
+    }
+
+    /// A Mega with the higher mega level (PvPoke's "supermega" tag).
+    var isSuperMega: Bool {
+        tags?.contains("supermega") ?? false
+    }
+
+    /// PvPoke's default `megaLevel`: 3 for a Mega, 4 for a super Mega. The
+    /// player's actual level (1–4) is per Pokémon — see `TeamMember.megaLevel`.
+    /// Scales the damage of mega ("+") moves by up to 1.3×.
+    var megaLevel: Int {
+        isSuperMega ? 4 : 3
+    }
+
+    /// Whether this species has a third charged-move slot (Megas only).
+    var hasThirdChargedMove: Bool {
+        isMegaEvolution && !(extraChargedMoves?.isEmpty ?? true)
+    }
+
+    /// The default charged moveset for a species: the first two charged
+    /// moves, plus its mega move in the third slot when it has one.
+    var defaultChargedMoveIds: [String] {
+        var ids = Array(chargedMoves.prefix(2))
+        if hasThirdChargedMove, let extra = extraChargedMoves?.first { ids.append(extra) }
+        return ids
+    }
+
+    /// Level cap for a Pokémon of this species at `cpCap` — PvPoke raises
+    /// super Megas to level 52 in Master League; otherwise 50 (51 with Best Buddy).
+    /// `megaLevel` is the player's own mega level for this Pokémon (nil = the
+    /// species' default); only level 4 gets the higher cap.
+    func levelCap(megaLevel: Int? = nil, isBestBuddy: Bool, cpCap: Int) -> Double {
+        if isMegaEvolution, (megaLevel ?? self.megaLevel) >= 4, cpCap >= 10000 { return 52 }
+        return isBestBuddy ? 51 : 50
     }
 
     /// The Mega Evolution(s) of this species (e.g. Charizard → Mega Charizard

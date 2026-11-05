@@ -17,8 +17,10 @@
 			</array>
 		</dict>
 	</array>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_pokeparty._tcp</string>
+	</array>
 	<key>NSUbiquitousContainers</key>
 	<dict>
 		<key>iCloud.com.freebits.PokeParty</key>
@@ -31,12 +33,6 @@
 			<string>Any</string>
 		</dict>
 	</dict>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_pokeparty._tcp</string>
-	</array>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>PokeParty sends the opponent it spots in Pokémon GO to PokeParty on your Mac.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>screen-capture</string>

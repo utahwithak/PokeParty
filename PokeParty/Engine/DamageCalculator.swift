@@ -14,7 +14,7 @@ nonisolated enum DamageCalculator {
         let attackStat = attacker.getEffectiveStat(0)
         let defenseStat = defender.getEffectiveStat(1)
         let value = (Double(move.power) * move.stab * (attackStat / defenseStat)
-                     * effectiveness * 0.5 * DamageMultiplier.bonus)
+                     * effectiveness * move.megaBonus * 0.5 * DamageMultiplier.bonus)
         return Int(value.rounded(.down)) + 1
     }
 
@@ -29,7 +29,7 @@ nonisolated enum DamageCalculator {
         if attacker.shadow { atkStat *= attacker.shadowAtkMult }
         let effectiveness = defender.typeEffectiveness(forTypeIndex: move.typeIndex)
         let defenseStat = defender.getEffectiveStat(1)
-        let value = Double(move.power) * move.stab * (atkStat / defenseStat) * effectiveness * 0.5 * DamageMultiplier.bonus
+        let value = Double(move.power) * move.stab * (atkStat / defenseStat) * effectiveness * move.megaBonus * 0.5 * DamageMultiplier.bonus
         return Int(value.rounded(.down)) + 1
     }
 }

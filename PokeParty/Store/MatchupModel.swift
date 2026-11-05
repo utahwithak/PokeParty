@@ -105,6 +105,10 @@ final class MatchupModel {
         update(side) { $0.fastMoveId = id }
     }
 
+    func setMegaLevel(_ level: Int, side: Side) {
+        update(side) { $0.megaLevel = level }
+    }
+
     /// Sets (or clears, with `nil`) a charged-move slot (0 = first, 1 = second).
     func setChargedMove(_ id: String?, slot: Int, side: Side) {
         update(side) { $0.setChargedMove(id, slot: slot) }
@@ -184,15 +188,15 @@ final class MatchupModel {
         guard let species = store.pokemonById[member.speciesId] else { return nil }
         let combatant = MatchupSimulator.Combatant(
             species: species, shadow: member.shadow,
-            fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
+            fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds, megaLevel: member.megaLevel)
         let stats: BattlePokemon.Stats?
         if let ivs = member.ivs {
-            let levelCap: Double = member.isBestBuddy ? 51 : 50
+            let levelCap = species.levelCap(megaLevel: member.megaLevel, isBestBuddy: member.isBestBuddy, cpCap: store.format.cp)
             stats = IVCalculator.stats(
                 baseAtk: species.baseStats.atk, baseDef: species.baseStats.def, baseHp: species.baseStats.hp,
                 ivs: ivs, cpCap: store.format.cp, levelCap: levelCap
             ).map { BattlePokemon.Stats(atk: $0.atk, def: $0.def, hp: $0.hp) }
-        } else if let s = store.entry(id: member.speciesId)?.stats {
+        } else if member.megaLevel == nil, let s = store.entry(id: member.speciesId)?.stats {
             stats = .init(atk: s.atk, def: s.def, hp: Int(s.hp))
         } else {
             stats = MatchupSimulator.optimalStats(for: combatant, cpCap: store.format.cp)

@@ -48,12 +48,12 @@ final class BreakpointModel {
         if let entry, entry.moveset.count >= 2 {
             member = TeamMember(speciesId: speciesId,
                                 fastMoveId: entry.moveset[0],
-                                chargedMoveIds: Array(entry.moveset[1...].prefix(2)),
+                                chargedMoveIds: Array(entry.moveset[1...].prefix(3)),
                                 shadow: species.isShadow)
         } else if let fast = species.fastMoves.first {
             member = TeamMember(speciesId: speciesId,
                                 fastMoveId: fast,
-                                chargedMoveIds: Array(species.chargedMoves.prefix(2)),
+                                chargedMoveIds: species.defaultChargedMoveIds,
                                 shadow: species.isShadow)
         } else {
             member = nil
@@ -80,6 +80,10 @@ final class BreakpointModel {
 
     func setFastMove(_ id: String) {
         update { $0.fastMoveId = id }
+    }
+
+    func setMegaLevel(_ level: Int) {
+        update { $0.megaLevel = level }
     }
 
     /// Sets (or clears, with `nil`) a charged-move slot (0 = first, 1 = second).
@@ -113,7 +117,7 @@ final class BreakpointModel {
         }
         let subject = MatchupSimulator.Combatant(
             species: species, shadow: member.shadow,
-            fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
+            fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds, megaLevel: member.megaLevel)
         let base = species.baseStats
         guard let heroLevel = IVCalculator.stats(
             baseAtk: base.atk, baseDef: base.def, baseHp: base.hp,

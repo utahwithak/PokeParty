@@ -113,6 +113,12 @@ final class TeamBuilderModel {
         invalidate()
     }
 
+    func setMegaLevel(_ level: Int, at index: Int) {
+        guard members.indices.contains(index), members[index].megaLevel != level else { return }
+        members[index].megaLevel = level
+        invalidate()
+    }
+
     /// Sets (or clears, with `nil`) a charged-move slot (0 = first, 1 = second).
     func setChargedMove(_ id: String?, slot: Int, at index: Int) {
         guard members.indices.contains(index) else { return }
@@ -170,17 +176,19 @@ final class TeamBuilderModel {
             guard let species = pokemonById[member.speciesId] else { continue }
             let combatant = MatchupSimulator.Combatant(
                 species: species, shadow: member.shadow,
-                fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
+                fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds, megaLevel: member.megaLevel)
             // If the member has specific IVs (from the player's bench), compute
             // stats for those exact IVs at the best level under the cap.
             // Otherwise prefer the IV-optimal stats from ranking data, falling
             // back to the full optimizer for unranked mons.
-            let levelCap: Double = member.isBestBuddy ? 51 : 50
+            let levelCap = species.levelCap(megaLevel: member.megaLevel, isBestBuddy: member.isBestBuddy, cpCap: cpCap)
             let stats: BattlePokemon.Stats?
             if let ivs = member.ivs {
                 stats = Self.statsForIVs(species: species, ivs: ivs, cpCap: cpCap, levelCap: levelCap)
             } else {
-                stats = Self.rankedStats(speciesId: member.speciesId, store: store)
+                // Ranked stats assume the species' default mega level (and
+                // so its level cap), so a custom mega level recomputes them.
+                stats = (member.megaLevel == nil ? Self.rankedStats(speciesId: member.speciesId, store: store) : nil)
                     ?? MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap, levelCap: levelCap)
             }
             guard let stats else { continue }
@@ -276,13 +284,13 @@ final class TeamBuilderModel {
         for member in members {
             guard let species = store.pokemonById[member.speciesId] else { continue }
             let c = MatchupSimulator.Combatant(species: species, shadow: member.shadow,
-                                               fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
-            let levelCap: Double = member.isBestBuddy ? 51 : 50
+                                               fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds, megaLevel: member.megaLevel)
+            let levelCap = species.levelCap(megaLevel: member.megaLevel, isBestBuddy: member.isBestBuddy, cpCap: cap)
             let s: BattlePokemon.Stats?
             if let ivs = member.ivs {
                 s = statsForIVs(species: species, ivs: ivs, cpCap: cap, levelCap: levelCap)
             } else {
-                s = rankedStats(speciesId: member.speciesId, store: store)
+                s = (member.megaLevel == nil ? rankedStats(speciesId: member.speciesId, store: store) : nil)
                     ?? MatchupSimulator.optimalStats(for: c, cpCap: cap, levelCap: levelCap)
             }
             guard let s else { continue }

@@ -23,6 +23,9 @@ nonisolated struct Move: Decodable, Identifiable, Hashable {
     let buffTarget: String?
     /// PvPoke stores this as a string (e.g. "1", "0.5"); decoded leniently.
     let buffApplyChance: String?
+    /// A Mega's exclusive third charged move ("+" moves); its damage scales
+    /// with the attacker's mega level.
+    var isMegaMove: Bool? = nil
 
     var id: String { moveId }
 

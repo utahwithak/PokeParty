@@ -18,6 +18,14 @@ final class RankCheckerModel {
     /// Maximum level a Pokémon can be powered to (50 = max, 51 = Best Buddy).
     var levelCap: Double = 50
 
+    /// Level for the Level/CP converter in the detail view.
+    var manualLevel: Double = 20
+
+    /// `manualLevel` snapped to a half level within 1…`levelCap`.
+    var effectiveManualLevel: Double {
+        min(max((manualLevel * 2).rounded() / 2, 1), levelCap)
+    }
+
     /// IVs clamped to the valid 0–15 range.
     ///
     /// Clamping happens in the setters rather than in a `didSet`: under the

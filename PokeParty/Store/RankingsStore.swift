@@ -306,13 +306,13 @@ final class RankingsStore {
         if let entry = entry(id: speciesId), entry.moveset.count >= 2 {
             return TeamMember(speciesId: speciesId,
                               fastMoveId: entry.moveset[0],
-                              chargedMoveIds: Array(entry.moveset[1...].prefix(2)),
+                              chargedMoveIds: Array(entry.moveset[1...].prefix(3)),
                               shadow: species.isShadow)
         }
         guard let fast = species.fastMoves.first else { return nil }
         return TeamMember(speciesId: speciesId,
                           fastMoveId: fast,
-                          chargedMoveIds: Array(species.chargedMoves.prefix(2)),
+                          chargedMoveIds: species.defaultChargedMoveIds,
                           shadow: species.isShadow)
     }
 
@@ -492,7 +492,7 @@ final class RankingsStore {
         } else if let r = Self.resolve(speciesId: opponentId, pokemonById: pokemonById),
                   let fast = r.species.fastMoves.first {
             opp = MatchupSimulator.Combatant(species: r.species, shadow: r.shadow,
-                                             fastMoveId: fast, chargedMoveIds: Array(r.species.chargedMoves.prefix(2)))
+                                             fastMoveId: fast, chargedMoveIds: r.species.defaultChargedMoveIds)
         } else {
             return nil
         }
@@ -529,7 +529,8 @@ final class RankingsStore {
         else { return members.map { _ in nil } }
         let oppCombatant = MatchupSimulator.Combatant(
             species: species, shadow: opponent.shadow,
-            fastMoveId: opponent.fastMoveId, chargedMoveIds: opponent.chargedMoveIds)
+            fastMoveId: opponent.fastMoveId, chargedMoveIds: opponent.chargedMoveIds,
+            megaLevel: opponent.megaLevel)
         return teamRatings(for: members, against: oppCombatant)
     }
 
@@ -544,7 +545,7 @@ final class RankingsStore {
             guard let species = pokemonById[member.speciesId], !member.chargedMoveIds.isEmpty else { return nil }
             let combatant = MatchupSimulator.Combatant(
                 species: species, shadow: member.shadow,
-                fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds)
+                fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds, megaLevel: member.megaLevel)
             guard let stats = MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap) else { return nil }
             return MatchupSimulator.rate(
                 combatant, statsA: stats, oppCombatant, statsB: oppStats,
