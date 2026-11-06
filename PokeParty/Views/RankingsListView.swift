@@ -95,7 +95,10 @@ struct RankingsListView: View {
             }
             .themedPlainRow()
 
+            // The last row of the list, but not a selectable one.
             AttributionFooter()
+                .listRowSeparator(.hidden)
+                .selectionDisabled()
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             HStack(spacing: 6) {

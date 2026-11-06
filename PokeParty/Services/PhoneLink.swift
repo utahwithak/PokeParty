@@ -30,6 +30,41 @@ nonisolated struct OpponentDetection: Equatable, Identifiable, Sendable {
     }
 }
 
+/// A line of text OCR'd off the battle screen, and how far down the screen it
+/// was (0 top … 1 bottom).
+nonisolated struct ScreenLine: Codable, Equatable, Sendable {
+    var text: String
+    var y: Double
+}
+
+/// What the phone reads off the battle header on a frame: your active
+/// Pokémon's raw name and type icons, shields and Pokémon left on each side,
+/// and the effectiveness label if one was showing. HP and energy aren't here.
+nonisolated struct BattleSnapshot: Codable, Equatable, Sendable {
+    var myName: String?
+    var myIcons: [IconColor]
+    /// Header readings; nil when the header wasn't readable on this frame.
+    var myShields: Int?
+    var opponentShields: Int?
+    var myAlive: Int?
+    var opponentAlive: Int?
+    var flash: EffectivenessFlash?
+    /// HP left on each active Pokémon (0…1), when its bar was found.
+    var myHP: Double?
+    var opponentHP: Double?
+    /// Names from "<name> fainted" messages showing on this frame.
+    var fainted: [String] = []
+    /// Every line of text read off the middle of the screen, each sent once per
+    /// showing. The Mac pulls charged-move banners out of it (it knows which
+    /// Pokémon are out) and keeps the rest with the game for tuning.
+    var screenText: [ScreenLine]? = nil
+    /// How far down the screen the effectiveness label was (0 top … 1 bottom);
+    /// it sits over whoever was hit, so the upper half is the opponent.
+    var flashY: Double? = nil
+    /// "YOU WIN!" / "Good Effort" when the result screen was showing.
+    var result: BattleOutcome? = nil
+}
+
 nonisolated enum PhoneLink {
     static let serviceType = "_pokeparty._tcp"
 }
@@ -38,6 +73,7 @@ nonisolated enum PhoneLinkMessage: Codable, Sendable {
     /// First message on a connection, so the Mac can show who's connected.
     case hello(deviceName: String)
     case opponent(name: String, cp: Int?, icons: [IconColor])
+    case snapshot(BattleSnapshot)
 }
 
 // MARK: - Framing
@@ -118,6 +154,8 @@ final class PhoneLinkServer {
     /// The connected phone's name, or nil when none is connected.
     private(set) var phoneName: String?
     private(set) var latest: OpponentDetection?
+    /// Newest battle-header reading from the phone.
+    private(set) var latestSnapshot: BattleSnapshot?
 
     @ObservationIgnored private var listener: NWListener?
     @ObservationIgnored private var connection: NWConnection?
@@ -184,6 +222,8 @@ final class PhoneLinkServer {
             phoneName = deviceName
         case .opponent(let name, let cp, let icons):
             latest = OpponentDetection(name: name, cp: cp, icons: icons)
+        case .snapshot(let snapshot):
+            latestSnapshot = snapshot
         }
     }
 
@@ -250,6 +290,11 @@ final class PhoneLinkClient {
     func send(_ detection: OpponentDetection) {
         guard let connection, macName != nil else { return }
         sendMessage(.opponent(name: detection.name, cp: detection.cp, icons: detection.icons), on: connection)
+    }
+
+    func send(_ snapshot: BattleSnapshot) {
+        guard let connection, macName != nil else { return }
+        sendMessage(.snapshot(snapshot), on: connection)
     }
 
     private func connectIfNeeded() {

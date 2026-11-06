@@ -137,10 +137,23 @@ final class TeamBuilderModel {
         invalidate()
     }
 
-    func setShadow(_ shadow: Bool, at index: Int) {
-        guard members.indices.contains(index), members[index].shadow != shadow else { return }
+    /// Turning shadow off on a member whose species *is* the shadow form
+    /// (e.g. "ampharos_shadow") also switches it to the regular species, so the
+    /// name stops saying "(Shadow)". Needs `store` to confirm the regular entry exists.
+    func setShadow(_ shadow: Bool, at index: Int, store: RankingsStore? = nil) {
+        guard members.indices.contains(index) else { return }
+        let id = members[index].speciesId
+        let suffix = "_shadow"
+        var changed = members[index].shadow != shadow
         members[index].shadow = shadow
-        invalidate()
+        if !shadow, id.hasSuffix(suffix), let store {
+            let base = String(id.dropLast(suffix.count))
+            if store.pokemonById[base] != nil {
+                members[index].speciesId = base
+                changed = true
+            }
+        }
+        if changed { invalidate() }
     }
 
     private func invalidate() {

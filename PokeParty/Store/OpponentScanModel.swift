@@ -42,6 +42,9 @@ final class OpponentScanModel {
         stream.onDetection = { [weak self] detection in
             self?.received(detection)
         }
+        stream.onSnapshot = { [weak self] snapshot in
+            self?.link.send(snapshot)
+        }
         stream.onAppraisalFrame = { [weak self] image in
             self?.readIVs(from: image)
         }

@@ -125,6 +125,12 @@ nonisolated struct ThreeVThreeBattle {
     /// to switch immediately. Nil = the built-in safety gate alone decides.
     var farmDecisionHook: ((SwitchContext, Int) -> Bool)?
 
+    /// Starting HP as a fraction of max (0…1), by team index, for Pokémon whose
+    /// health is known going in — the live coach reads it off the HP bars. Any
+    /// Pokémon not listed starts at full HP.
+    var startingHpFractionA: [Int: Double] = [:]
+    var startingHpFractionB: [Int: Double] = [:]
+
     /// Turns farming on, driven by the learned farm-vs-switch policy. A no-op when
     /// `net` is nil: ungated farming (every safe window) measured as a wash in
     /// rl `--farm-eval`, so farming is only worth enabling with the policy picking
@@ -213,6 +219,12 @@ nonisolated struct ThreeVThreeBattle {
             teamB[i].startHp = 0; teamB[i].startEnergy = 0
             teamB[i].startStatBuffs = [0, 0]; teamB[i].startDisguiseConsumed = false
             teamB[i].startGulpMissileForm = .none; teamB[i].startFormShifted = false
+        }
+        for (i, fraction) in startingHpFractionA where teamA.indices.contains(i) {
+            teamA[i].startHp = max(1, Int((min(max(fraction, 0), 1) * Double(teamA[i].stats.hp)).rounded()))
+        }
+        for (i, fraction) in startingHpFractionB where teamB.indices.contains(i) {
+            teamB[i].startHp = max(1, Int((min(max(fraction, 0), 1) * Double(teamB[i].stats.hp)).rounded()))
         }
 
         var teamAShields = shieldsA

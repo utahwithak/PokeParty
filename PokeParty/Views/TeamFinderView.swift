@@ -19,6 +19,9 @@ struct TeamFinderView: View {
     var bench: BenchStore
     var hiddenCups: HiddenCupsStore
     @Binding var selection: SidebarSelection?
+    /// Forwarded to the pushed results screen (iOS) so a collapsed layout can
+    /// navigate to the Team Builder column.
+    var onOpenedTeamBuilder: () -> Void = {}
     @State private var showingLockedPicker = false
     @State private var showingStrongAgainstPicker = false
     @State private var showingResults = false
@@ -227,7 +230,9 @@ struct TeamFinderView: View {
             }
         }
         .navigationDestination(isPresented: $showingResults) {
-            TeamFinderResultsView(store: store, model: model, teamBuilder: teamBuilder, selection: $selection)
+            TeamFinderResultsView(store: store, model: model, teamBuilder: teamBuilder, selection: $selection,
+                                  onOpenedTeamBuilder: onOpenedTeamBuilder,
+                                  dismissResults: { showingResults = false })
         }
         #endif
     }
@@ -576,6 +581,12 @@ struct TeamFinderResultsView: View {
     var model: TeamFinderModel
     var teamBuilder: TeamBuilderModel
     @Binding var selection: SidebarSelection?
+    /// Called after the team is loaded so a collapsed (iPhone) layout can
+    /// navigate to the Team Builder column.
+    var onOpenedTeamBuilder: () -> Void = {}
+    /// Set when the results are pushed on top of the finder (iOS); pops them
+    /// before navigating away so the pushed screen doesn't linger.
+    var dismissResults: (() -> Void)?
 
     var body: some View {
         Group {
@@ -630,7 +641,19 @@ struct TeamFinderResultsView: View {
             store.format = format
         }
         teamBuilder.setTeam(members, for: model.resultsFormat)
-        selection = .teamBuilder
+        guard let dismissResults else {
+            selection = .teamBuilder
+            onOpenedTeamBuilder()
+            return
+        }
+        // Pop the pushed results first, then switch tabs once the pop has
+        // finished; doing both at once leaves the results screen on top.
+        dismissResults()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            selection = .teamBuilder
+            onOpenedTeamBuilder()
+        }
     }
 }
 

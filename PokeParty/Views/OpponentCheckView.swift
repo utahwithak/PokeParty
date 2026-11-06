@@ -17,9 +17,26 @@ import SwiftUI
 struct OpponentCheckView: View {
     let store: RankingsStore
     let model: TeamBuilderModel
+    /// Called with the opponents currently in the slots (in slot order) whenever they change.
+    var onOpponentsChange: (([TeamMember]) -> Void)?
+    /// Fast moves inferred in battle (species id → move id), applied to the matching slots.
+    var observedFastMoves: [String: String] = [:]
+    /// Called with the species an opponent was just detected or picked as — the one on the field.
+    var onActiveOpponent: ((String) -> Void)?
+    /// When set, the clear button becomes "New battle" and calls this after
+    /// clearing, so the host can reset everything else too.
+    var onReset: (() -> Void)?
+    /// Changing this clears the opponents — lets the host trigger a new battle.
+    var resetToken: UUID?
+    /// Indices (in slot order, counting only filled slots) of opponents that have
+    /// fainted; their cells are greyed out.
+    var faintedOpponents: Set<Int> = []
 
     @State private var usage = OpponentUsageStore()
     @State private var searchText = ""
+    /// Whether the search box and recent / most-used lists are showing. Remembered,
+    /// since with a live scan running they're rarely needed.
+    @AppStorage("OpponentCheck.showPicker") private var showPicker = true
     @State private var slots: [TeamMember?] = Array(repeating: nil, count: 3)
     /// Slot replaced when all three are full.
     @State private var activeSlot = 0
@@ -41,9 +58,8 @@ struct OpponentCheckView: View {
     #if os(iOS)
     @Environment(OpponentScanModel.self) private var scan
     #else
-    @Environment(EntitlementStore.self) private var entitlements
-    @State private var phoneLink = PhoneLinkServer()
-    @State private var showPhoneLinkInfo = false
+    /// Owned by `BattleHUDDetailView`, which also shows the connection status.
+    let phoneLink: PhoneLinkServer
     #endif
 
     /// Ranked opponents matching the search — restricting to `store.entries`
@@ -69,28 +85,28 @@ struct OpponentCheckView: View {
         VStack(alignment: .leading, spacing: 16) {
             #if os(iOS)
             scanHint
-            #else
-            if entitlements.isUnlocked {
-                phoneLinkRow
-            } else {
-                lockedPhoneLinkRow
-            }
             #endif
             detectionFeedback
-            searchField
-            if !searchResults.isEmpty {
-                resultsList
+            DisclosureGroup(isExpanded: $showPicker) {
+                VStack(alignment: .leading, spacing: 16) {
+                    searchField
+                    if !searchResults.isEmpty {
+                        resultsList
+                    }
+                    quickPicks
+                    leadHistory
+                }
+                .padding(.top, 8)
+            } label: {
+                Label("Search & recent opponents", systemImage: "magnifyingglass")
+                    .font(.subheadline.weight(.medium))
             }
-            quickPicks
-            leadHistory
             if slots.contains(where: { $0 != nil }) {
                 Button(role: .destructive) {
-                    slots = Array(repeating: nil, count: 3)
-                    activeSlot = 0
-                    leadSlot = nil
-                    recordedLead = nil
+                    clearOpponents()
+                    onReset?()
                 } label: {
-                    Label("Clear all opponents", systemImage: "xmark.circle")
+                    Label(onReset == nil ? "Clear all opponents" : "New battle", systemImage: "xmark.circle")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
@@ -103,6 +119,7 @@ struct OpponentCheckView: View {
                         member: slots[slot],
                         ratings: ratings[slot],
                         isActive: activeSlot == slot,
+                        isFainted: isFainted(slot),
                         isLead: isLead(slot),
                         onActivate: { activeSlot = slot },
                         onSetLead: { setLead(slot) },
@@ -111,7 +128,18 @@ struct OpponentCheckView: View {
             }
         }
         .onAppear { refreshRatings() }
-        .onChange(of: slots) { refreshRatings() }
+        .onChange(of: resetToken) { clearOpponents() }
+        .onChange(of: observedFastMoves) { _, moves in
+            for (speciesId, moveId) in moves {
+                guard let slot = slots.firstIndex(where: { $0?.speciesId == speciesId }),
+                      slots[slot]?.fastMoveId != moveId else { continue }
+                slots[slot]?.fastMoveId = moveId
+            }
+        }
+        .onChange(of: slots) {
+            refreshRatings()
+            onOpponentsChange?(slots.compactMap { $0 })
+        }
         .onChange(of: model.members) { refreshRatings() }
         .onChange(of: store.entries) { refreshRatings() }
         .onChange(of: store.format) {
@@ -126,13 +154,6 @@ struct OpponentCheckView: View {
         .onAppear { takeScanned() }
         .onChange(of: scan.detections.first?.id) { takeScanned() }
         #else
-        // The listener only runs while this screen is up.
-        // Pro only: without it the row below just explains the feature.
-        .onAppear { if entitlements.isUnlocked { phoneLink.start() } }
-        .onDisappear { phoneLink.stop() }
-        .onChange(of: entitlements.isUnlocked) { _, unlocked in
-            if unlocked { phoneLink.start() } else { phoneLink.stop() }
-        }
         .onChange(of: phoneLink.latest) { _, detection in
             if let detection { handle(detection) }
         }
@@ -176,84 +197,6 @@ struct OpponentCheckView: View {
             }
         }
     }
-
-    #if os(macOS)
-    // MARK: - iPhone link (macOS)
-
-    private var phoneLinkStatus: (text: String, color: Color) {
-        if let name = phoneLink.phoneName { return ("Connected to \(name)", .green) }
-        switch phoneLink.state {
-        case .listening: return ("Waiting for iPhone", .orange)
-        case .failed: return ("iPhone link unavailable", .red)
-        case .stopped: return ("iPhone link off", .secondary)
-        }
-    }
-
-    /// Shown instead of the connection row when Pro isn't unlocked, so the
-    /// feature is discoverable while Check Opponent itself stays fully usable.
-    private var lockedPhoneLinkRow: some View {
-        DisclosureGroup(isExpanded: $showPhoneLinkInfo) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("With PokeParty Pro, Screen Scan on your iPhone reads the opponent from your Pokémon GO battle and sends it here, filling in these slots automatically.")
-                Text("One purchase unlocks Pro on iPhone and Mac. Check Opponent works the same without it — just pick opponents yourself.")
-                Button {
-                    Task { await entitlements.purchase() }
-                } label: {
-                    if let price = entitlements.product?.displayPrice {
-                        Text("Unlock PokeParty Pro · \(price)")
-                    } else {
-                        Text("Unlock PokeParty Pro")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(entitlements.isPurchasing || entitlements.product == nil)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.top, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
-                    .foregroundStyle(.yellow)
-                Text("Detect opponents from your iPhone — Pro")
-                    .font(.subheadline.weight(.medium))
-            }
-        }
-        .padding(10)
-        .background(Color.yellow.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.yellow.opacity(0.45), lineWidth: 1))
-    }
-
-    /// "Connected to <phone>" with a disclosure explaining the feature.
-    private var phoneLinkRow: some View {
-        let status = phoneLinkStatus
-        return DisclosureGroup(isExpanded: $showPhoneLinkInfo) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Your iPhone can send the opponent it sees in a Pokémon GO battle straight to this Mac, which fills in the opponent slots below.")
-                Text("On iPhone: open PokeParty → Check Opponent → Detect from screen, choose Entire Screen, then start a battle. Both devices need to be on the same Wi-Fi network, and the iPhone needs iOS 27.")
-                if case .failed(let message) = phoneLink.state {
-                    Text(message).foregroundStyle(.red)
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.top, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
-                    .foregroundStyle(.secondary)
-                Text(status.text)
-                    .font(.subheadline.weight(.medium))
-                Circle().fill(status.color).frame(width: 8, height: 8)
-            }
-        }
-        .padding(10)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-    }
-    #endif
 
     #if os(iOS)
     // MARK: - Screen Scan hand-off (iOS)
@@ -303,6 +246,7 @@ struct OpponentCheckView: View {
            let present = slots[existing] {
             formChoices = []
             detectionNote = "\(store.name(forSpeciesId: present.speciesId))\(cp) is already in slot \(existing + 1)."
+            onActiveOpponent?(present.speciesId)
             return
         }
         switch matches.count {
@@ -362,7 +306,25 @@ struct OpponentCheckView: View {
         activeSlot = slots.firstIndex(where: { $0 == nil }) ?? target
         usage.record(speciesId, in: store.format)
         if isNewBattle { setLead(target) }
+        onActiveOpponent?(speciesId)
         searchText = ""
+    }
+
+    /// Whether the opponent in `slot` has fainted (see `faintedOpponents`).
+    private func isFainted(_ slot: Int) -> Bool {
+        guard slots.indices.contains(slot), slots[slot] != nil else { return false }
+        let position = slots[..<slot].filter { $0 != nil }.count
+        return faintedOpponents.contains(position)
+    }
+
+    /// Empties the opponent slots and the notes about them.
+    private func clearOpponents() {
+        slots = Array(repeating: nil, count: 3)
+        activeSlot = 0
+        leadSlot = nil
+        recordedLead = nil
+        formChoices = []
+        detectionNote = nil
     }
 
     private func refreshRatings() {
@@ -492,6 +454,7 @@ private struct OpponentColumn: View {
     let member: TeamMember?
     let ratings: [Int?]
     let isActive: Bool
+    let isFainted: Bool
     let isLead: Bool
     let onActivate: () -> Void
     let onSetLead: () -> Void
@@ -511,6 +474,10 @@ private struct OpponentColumn: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .opacity(isFainted ? 0.4 : 1)
+        .overlay(alignment: .topTrailing) {
+            if isFainted { FaintedBadge().padding(8) }
+        }
         .contentShape(Rectangle())
         .onTapGesture(perform: onActivate)
     }
@@ -571,6 +538,7 @@ private struct OpponentColumn: View {
                 .help("Clear this opponent")
             }
             TypeBadgeRow(types: species.displayTypes)
+            variantChips(member: member, species: species)
             Divider()
             movesetEditor(member: member, species: species)
             if species.isShadow || species.isShadowEligible || member.shadow {
@@ -609,50 +577,57 @@ private struct OpponentColumn: View {
             .sorted { (rank[$0.speciesId] ?? .max) < (rank[$1.speciesId] ?? .max) }
     }
 
-    /// The species name — a drop-down of its variants when there are any.
-    @ViewBuilder
+    /// The species name. Its other forms are shown as chips under the type badges.
     private func speciesTitle(member: TeamMember, species: Pokemon) -> some View {
-        let options = variants(of: species)
+        Text(species.speciesName)
+            .font(.headline)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+    }
+
+    /// Other forms of this species, as chips right in the cell — so a wrong form
+    /// can be fixed without opening the search. Shadow forms are left to the
+    /// Shadow toggle.
+    @ViewBuilder
+    private func variantChips(member: TeamMember, species: Pokemon) -> some View {
+        let options = variants(of: species).filter { store.pokemonById[$0.speciesId]?.isShadow != true }
         if options.count > 1 {
-            Menu {
-                ForEach(options) { option in
-                    Button {
-                        guard option.speciesId != species.speciesId,
-                              var replacement = store.makeMember(speciesId: option.speciesId) else { return }
-                        // Keep the Shadow toggle across forms that can still be Shadow.
-                        let target = store.pokemonById[option.speciesId]
-                        replacement.shadow = member.shadow && (target?.isShadowEligible ?? false)
-                        onChange(replacement)
-                    } label: {
-                        if option.speciesId == species.speciesId {
-                            Label(option.speciesName, systemImage: "checkmark")
-                        } else {
-                            Text(option.speciesName)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(options) { option in
+                        let selected = option.speciesId == species.speciesId
+                        Button {
+                            guard !selected, var replacement = store.makeMember(speciesId: option.speciesId) else { return }
+                            // Keep the Shadow toggle across forms that can still be Shadow.
+                            let target = store.pokemonById[option.speciesId]
+                            replacement.shadow = member.shadow && (target?.isShadowEligible ?? false)
+                            onChange(replacement)
+                        } label: {
+                            Text(formLabel(option.speciesName, of: species))
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(selected ? Color.accentColor.opacity(0.28) : Color.primary.opacity(0.07), in: Capsule())
+                                .overlay(Capsule().stroke(selected ? Color.accentColor : .clear, lineWidth: 1.5))
                         }
+                        .buttonStyle(.plain)
                     }
                 }
-            } label: {
-                HStack(spacing: 3) {
-                    Text(species.speciesName)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
             }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
             .help("Switch to a different form")
-        } else {
-            Text(species.speciesName)
-                .font(.headline)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
         }
+    }
+
+    /// "Ninetales (Alolan)" → "Alolan"; the plain species → "Standard".
+    private func formLabel(_ name: String, of species: Pokemon) -> String {
+        if let open = name.firstIndex(of: "("), let close = name.lastIndex(of: ")"), open < close {
+            return String(name[name.index(after: open)..<close])
+        }
+        let base = species.speciesName
+            .split(separator: "(", maxSplits: 1, omittingEmptySubsequences: false).first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? species.speciesName
+        return name.caseInsensitiveCompare(base) == .orderedSame ? "Standard" : name
     }
 
     private func movesetEditor(member: TeamMember, species: Pokemon) -> some View {
@@ -846,5 +821,17 @@ private struct ThrowTimingDiagram: View {
             .clipped()
         }
         .frame(height: Self.laneHeight)
+    }
+}
+
+/// "FAINTED" tag laid over a greyed-out Pokémon card.
+struct FaintedBadge: View {
+    var body: some View {
+        Text("FAINTED")
+            .font(.caption2.weight(.heavy))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.red.opacity(0.85), in: Capsule())
     }
 }

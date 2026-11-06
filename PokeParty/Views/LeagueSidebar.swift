@@ -13,6 +13,10 @@ enum SidebarSelection: Hashable {
     case rankChecker
     case teamBuilder
     case partyFinder
+    #if os(macOS)
+    /// Live coaching tips — macOS only (runs the simulations; the iPhone just feeds it).
+    case battleHUD
+    #endif
     case matchup
     case breakpoints
     case bench
@@ -40,6 +44,9 @@ enum SidebarSelection: Hashable {
         case .rankChecker: return "rankChecker"
         case .teamBuilder: return "teamBuilder"
         case .partyFinder: return "partyFinder"
+        #if os(macOS)
+        case .battleHUD: return "battleHUD"
+        #endif
         case .matchup: return "matchup"
         case .breakpoints: return "breakpoints"
         case .bench: return "bench"
@@ -67,6 +74,9 @@ enum SidebarSelection: Hashable {
         case "rankChecker": return .rankChecker
         case "teamBuilder": return .teamBuilder
         case "partyFinder": return .partyFinder
+        #if os(macOS)
+        case "battleHUD": return .battleHUD
+        #endif
         case "matchup": return .matchup
         // "breakpoints" intentionally unresolved: the tab is pulled from
         // this release's sidebar, so a persisted selection from before the
@@ -99,10 +109,43 @@ struct LeagueSidebar: View {
     var hiddenCups: HiddenCupsStore
     @Binding var selection: SidebarSelection?
     @State private var showingSettings = false
+    @State private var order = SidebarOrderStore()
+    @Environment(EntitlementStore.self) private var entitlements
 
     private var visibleCupFormats: [RankingFormat] {
         store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
     }
+
+    /// A tool's row in the sidebar.
+    private struct Tool: Identifiable {
+        let selection: SidebarSelection
+        let title: String
+        let systemImage: String
+        var id: String { selection.persistenceKey }
+    }
+
+    /// The tools in their default order.
+    private static let tools: [Tool] = [
+        Tool(selection: .bench, title: "My Bench", systemImage: "tray.fill"),
+        Tool(selection: .rankChecker, title: "Rank Checker", systemImage: "checklist"),
+        Tool(selection: .teamBuilder, title: "Team Builder", systemImage: "person.3.sequence.fill"),
+        Tool(selection: .matchup, title: "1v1 Simulator", systemImage: "bolt.horizontal.fill"),
+    ]
+
+    /// The Pro tools in their default order.
+    private static let proTools: [Tool] = {
+        var tools = [Tool(selection: .partyFinder, title: "Party Finder", systemImage: "wand.and.stars")]
+        #if os(macOS)
+        tools.append(Tool(selection: .battleHUD, title: "Battle HUD", systemImage: "speedometer"))
+        tools.append(Tool(selection: .scan, title: "Scan", systemImage: "camera.viewfinder"))
+        #else
+        tools.append(Tool(selection: .screenScan, title: "Screen Scan", systemImage: "viewfinder"))
+        #endif
+        #if os(macOS) && BETA_SCAN
+        tools.append(Tool(selection: .betaScan, title: "Beta Scan", systemImage: "hand.draw"))
+        #endif
+        return tools
+    }()
 
     var body: some View {
         // On macOS: prevent deselection so something is always highlighted.
@@ -118,41 +161,41 @@ struct LeagueSidebar: View {
                 #endif
             }
         )) {
+            // Rows within a section can be dragged into the order you like.
             Section("Tools") {
-                Label("My Bench", systemImage: "tray.fill")
-                    .tag(SidebarSelection.bench)
-                Label("Rank Checker", systemImage: "checklist")
-                    .tag(SidebarSelection.rankChecker)
-                Label("Team Builder", systemImage: "person.3.sequence.fill")
-                    .tag(SidebarSelection.teamBuilder)
-                Label("Party Finder", systemImage: "wand.and.stars")
-                    .tag(SidebarSelection.partyFinder)
-                Label("1v1 Simulator", systemImage: "bolt.horizontal.fill")
-                    .tag(SidebarSelection.matchup)
-                #if os(macOS)
-                Label("Scan", systemImage: "camera.viewfinder")
-                    .tag(SidebarSelection.scan)
-                #else
-                Label("Screen Scan", systemImage: "viewfinder")
-                    .tag(SidebarSelection.screenScan)
-                #endif
-                #if os(macOS) && BETA_SCAN
-                Label("Beta Scan", systemImage: "hand.draw")
-                    .tag(SidebarSelection.betaScan)
-                #endif
+                let tools = order.ordered(Self.tools, in: .tools, key: \.id)
+                ForEach(tools) { tool in
+                    Label(tool.title, systemImage: tool.systemImage)
+                        .tag(tool.selection)
+                }
+                .onMove { order.move(Self.tools, in: .tools, key: \.id, from: $0, to: $1) }
+            }
+            .themedRow()
+
+            // Everything behind PokeParty Pro, with a lock while it isn't unlocked.
+            Section("Pro") {
+                let proTools = order.ordered(Self.proTools, in: .pro, key: \.id)
+                ForEach(proTools) { tool in
+                    proLabel(tool.title, systemImage: tool.systemImage)
+                        .tag(tool.selection)
+                }
+                .onMove { order.move(Self.proTools, in: .pro, key: \.id, from: $0, to: $1) }
             }
             .themedRow()
 
             Section("Leagues") {
-                ForEach(RankingFormat.coreLeagues) { format in
+                let leagues = order.ordered(RankingFormat.coreLeagues, in: .leagues, key: \.id)
+                ForEach(leagues) { format in
                     row(for: format)
                 }
+                .onMove { order.move(RankingFormat.coreLeagues, in: .leagues, key: \.id, from: $0, to: $1) }
             }
             .themedRow()
 
             if !visibleCupFormats.isEmpty {
                 Section("Cups") {
-                    ForEach(visibleCupFormats) { format in
+                    let cups = order.ordered(visibleCupFormats, in: .cups, key: \.id)
+                    ForEach(cups) { format in
                         row(for: format)
                             .contextMenu {
                                 Button("Hide Cup", systemImage: "eye.slash") {
@@ -160,6 +203,7 @@ struct LeagueSidebar: View {
                                 }
                             }
                     }
+                    .onMove { order.move(visibleCupFormats, in: .cups, key: \.id, from: $0, to: $1) }
                 }
                 .themedRow()
             }
@@ -180,6 +224,15 @@ struct LeagueSidebar: View {
         }
         .themedBackground()
         .navigationTitle("PokeParty")
+        .contextMenu {
+            if order.isCustomized {
+                Button("Reset Sidebar Order", systemImage: "arrow.counterclockwise") { order.reset() }
+            }
+        }
+        #if os(iOS)
+        // Dragging rows to reorder them needs the list in edit mode on iOS.
+        .toolbar { EditButton() }
+        #endif
         .sheet(isPresented: $showingSettings) {
             NavigationStack {
                 SettingsView(store: store, hiddenCups: hiddenCups)
@@ -192,6 +245,19 @@ struct LeagueSidebar: View {
             #if os(macOS)
             .frame(minWidth: 480, minHeight: 420)
             #endif
+        }
+    }
+
+    /// A Pro tool's row: a lock on the trailing edge until Pro is unlocked.
+    private func proLabel(_ title: String, systemImage: String) -> some View {
+        HStack {
+            Label(title, systemImage: systemImage)
+            if !entitlements.isUnlocked {
+                Spacer()
+                Image(systemName: "lock.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

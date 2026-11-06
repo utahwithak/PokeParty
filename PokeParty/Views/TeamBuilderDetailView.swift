@@ -17,18 +17,14 @@ struct TeamBuilderDetailView: View {
     var savedTeams: SavedTeamsStore
     var bench: BenchStore
     var hiddenCups: HiddenCupsStore
+    /// Mac only: jumps to Battle HUD with the current team loaded.
+    var openBattleHUD: (() -> Void)? = nil
     @State private var showingBattle = false
     @State private var showingMetaTest = false
     @State private var metaTestModel = TeamMetaTestModel()
     @State private var showingSavePrompt = false
     @State private var saveName = ""
     @Environment(ShareImportModel.self) private var shareImport
-
-    private enum DetailTab: String, CaseIterable {
-        case analysis = "Analysis"
-        case checkOpponent = "Check Opponent"
-    }
-    @State private var activeTab: DetailTab = .analysis
 
     var body: some View {
         ScrollView {
@@ -106,6 +102,7 @@ struct TeamBuilderDetailView: View {
             teamsMenu
             battleButton
             metaTestButton
+            coachButton
             memberCountText
         }
         #endif
@@ -122,6 +119,13 @@ struct TeamBuilderDetailView: View {
                 Divider()
                 ForEach(visibleCupFormats) { Text($0.title).tag($0) }
             }
+            // A team opened from the Party Finder can belong to a cup that
+            // isn't in the list above (hidden / not published); keep it
+            // selectable so the picker's selection always has a tag.
+            if !store.format.isCoreLeague, !visibleCupFormats.contains(store.format) {
+                Divider()
+                Text(store.format.title).tag(store.format)
+            }
         }
         .labelsHidden()
         .pickerStyle(.menu)
@@ -136,6 +140,17 @@ struct TeamBuilderDetailView: View {
         }
         .disabled(!model.hasMembers)
         .help("Simulate a 3v3 against an opponent team")
+    }
+
+    @ViewBuilder
+    private var coachButton: some View {
+        if let openBattleHUD {
+            Button(action: openBattleHUD) {
+                Label("Battle HUD", systemImage: "speedometer")
+            }
+            .disabled(!model.hasMembers)
+            .help("Coach this team through a live battle")
+        }
     }
 
     private var metaTestButton: some View {
@@ -202,14 +217,33 @@ struct TeamBuilderDetailView: View {
 
     // MARK: - Team editor
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
+    /// Side by side wherever there's room (Mac, iPad). On a compact-width
+    /// iPhone three cards in a row can't shrink enough to fit, so they stack
+    /// full-width instead.
+    @ViewBuilder
     private var teamEditor: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ForEach(0..<TeamBuilderModel.maxMembers, id: \.self) { index in
-                if index < model.members.count {
-                    TeamMemberCard(index: index, store: store, model: model)
-                } else {
-                    emptySlot
-                }
+        #if os(iOS)
+        if horizontalSizeClass == .compact {
+            VStack(spacing: 12) { teamSlots }
+        } else {
+            HStack(alignment: .top, spacing: 12) { teamSlots }
+        }
+        #else
+        HStack(alignment: .top, spacing: 12) { teamSlots }
+        #endif
+    }
+
+    @ViewBuilder
+    private var teamSlots: some View {
+        ForEach(0..<TeamBuilderModel.maxMembers, id: \.self) { index in
+            if index < model.members.count {
+                TeamMemberCard(index: index, store: store, model: model)
+            } else {
+                emptySlot
             }
         }
     }
@@ -236,6 +270,14 @@ struct TeamBuilderDetailView: View {
 
     // MARK: - Analysis
 
+    #if os(iOS)
+    /// On iPhone, Check Opponent stays a tab here; on Mac it's the Battle HUD tool.
+    private enum DetailTab: String, CaseIterable {
+        case analysis = "Analysis"
+        case checkOpponent = "Check Opponent"
+    }
+    @State private var activeTab: DetailTab = .analysis
+
     @ViewBuilder
     private var analysisContent: some View {
         Picker("", selection: $activeTab) {
@@ -252,6 +294,9 @@ struct TeamBuilderDetailView: View {
             OpponentCheckView(store: store, model: model)
         }
     }
+    #else
+    private var analysisContent: some View { analysisTabContent }
+    #endif
 
     @ViewBuilder
     private var analysisTabContent: some View {
@@ -285,7 +330,8 @@ struct TeamBuilderDetailView: View {
 
 // MARK: - Team member card
 
-private struct TeamMemberCard: View {
+/// Also used by Battle HUD to show the team being coached.
+struct TeamMemberCard: View {
     let index: Int
     let store: RankingsStore
     @Bindable var model: TeamBuilderModel
@@ -424,7 +470,7 @@ private struct TeamMemberCard: View {
     private func shadowToggle(member: TeamMember) -> some View {
         Toggle("Shadow", isOn: Binding(
             get: { member.shadow },
-            set: { model.setShadow($0, at: index) }))
+            set: { model.setShadow($0, at: index, store: store) }))
         .toggleStyle(.switch)
         .controlSize(.mini)
         .font(.caption)

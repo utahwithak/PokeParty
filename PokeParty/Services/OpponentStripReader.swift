@@ -27,19 +27,24 @@ nonisolated final class OpponentStripReader {
     /// status bar (whose battery percentage would read as a CP) and ends
     /// above the bench tiles, whose CPs belong to the player's own team.
     static let region = CGRect(x: 0.58, y: 0.85, width: 0.42, height: 0.06)
+    /// Your own panel, mirrored on the left ("Greninja158   CP 1483").
+    static let myRegion = CGRect(x: 0.0, y: 0.85, width: 0.42, height: 0.06)
 
     /// Lines returned by the most recent `read`, for the on-screen debug readout.
     private(set) var lastRawLines: [String] = []
 
     /// Reused across frames — building a text request is comparatively costly.
-    private let request: VNRecognizeTextRequest = {
+    private let request: VNRecognizeTextRequest
+
+    /// `region` picks which header panel is read (default: the opponent's).
+    init(region: CGRect = OpponentStripReader.region) {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         // Species names aren't dictionary words; correction mangles them.
         request.usesLanguageCorrection = false
-        request.regionOfInterest = OpponentStripReader.region
-        return request
-    }()
+        request.regionOfInterest = region
+        self.request = request
+    }
 
     func read(_ pixelBuffer: CVPixelBuffer) -> OpponentReading? {
         var lines: [String] = []
@@ -99,7 +104,7 @@ nonisolated final class OpponentStripReader {
 
     /// A coarse fingerprint of the panel. Comparing two of these is far
     /// cheaper than running OCR, so OCR only runs when the panel changed.
-    static func signature(of pixelBuffer: CVPixelBuffer) -> [UInt8]? {
+    static func signature(of pixelBuffer: CVPixelBuffer, region: CGRect = OpponentStripReader.region) -> [UInt8]? {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 

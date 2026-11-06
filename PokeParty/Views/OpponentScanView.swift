@@ -84,6 +84,8 @@ struct OpponentScanView: View {
                 Section("Debug") {
                     Text("OCR: " + (scan.stream.debugLines.isEmpty ? "—" : scan.stream.debugLines.joined(separator: " | ")))
                         .font(.caption2.monospaced())
+                    Text("Header: " + (scan.stream.debugHeader.isEmpty ? "—" : scan.stream.debugHeader))
+                        .font(.caption2.monospaced())
                     if let latest = scan.detections.first {
                         Text("Icons: " + latest.iconSummary)
                             .font(.caption2.monospaced())

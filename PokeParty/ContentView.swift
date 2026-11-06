@@ -34,10 +34,15 @@ struct ContentView: View {
     @State private var autoAdvance = AutoAdvanceModel()
     #endif
 
+    /// Which column is showing when the split view collapses to a single
+    /// stack (iPhone / compact width). Programmatic selection changes don't
+    /// navigate on their own there, so "open in Team Builder" sets this.
+    @State private var compactColumn = NavigationSplitViewColumn.sidebar
+
     private static let selectionDefaultsKey = "PokeParty.selectedTab"
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(preferredCompactColumn: $compactColumn) {
             LeagueSidebar(store: store, hiddenCups: hiddenCups, selection: $selection)
                 .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 240)
         } content: {
@@ -141,10 +146,19 @@ struct ContentView: View {
             TeamBuilderView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
         case .partyFinder:
             if entitlements.isUnlocked {
-                TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, bench: bench, hiddenCups: hiddenCups, selection: $selection)
+                TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, bench: bench, hiddenCups: hiddenCups, selection: $selection,
+                               onOpenedTeamBuilder: { compactColumn = .detail })
             } else {
                 PaywallView()
             }
+        #if os(macOS)
+        case .battleHUD:
+            if entitlements.isUnlocked {
+                BattleHUDTeamPane(store: store, model: teamBuilder, savedTeams: savedTeams)
+            } else {
+                PaywallView()
+            }
+        #endif
         case .matchup:
             MatchupSimulatorView(store: store, model: matchup, hiddenCups: hiddenCups)
         case .breakpoints:
@@ -155,6 +169,7 @@ struct ContentView: View {
                           store.format = league.format
                           teamBuilder.setTeam(members, for: league.format)
                           selection = .teamBuilder
+                          compactColumn = .detail
                       })
         #if os(macOS)
         case .scan:
@@ -204,14 +219,28 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerResultsView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
+            TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups,
+                                  openBattleHUD: {
+                                      #if os(macOS)
+                                      selection = .battleHUD
+                                      #endif
+                                  })
         case .partyFinder:
             if entitlements.isUnlocked {
                 TeamFinderResultsView(store: store, model: teamFinder,
-                                      teamBuilder: teamBuilder, selection: $selection)
+                                      teamBuilder: teamBuilder, selection: $selection,
+                                      onOpenedTeamBuilder: { compactColumn = .detail })
             } else {
                 ContentUnavailableView("", systemImage: "wand.and.stars")
             }
+        #if os(macOS)
+        case .battleHUD:
+            if entitlements.isUnlocked {
+                BattleHUDDetailView(store: store, model: teamBuilder)
+            } else {
+                ContentUnavailableView("", systemImage: "speedometer")
+            }
+        #endif
         case .matchup:
             MatchupDetailView(store: store, model: matchup, hiddenCups: hiddenCups)
         case .breakpoints:

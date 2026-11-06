@@ -27,12 +27,25 @@ nonisolated enum OpponentNameMatcher {
 
         // Base name = the words outside any parentheses: "Kyurem (Black)" → ["kyurem"].
         let forms = species.filter { !$0.isShadow && !$0.isMegaEvolution }
-        let sameBase = forms.filter { baseWords($0.speciesName) == wanted }
+        if let found = closestBaseMatch(wanted, in: forms) { return found }
+
+        // A species that's only ranked as a Shadow ("Palkia (Shadow)" in Great
+        // League, where the regular one is over the cap) is still shown on screen
+        // as plain "Palkia". Only reached when no regular form fits, so it never
+        // steals a name from a ranked regular one.
+        let shadows = species.filter { $0.isShadow && !$0.isMegaEvolution }
+        return closestBaseMatch(wanted, in: shadows) ?? []
+    }
+
+    /// Forms in `pool` sharing the base name `wanted`, else the closest base name
+    /// within a small edit distance (OCR slips like "Mewtwo" → "Mewtw0").
+    private static func closestBaseMatch(_ wanted: Set<String>, in pool: [Pokemon]) -> [Pokemon]? {
+        let sameBase = pool.filter { baseWords($0.speciesName) == wanted }
         if !sameBase.isEmpty { return sameBase }
 
         let wantedKey = wanted.sorted().joined()
         var best: (distance: Int, matches: [Pokemon])?
-        for candidate in forms {
+        for candidate in pool {
             let key = baseWords(candidate.speciesName).sorted().joined()
             let limit = key.count >= 9 ? 2 : 1
             let distance = editDistance(wantedKey, key, limit: limit)
@@ -44,7 +57,7 @@ nonisolated enum OpponentNameMatcher {
                 best = (distance, [candidate])
             }
         }
-        return best?.matches ?? []
+        return best?.matches
     }
 
     /// Every non-shadow, non-Mega form sharing a base name with `matches` —
@@ -52,10 +65,15 @@ nonisolated enum OpponentNameMatcher {
     /// ("Corsola") never lists its regional variants, so this widens it for
     /// icon narrowing and for spotting an opponent that's already in a slot.
     static func family(of matches: [Pokemon], in species: [Pokemon]) -> [Pokemon] {
+        // A Mega is its own thing on screen ("Mega Sableye"); widening it to the
+        // base form would swap it for plain Sableye.
+        if matches.contains(where: \.isMegaEvolution) { return matches }
         let bases = Set(matches.map { baseWords($0.speciesName) })
-        return species.filter {
+        let regular = species.filter {
             !$0.isShadow && !$0.isMegaEvolution && bases.contains(baseWords($0.speciesName))
         }
+        // Matches that are Shadows (no regular form ranked) stay in their own family.
+        return regular + matches.filter { match in !regular.contains { $0.speciesId == match.speciesId } }
     }
 
     /// Narrows name-matched forms using the opponent's type icons: each form

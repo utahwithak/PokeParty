@@ -7,25 +7,26 @@
 
 import SwiftUI
 
-/// A footer crediting PvPoke. The rows leave the app and open PvPoke's website
-/// and source repository in the system browser (satisfies PvPoke's MIT
-/// attribution requirement).
+/// A footer crediting PvPoke. The links open PvPoke's website and source
+/// repository in the system browser (satisfies PvPoke's MIT attribution
+/// requirement). Each link is only as big as its own text and icon, so the
+/// empty space beside it isn't clickable.
 struct AttributionFooter: View {
     var body: some View {
-        Section {
-            linkRow(
-                title: "Data & rankings from PvPoke",
-                subtitle: "pvpoke.com",
-                url: URL(string: "https://pvpoke.com")!
-            )
-            linkRow(
-                title: "Source on GitHub",
-                subtitle: "github.com/pvpoke/pvpoke",
-                url: URL(string: "https://github.com/pvpoke/pvpoke")!
-            )
-            // Rendered as a row rather than the Section's `footer:` slot: on macOS
-            // a List footer is laid out with an unbounded width and clips to one
-            // line, which `.fixedSize` can't fix. A normal row wraps correctly.
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 28) {
+                linkItem(
+                    title: "Data & rankings from PvPoke",
+                    subtitle: "pvpoke.com",
+                    url: URL(string: "https://pvpoke.com")!
+                )
+                linkItem(
+                    title: "Source on GitHub",
+                    subtitle: "github.com/pvpoke/pvpoke",
+                    url: URL(string: "https://github.com/pvpoke/pvpoke")!
+                )
+                Spacer(minLength: 0)
+            }
             Text("PvPoke is open source under the MIT License. PokeParty is an unofficial fan-made tool. It is not affiliated with, endorsed by, or sponsored by PvPoke, Nintendo, Game Freak, The Pokémon Company, or Scopely. Pokémon and Pokémon GO are trademarks of their respective owners.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -34,26 +35,26 @@ struct AttributionFooter: View {
         }
     }
 
-    private func linkRow(title: String, subtitle: String, url: URL) -> some View {
+    private func linkItem(title: String, subtitle: String, url: URL) -> some View {
         Link(destination: url) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
                     Text(title)
                         .font(.subheadline.weight(.medium))
-                    Text(subtitle)
+                    Image(systemName: "arrow.up.right.square")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Image(systemName: "arrow.up.right.square")
+                Text(subtitle)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+        // Without this the link stretches to fill the row on macOS.
+        .fixedSize()
     }
 }
 
 #Preview {
-    List {
-        AttributionFooter()
-    }
+    AttributionFooter()
+        .padding()
 }

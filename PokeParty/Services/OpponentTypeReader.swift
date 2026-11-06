@@ -28,7 +28,7 @@ nonisolated struct IconColor: Equatable, Sendable, Codable {
 }
 
 nonisolated enum TypeColors {
-    /// Icon fill colours. Dark, ice, ghost and fairy were sampled from a real
+    /// Icon fill colours. Dark, ice, ghost, fairy, water, poison and ground were sampled from a real
     /// battle screenshot; the rest are estimates and should be replaced with
     /// sampled values as screenshots of those types turn up (the debug readout
     /// prints each icon's measured colour).
@@ -38,15 +38,15 @@ nonisolated enum TypeColors {
         "ice": IconColor(r: 148, g: 211, b: 201),
         "ghost": IconColor(r: 103, g: 110, b: 186),
         "fairy": IconColor(r: 228, g: 158, b: 224),
+        "water": IconColor(r: 111, g: 166, b: 215),
+        "poison": IconColor(r: 169, g: 103, b: 197),
+        "ground": IconColor(r: 204, g: 140, b: 97),
         // Estimated.
         "normal": IconColor(r: 160, g: 162, b: 159),
         "fire": IconColor(r: 240, g: 128, b: 48),
-        "water": IconColor(r: 80, g: 144, b: 215),
         "electric": IconColor(r: 244, g: 210, b: 60),
         "grass": IconColor(r: 90, g: 190, b: 90),
         "fighting": IconColor(r: 206, g: 64, b: 105),
-        "poison": IconColor(r: 171, g: 106, b: 200),
-        "ground": IconColor(r: 217, g: 119, b: 67),
         "flying": IconColor(r: 143, g: 168, b: 221),
         "psychic": IconColor(r: 249, g: 113, b: 118),
         "bug": IconColor(r: 144, g: 193, b: 44),
@@ -67,18 +67,20 @@ nonisolated enum OpponentTypeReader {
     /// icon radius as a fraction of the width — measured on an iPhone
     /// screenshot. The opponent's icons are right-aligned under the status
     /// bar; both slots are checked, and an empty one is simply skipped.
-    private static let slots: [(x: Double, y: Double)] = [(0.9005, 0.0774), (0.9560, 0.0774)]
+    static let opponentSlots: [(x: Double, y: Double)] = [(0.9005, 0.0774), (0.9560, 0.0774)]
+    /// Your own Pokémon's icons mirror the opponent's, left-aligned.
+    static let mySlots: [(x: Double, y: Double)] = [(0.0440, 0.0774), (0.0995, 0.0774)]
     private static let radiusFraction = 0.0216
 
     /// Mean per-channel wobble allowed around an icon's ring (a flat fill has little).
-    private static let maxRingDeviation = 20.0
+    private static let maxRingDeviation = 35.0
     /// A real icon's ring differs from the scenery just outside it; a patch of
     /// plain sky doesn't, which is what stops it reading as a "water" icon.
     private static let minContrastWithSurroundings = 45.0
 
     /// Fill colours of the icons found, left to right. Empty when the frame
     /// isn't BGRA or no icon-like circle is present.
-    static func read(_ pixelBuffer: CVPixelBuffer) -> [IconColor] {
+    static func read(_ pixelBuffer: CVPixelBuffer, slots: [(x: Double, y: Double)] = opponentSlots) -> [IconColor] {
         guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else { return [] }
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
