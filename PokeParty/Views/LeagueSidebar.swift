@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// What the sidebar can select: a rankings format, or a tool.
 enum SidebarSelection: Hashable {
@@ -13,10 +16,8 @@ enum SidebarSelection: Hashable {
     case rankChecker
     case teamBuilder
     case partyFinder
-    #if os(macOS)
-    /// Live coaching tips — macOS only (runs the simulations; the iPhone just feeds it).
+    /// Live coaching tips: on the Mac and iPad (they run the simulations; the iPhone just feeds it).
     case battleHUD
-    #endif
     case matchup
     case breakpoints
     case bench
@@ -34,6 +35,15 @@ enum SidebarSelection: Hashable {
     case betaScan
     #endif
 
+    /// Whether this device offers Battle HUD: the Mac and iPad, not iPhone.
+    static var battleHUDAvailable: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        true
+        #endif
+    }
+
     /// Stable string key for persisting the selected tab across launches.
     /// A cup format's `RankingFormat` isn't itself storable (it's decoded
     /// fresh from the gamemaster each launch), so formats persist by their
@@ -44,9 +54,7 @@ enum SidebarSelection: Hashable {
         case .rankChecker: return "rankChecker"
         case .teamBuilder: return "teamBuilder"
         case .partyFinder: return "partyFinder"
-        #if os(macOS)
         case .battleHUD: return "battleHUD"
-        #endif
         case .matchup: return "matchup"
         case .breakpoints: return "breakpoints"
         case .bench: return "bench"
@@ -74,9 +82,7 @@ enum SidebarSelection: Hashable {
         case "rankChecker": return .rankChecker
         case "teamBuilder": return .teamBuilder
         case "partyFinder": return .partyFinder
-        #if os(macOS)
-        case "battleHUD": return .battleHUD
-        #endif
+        case "battleHUD": return battleHUDAvailable ? .battleHUD : nil
         case "matchup": return .matchup
         // "breakpoints" intentionally unresolved: the tab is pulled from
         // this release's sidebar, so a persisted selection from before the
@@ -85,7 +91,7 @@ enum SidebarSelection: Hashable {
         #if os(macOS)
         case "scan": return .scan
         #endif
-        #if os(iOS)
+        #if os(iOS) && !targetEnvironment(simulator)
         case "screenScan": return .screenScan
         #endif
         #if os(macOS) && BETA_SCAN
@@ -139,7 +145,13 @@ struct LeagueSidebar: View {
         tools.append(Tool(selection: .battleHUD, title: "Battle HUD", systemImage: "speedometer"))
         tools.append(Tool(selection: .scan, title: "Scan", systemImage: "camera.viewfinder"))
         #else
+        if SidebarSelection.battleHUDAvailable {
+            tools.append(Tool(selection: .battleHUD, title: "Battle HUD", systemImage: "speedometer"))
+        }
+        #if !targetEnvironment(simulator)
+        // The simulator has no full-display ScreenCaptureKit capture, so Begin Scan just errors.
         tools.append(Tool(selection: .screenScan, title: "Screen Scan", systemImage: "viewfinder"))
+        #endif
         #endif
         #if os(macOS) && BETA_SCAN
         tools.append(Tool(selection: .betaScan, title: "Beta Scan", systemImage: "hand.draw"))

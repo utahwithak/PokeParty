@@ -9,7 +9,9 @@
 //  published as `latest` for Opponent Check to resolve to a species.
 //
 
-#if os(iOS)
+// ScreenCaptureKit isn't in the iOS simulator SDK, so the simulator gets the
+// inert stub at the bottom of this file.
+#if os(iOS) && !targetEnvironment(simulator)
 
 import CoreImage
 import CoreMedia
@@ -154,6 +156,9 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
 
     // Only touched on `queue`.
     private var lastHandled: TimeInterval = 0
+    /// How far this phone's battle header sits from where the readers' positions
+    /// were measured (fraction of frame height); see `BattleHeaderReader.findShift`.
+    private var headerShift = 0.0
     private var lastSignature: [UInt8]?
     /// Seen once, waiting for a second matching read before it's trusted.
     private var candidate: OpponentReading?
@@ -215,11 +220,12 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         // The header and icon readers sample BGRA pixels, and iOS doesn't let the
         // capture be configured for that, so convert when the frame arrives as YUV.
         let bgra = bgraBuffer(for: pixelBuffer)
+        updateHeaderShift(bgra ?? pixelBuffer)
         readBattleState(bgra ?? pixelBuffer, sourceFormat: CVPixelBufferGetPixelFormatType(pixelBuffer), now: now)
 
         // Skip OCR on an unchanged panel — unless a first read is still
         // waiting on its confirmation, which needs another look at the same pixels.
-        let signature = OpponentStripReader.signature(of: pixelBuffer)
+        let signature = OpponentStripReader.signature(of: pixelBuffer, region: OpponentStripReader.shifted(OpponentStripReader.region, by: headerShift))
         if let signature, let last = lastSignature, candidate == nil,
            OpponentStripReader.difference(signature, last) < Self.changeThreshold {
             if !panelHasText { checkForAppraisal(pixelBuffer, now: now) }
@@ -227,7 +233,7 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         }
         lastSignature = signature
 
-        let reading = reader.read(pixelBuffer)
+        let reading = reader.read(pixelBuffer, yShift: headerShift)
         panelHasText = reading != nil
         guard let reading else {
             if !panelHasText { checkForAppraisal(pixelBuffer, now: now) }
@@ -239,7 +245,7 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         lastReadable = now
 
         // Icons are only sampled once there's a name to attach them to.
-        let icons = OpponentTypeReader.read(bgra ?? pixelBuffer)
+        let icons = OpponentTypeReader.read(bgra ?? pixelBuffer, yShift: headerShift)
         if reading == published {
             candidate = nil
             onReading(nil, icons, reader.lastRawLines)
@@ -251,6 +257,13 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
             candidate = reading
             onReading(nil, icons, reader.lastRawLines)
         }
+    }
+
+    /// Re-finds the header's position when it no longer lines up (a new phone, or a
+    /// frame that isn't a battle leaves the last shift in place).
+    private func updateHeaderShift(_ pixelBuffer: CVPixelBuffer) {
+        if BattleHeaderReader.read(pixelBuffer, yShift: headerShift) != nil { return }
+        if let found = BattleHeaderReader.findShift(pixelBuffer) { headerShift = found }
     }
 
     /// A reusable BGRA copy of `source`, or nil when it's already BGRA.
@@ -275,14 +288,14 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
     /// snapshot when something changed. Frames that show neither the header nor
     /// an HP bar aren't a battle and produce nothing.
     private func readBattleState(_ pixelBuffer: CVPixelBuffer, sourceFormat: OSType, now: TimeInterval) {
-        let header = BattleHeaderReader.read(pixelBuffer)
+        let header = BattleHeaderReader.read(pixelBuffer, yShift: headerShift)
         let hp = HPBarReader.read(pixelBuffer)
 
         #if DEBUG
         if now - lastHeaderDebug >= 1 {
             lastHeaderDebug = now
             let bars = "HP mine \(hp.mine.map { String(format: "%.2f", $0) } ?? "—") opp \(hp.opponent.map { String(format: "%.2f", $0) } ?? "—")"
-            onHeaderDebug("source \(BattleHeaderReader.fourCC(sourceFormat)) · " + BattleHeaderReader.diagnose(pixelBuffer)
+            onHeaderDebug("source \(BattleHeaderReader.fourCC(sourceFormat)) · " + BattleHeaderReader.diagnose(pixelBuffer, yShift: headerShift)
                           + "\n\(bars)\nband: " + (lastBandLines.isEmpty ? "—" : lastBandLines.joined(separator: " | ")))
         }
         #endif
@@ -295,13 +308,13 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         let shields = shieldFilter.update(header, now: now)
 
         // The name needs OCR, so only re-read it when the panel changed.
-        let signature = OpponentStripReader.signature(of: pixelBuffer, region: OpponentStripReader.myRegion)
+        let signature = OpponentStripReader.signature(of: pixelBuffer, region: OpponentStripReader.shifted(OpponentStripReader.myRegion, by: headerShift))
         if myName == nil || signature == nil || mySignature == nil
             || OpponentStripReader.difference(signature!, mySignature!) >= Self.changeThreshold {
             mySignature = signature
-            myName = myReader.read(pixelBuffer)?.name ?? myName
+            myName = myReader.read(pixelBuffer, yShift: headerShift)?.name ?? myName
         }
-        let icons = OpponentTypeReader.read(pixelBuffer, slots: OpponentTypeReader.mySlots)
+        let icons = OpponentTypeReader.read(pixelBuffer, slots: OpponentTypeReader.mySlots, yShift: headerShift)
 
         let text = textReader.read(pixelBuffer)
         lastBandLines = text.lines
@@ -380,6 +393,32 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         onStop(error.localizedDescription)
     }
+}
+
+#elseif os(iOS)
+
+import CoreGraphics
+import Foundation
+
+/// Simulator stand-in with the same surface as the real stream; it never captures.
+@Observable
+@MainActor
+final class OpponentScreenStream {
+    private(set) var isStreaming = false
+    private(set) var latest: OpponentDetection?
+    private(set) var errorMessage: String?
+    private(set) var debugLines: [String] = []
+    private(set) var debugHeader = ""
+
+    @ObservationIgnored var onDetection: (@MainActor (OpponentDetection) -> Void)?
+    @ObservationIgnored var onAppraisalFrame: (@MainActor (CGImage) -> Void)?
+    @ObservationIgnored var onSnapshot: (@MainActor (BattleSnapshot) -> Void)?
+
+    func present() {
+        errorMessage = "Screen capture isn't available in the simulator."
+    }
+
+    func stop() async {}
 }
 
 #endif

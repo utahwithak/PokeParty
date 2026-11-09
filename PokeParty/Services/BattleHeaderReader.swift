@@ -28,7 +28,7 @@ nonisolated struct BattleHeaderReading: Equatable, Sendable {
 nonisolated enum BattleHeaderReader {
 
     /// Icon centres as fractions of the frame's width and height.
-    private static let y = 0.1310
+    private static let nominalY = 0.1310
     private static let myBalls: [Double] = [0.0543, 0.1076, 0.1620]
     private static let myShieldSlots: [Double] = [0.2359, 0.2826]
     private static let opponentShieldSlots: [Double] = [0.7174, 0.7641]
@@ -49,7 +49,7 @@ nonisolated enum BattleHeaderReader {
     }
 
     /// nil unless the frame is BGRA and every slot is inside it.
-    private static func sample(_ pixelBuffer: CVPixelBuffer) -> Samples? {
+    private static func sample(_ pixelBuffer: CVPixelBuffer, yShift: Double = 0) -> Samples? {
         guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else { return nil }
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
@@ -63,7 +63,7 @@ nonisolated enum BattleHeaderReader {
         /// Median colour of a small plus-shaped patch, so one stray pixel doesn't decide.
         func color(atX fraction: Double) -> IconColor? {
             let cx = Int((fraction * Double(width)).rounded())
-            let cy = Int((y * Double(height)).rounded())
+            let cy = Int(((nominalY + yShift) * Double(height)).rounded())
             let reach = max(2, Int(0.004 * Double(width)))
             let offsets = [(0, 0), (reach, 0), (-reach, 0), (0, reach), (0, -reach)]
             var rs: [Double] = [], gs: [Double] = [], bs: [Double] = []
@@ -90,8 +90,8 @@ nonisolated enum BattleHeaderReader {
     }
 
     /// nil unless the frame is BGRA and both sides show three balls.
-    static func read(_ pixelBuffer: CVPixelBuffer) -> BattleHeaderReading? {
-        guard let samples = sample(pixelBuffer) else { return nil }
+    static func read(_ pixelBuffer: CVPixelBuffer, yShift: Double = 0) -> BattleHeaderReading? {
+        guard let samples = sample(pixelBuffer, yShift: yShift) else { return nil }
         let mine = samples.myBalls.map(classifyBall)
         let theirs = samples.opponentBalls.map(classifyBall)
         guard mine.filter({ $0 != .empty }).count == 3,
@@ -108,6 +108,16 @@ nonisolated enum BattleHeaderReader {
             opponentAlive: theirs.filter { $0 == .alive }.count)
     }
 
+    /// How far (as a fraction of the frame's height) the header sits from where
+    /// the slot positions above were measured. The panels hang off the top safe
+    /// area, so a phone with a different notch or status bar has them higher or
+    /// lower; every header-relative reader takes this shift. Found by sliding
+    /// the ball row until all six balls line up, trying the smallest shifts first.
+    static func findShift(_ pixelBuffer: CVPixelBuffer) -> Double? {
+        let steps = Array(-40...25).map { Double($0) * 0.0015 }.sorted { abs($0) < abs($1) }
+        return steps.first { read(pixelBuffer, yShift: $0) != nil }
+    }
+
     /// A pixel format's four-character code ("BGRA", "420v"…).
     static func fourCC(_ format: OSType) -> String {
         String(bytes: (0..<4).map { UInt8((format >> UInt32(24 - 8 * $0)) & 0xFF) }, encoding: .ascii) ?? "?"
@@ -116,14 +126,14 @@ nonisolated enum BattleHeaderReader {
     /// One line describing what the reader sees, for the on-screen debug readout:
     /// the frame's format and size, and the colour at each header slot. This is
     /// how to tell a wrong pixel format or a mis-sized frame from a wrong position.
-    static func diagnose(_ pixelBuffer: CVPixelBuffer) -> String {
+    static func diagnose(_ pixelBuffer: CVPixelBuffer, yShift: Double = 0) -> String {
         let code = fourCC(CVPixelBufferGetPixelFormatType(pixelBuffer))
         let size = "\(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer))"
-        guard let samples = sample(pixelBuffer) else { return "fmt \(code) \(size) — not BGRA, header unreadable" }
+        guard let samples = sample(pixelBuffer, yShift: yShift) else { return "fmt \(code) \(size) — not BGRA, header unreadable" }
         func list(_ colors: [IconColor]) -> String {
             colors.map { "\(Int($0.r)),\(Int($0.g)),\(Int($0.b))" }.joined(separator: " ")
         }
-        let result = read(pixelBuffer).map { "\($0)" } ?? "no battle header"
+        let result = read(pixelBuffer, yShift: yShift).map { "\($0)" } ?? "no battle header"
         return "fmt \(code) \(size) — \(result)\nballs L[\(list(samples.myBalls))] R[\(list(samples.opponentBalls))]\nshields L[\(list(samples.myShields))] R[\(list(samples.opponentShields))]"
     }
 

@@ -38,6 +38,31 @@ nonisolated enum BattleCoach {
         /// `myTeam` / `opponentRevealed`. Unlisted Pokémon are at full HP.
         var myHP: [Int: Double] = [:]
         var opponentHP: [Int: Double] = [:]
+
+        /// A stable hash of the situation (FNV-1a), used to seed the opponent-team
+        /// sampling. The same situation then always draws the same teams, so the
+        /// advice can't flip just because the dice were re-rolled. HP is bucketed
+        /// to tenths so bar-reading jitter doesn't count as a new situation.
+        var fingerprint: UInt64 {
+            var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+            func mix(_ value: UInt64) {
+                hash = (hash ^ value) &* 0x0000_0100_0000_01B3
+            }
+            func mix(_ text: String) {
+                for byte in text.utf8 { mix(UInt64(byte)) }
+                mix(0xFF)
+            }
+            func mix(_ hp: [Int: Double]) {
+                for key in hp.keys.sorted() { mix(UInt64(key)); mix(UInt64((hp[key] ?? 1) * 10 + 0.5)) }
+                mix(0xFE)
+            }
+            for p in myTeam { mix(p.speciesId) }
+            for p in opponentRevealed { mix(p.speciesId) }
+            for value in [myActive, myShields, opponentActive, opponentShields, opponentTeamSize] { mix(UInt64(value)) }
+            mix(myHP)
+            mix(opponentHP)
+            return hash
+        }
     }
 
     /// One thing you could do, and how the rollouts say it works out.
@@ -73,10 +98,15 @@ nonisolated enum BattleCoach {
         let samples: Int
     }
 
-    /// A switch must beat staying in by at least this much of `Option.score`
-    /// to be worth recommending — below that it's within sampling noise, and a
-    /// switch burns the switch timer.
+    /// To change the recommendation (stay → switch, or switch → stay / another
+    /// switch) the challenger must beat the standing one by at least this much of
+    /// `Option.score` — below that it's within sampling noise, and a switch burns
+    /// the switch timer. Applying it in both directions is what stops the tip
+    /// flickering when the two options sit close together.
     static let switchMargin = 0.06
+    /// Opponent teams sampled per run. Enough that, with the margin above, the
+    /// gap between two options is mostly signal.
+    static let defaultSamples = 48
     /// Staying in below this win rate reads as urgent: "now", not just "switch".
     static let urgentWinRate = 0.35
 
@@ -90,13 +120,15 @@ nonisolated enum BattleCoach {
         _ state: State,
         pool: [TeamFinder.Candidate],
         movesById: [String: Move],
-        samples: Int = 24,
-        seed: UInt64? = nil
+        samples: Int = BattleCoach.defaultSamples,
+        seed: UInt64? = nil,
+        incumbent: Option.Action? = nil
     ) async -> Advice? {
         guard let options = actions(for: state), samples > 0 else { return nil }
 
-        // Sampled up front so every option faces the same opponent teams.
-        var rng = SeededGenerator(seed: seed ?? UInt64.random(in: .min ... .max))
+        // Sampled up front so every option faces the same opponent teams — and
+        // seeded from the situation, so the same situation gives the same advice.
+        var rng = SeededGenerator(seed: seed ?? state.fingerprint)
         var opponents: [[BattlePokemon]] = []
         for _ in 0..<samples {
             guard let team = completedOpponentTeam(
@@ -159,22 +191,33 @@ nonisolated enum BattleCoach {
                 averageRating: ratings / Double(samples)))
         }
         return advice(from: scored, samples: samples, myShields: state.myShields,
-                      opponentShields: state.opponentShields)
+                      opponentShields: state.opponentShields, incumbent: incumbent)
     }
 
     /// Turns scored options into the tip. Pure, so the decision rules are testable
     /// without running any battles. `options` must include the `.stay` option.
-    static func advice(from options: [Option], samples: Int, myShields: Int, opponentShields: Int) -> Advice? {
+    ///
+    /// `incumbent` is what the last tip for this same matchup recommended. It keeps
+    /// the recommendation unless another option beats it by `switchMargin`; with
+    /// no incumbent, staying in is the default to beat.
+    static func advice(from options: [Option], samples: Int, myShields: Int, opponentShields: Int,
+                       incumbent: Option.Action? = nil) -> Advice? {
         guard let stay = options.first(where: { $0.action == .stay }) else { return nil }
         let ranked = options.sorted { $0.score > $1.score }
         let shields = "\(myShields)–\(opponentShields) shields"
 
-        if let best = ranked.first, best.action != .stay, best.score - stay.score >= switchMargin {
+        let standing = incumbent.flatMap { action in options.first { $0.action == action } } ?? stay
+        var chosen = standing
+        if let best = ranked.first, best.action != standing.action, best.score - standing.score >= switchMargin {
+            chosen = best
+        }
+
+        if chosen.action != .stay {
             let urgent = stay.winRate < urgentWinRate
             return Advice(
-                headline: urgent ? "Switch to \(best.pokemonName) now" : "Switch to \(best.pokemonName)",
-                detail: "\(percent(best.winRate)) win chance with \(best.pokemonName) vs \(percent(stay.winRate)) staying in \(stay.pokemonName) (\(shields)).",
-                recommended: best, options: ranked, samples: samples)
+                headline: urgent ? "Switch to \(chosen.pokemonName) now" : "Switch to \(chosen.pokemonName)",
+                detail: "\(percent(chosen.winRate)) win chance with \(chosen.pokemonName) vs \(percent(stay.winRate)) staying in \(stay.pokemonName) (\(shields)).",
+                recommended: chosen, options: ranked, samples: samples)
         }
         return Advice(
             headline: "Stay in with \(stay.pokemonName)",
@@ -198,9 +241,10 @@ nonisolated enum BattleCoach {
         return result
     }
 
-    /// The revealed opponents plus rank-weighted draws from `pool` to fill the
-    /// team to `teamSize`, skipping species already revealed (or sharing a family).
-    private static func completedOpponentTeam(
+    /// The revealed opponents plus draws from `pool` to fill the team to
+    /// `teamSize` — popularity-weighted, favouring partners that cover the
+    /// revealed Pokémon's weaknesses (see `BackLineGuess`).
+    static func completedOpponentTeam(
         revealed: [BattlePokemon],
         teamSize: Int,
         pool: [TeamFinder.Candidate],
@@ -210,21 +254,9 @@ nonisolated enum BattleCoach {
         var team = revealed
         guard team.count < teamSize else { return team }
 
-        let revealedIds = Set(revealed.map(\.speciesId))
-        var available = pool.enumerated().filter { !revealedIds.contains($0.element.member.speciesId) }
-        var fills: [TeamFinder.Candidate] = []
-        while team.count + fills.count < teamSize, !available.isEmpty {
-            // Weight 1/(rank + 5): top picks are likelier without drowning the rest.
-            let weights = available.map { 1.0 / Double($0.offset + 5) }
-            var roll = Double.random(in: 0..<weights.reduce(0, +), using: &rng)
-            var chosen = available.count - 1
-            for (k, w) in weights.enumerated() {
-                if roll < w { chosen = k; break }
-                roll -= w
-            }
-            let pick = available.remove(at: chosen).element
-            if fills.allSatisfy({ teamCandidatesDistinct($0, pick) }) { fills.append(pick) }
-        }
+        let fills = BackLineGuess.fills(
+            revealedIds: revealed.map(\.speciesId), revealedTypes: revealed.map(\.types),
+            teamSize: teamSize, pool: pool, using: &rng)
         guard let filled = makeBattleTeam(fills, movesById: movesById) else {
             return fills.isEmpty ? team : nil
         }

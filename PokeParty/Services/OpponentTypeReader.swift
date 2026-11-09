@@ -80,7 +80,7 @@ nonisolated enum OpponentTypeReader {
 
     /// Fill colours of the icons found, left to right. Empty when the frame
     /// isn't BGRA or no icon-like circle is present.
-    static func read(_ pixelBuffer: CVPixelBuffer, slots: [(x: Double, y: Double)] = opponentSlots) -> [IconColor] {
+    static func read(_ pixelBuffer: CVPixelBuffer, slots: [(x: Double, y: Double)] = opponentSlots, yShift: Double = 0) -> [IconColor] {
         guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else { return [] }
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
@@ -115,7 +115,7 @@ nonisolated enum OpponentTypeReader {
         let radius = radiusFraction * Double(width)
         var icons: [IconColor] = []
         for slot in slots {
-            let cx = slot.x * Double(width), cy = slot.y * Double(height)
+            let cx = slot.x * Double(width), cy = (slot.y + yShift) * Double(height)
             guard let inner = ring(cx: cx, cy: cy, radius: radius * 0.62),
                   inner.deviation <= maxRingDeviation,
                   let outer = ring(cx: cx, cy: cy, radius: radius * 1.35),

@@ -23,9 +23,6 @@ struct OpponentCheckView: View {
     var observedFastMoves: [String: String] = [:]
     /// Called with the species an opponent was just detected or picked as — the one on the field.
     var onActiveOpponent: ((String) -> Void)?
-    /// When set, the clear button becomes "New battle" and calls this after
-    /// clearing, so the host can reset everything else too.
-    var onReset: (() -> Void)?
     /// Changing this clears the opponents — lets the host trigger a new battle.
     var resetToken: UUID?
     /// Indices (in slot order, counting only filled slots) of opponents that have
@@ -55,11 +52,11 @@ struct OpponentCheckView: View {
     /// Measured type-icon colours of the last detection, for calibrating `TypeColors`.
     @State private var lastIconSummary = ""
     #endif
+    /// Owned by `BattleHUDDetailView`, which also shows the connection status.
+    /// Nil where nothing is listening for a phone (the Team Builder's tab on iPhone).
+    var phoneLink: PhoneLinkServer? = nil
     #if os(iOS)
     @Environment(OpponentScanModel.self) private var scan
-    #else
-    /// Owned by `BattleHUDDetailView`, which also shows the connection status.
-    let phoneLink: PhoneLinkServer
     #endif
 
     /// Ranked opponents matching the search — restricting to `store.entries`
@@ -104,9 +101,8 @@ struct OpponentCheckView: View {
             if slots.contains(where: { $0 != nil }) {
                 Button(role: .destructive) {
                     clearOpponents()
-                    onReset?()
                 } label: {
-                    Label(onReset == nil ? "Clear all opponents" : "New battle", systemImage: "xmark.circle")
+                    Label("Clear all opponents", systemImage: "xmark.circle")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
@@ -153,11 +149,10 @@ struct OpponentCheckView: View {
         #if os(iOS)
         .onAppear { takeScanned() }
         .onChange(of: scan.detections.first?.id) { takeScanned() }
-        #else
-        .onChange(of: phoneLink.latest) { _, detection in
+        #endif
+        .onChange(of: phoneLink?.latest) { _, detection in
             if let detection { handle(detection) }
         }
-        #endif
     }
 
     // MARK: - Detection feedback (both platforms)
@@ -209,7 +204,10 @@ struct OpponentCheckView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            Label("Open Screen Scan to detect opponents from Pokémon GO.", systemImage: "viewfinder")
+            Label(phoneLink == nil
+                  ? "Open Screen Scan to detect opponents from Pokémon GO."
+                  : "Begin Scan above to detect opponents from Pokémon GO.",
+                  systemImage: "viewfinder")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -226,7 +224,7 @@ struct OpponentCheckView: View {
     /// Resolves a detected name to a species: a single match fills the next
     /// slot straight away, several (alternate forms) ask the user to choose.
     private func handle(_ detection: OpponentDetection) {
-        let ranked = store.entries.compactMap { store.pokemonById[$0.speciesId] }
+        let ranked = store.opponentPool(forName: detection.name)
         let byName = OpponentNameMatcher.candidates(for: detection.name, in: ranked)
         // An exact name ("Corsola") doesn't list its regional variants, but the
         // screen may not show the prefix, so let the icons choose among the family.
@@ -252,7 +250,7 @@ struct OpponentCheckView: View {
         switch matches.count {
         case 0:
             formChoices = []
-            detectionNote = "Saw “\(detection.name)”\(cp) but couldn't match it to a ranked Pokémon in this format."
+            detectionNote = "Saw “\(detection.name)”\(cp) but couldn't match it to a Pokémon."
         case 1:
             formChoices = []
             detectionNote = "Detected \(matches[0].speciesName)\(cp)\(usedTypes ? ", form chosen by type" : "")."
@@ -342,6 +340,7 @@ struct OpponentCheckView: View {
                 .foregroundStyle(.secondary)
             TextField("Search opponent Pokémon", text: $searchText)
                 .textFieldStyle(.plain)
+                .autocorrectionDisabled()
             if !searchText.isEmpty {
                 Button {
                     searchText = ""

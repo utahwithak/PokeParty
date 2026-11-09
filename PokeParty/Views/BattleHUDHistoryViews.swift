@@ -8,8 +8,6 @@
 
 import SwiftUI
 
-#if os(macOS)
-
 /// The set tracker. (The battle log, the sim review and "This team so far" are
 /// `BattleLogSection`, `BattleReviewSection` and `BattleInsightsSection`, lower
 /// down the screen, under the Pokémon.)
@@ -19,13 +17,18 @@ struct BattleHistorySection: View {
     let team: [TeamMember]
     /// A game picked from the set; nil follows the game in progress.
     @Binding var selectedId: UUID?
+    /// Ends the game in progress and clears the opponents for the next one.
+    let onNewGame: () -> Void
+    /// Same as a new game, but in a fresh set.
+    let onNewSet: () -> Void
 
     private var history: BattleHistoryStore { coach.history }
 
     var body: some View {
         let shown = history.displayed(selectedId: selectedId)
         VStack(alignment: .leading, spacing: 14) {
-            SetTrackerPanel(coach: coach, store: store, selectedId: $selectedId, shownId: shown?.id)
+            SetTrackerPanel(coach: coach, store: store, selectedId: $selectedId, shownId: shown?.id,
+                            onNewGame: onNewGame, onNewSet: onNewSet)
         }
     }
 }
@@ -69,7 +72,7 @@ struct BattleLogSection: View {
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Battle log").font(.headline)
-                Text("The next game starts when an opponent is seen. Earlier games are in the set above.")
+                Text("Press New game to start the next game. Earlier games are in the set above.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(12)
@@ -86,7 +89,11 @@ private struct SetTrackerPanel: View {
     let store: RankingsStore
     @Binding var selectedId: UUID?
     let shownId: UUID?
+    let onNewGame: () -> Void
+    /// Same as a new game, but in a fresh set.
+    let onNewSet: () -> Void
     @State private var confirmingReset = false
+    @State private var showEarlier = false
 
     private var history: BattleHistoryStore { coach.history }
 
@@ -102,9 +109,22 @@ private struct SetTrackerPanel: View {
                 Text(progressText(games: games))
                     .font(.subheadline).foregroundStyle(.secondary)
                 Spacer()
+                Button(action: onNewGame) {
+                    Label("New game", systemImage: "arrow.counterclockwise")
+                }
+                .help("Add a new game to this set, clearing the opponents and resetting shields and HP.")
+                Menu {
+                    Button("Won") { history.addManual(outcome: .win, format: store.format) }
+                    Button("Lost") { history.addManual(outcome: .loss, format: store.format) }
+                } label: {
+                    Label("Add game", systemImage: "plus.square")
+                }
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Add a game the HUD missed, with its result, to this set")
                 Button {
                     selectedId = nil
-                    history.startNewSet()
+                    onNewSet()
                 } label: {
                     Label("New set", systemImage: "plus.circle")
                 }
@@ -118,13 +138,23 @@ private struct SetTrackerPanel: View {
                 .help("Throw away the games in this set and start it again from 0–0")
             }
 
-            if !games.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(Array(games.enumerated()), id: \.element.id) { index, game in
-                        gameChip(index: index, game: game)
-                    }
+            HStack(spacing: 6) {
+                ForEach(Array(games.enumerated()), id: \.element.id) { index, game in
+                    gameChip(index: index, game: game)
+                }
+                // After a delete the next game isn't there until "New game".
+                if history.currentId == nil, games.count < BattleHistoryStore.setSize {
+                    Text("\(games.count + 1) next")
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .overlay(Capsule().strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+                        .foregroundStyle(.secondary)
+                        .help("Press New game to add it")
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 2)
+            .dropDestination(for: String.self) { items, _ in drop(items, into: set.id) }
 
             if let battle = games.first(where: { $0.id == shownId }) {
                 HStack(spacing: 8) {
@@ -136,22 +166,36 @@ private struct SetTrackerPanel: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if battle.id != history.currentId || games.count > 1 {
-                        Button(role: .destructive) { history.delete(battle.id); selectedId = nil } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Delete this game from the history")
+                    Button(role: .destructive) { coach.deleteBattle(battle.id); selectedId = nil } label: {
+                        Image(systemName: "trash")
                     }
+                    .buttonStyle(.borderless)
+                    .help("Delete this game from the history")
                 }
             } else {
-                Text("The game appears here as soon as an opponent is seen.")
+                Text("Press New game to add the next game to this set.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             let older = history.sets.filter { $0.id != set.id }
             if !older.isEmpty {
-                DisclosureGroup("Earlier sets (\(older.count))") {
+                // A whole-row button: DisclosureGroup only responds on its small chevron.
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { showEarlier.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(showEarlier ? 90 : 0))
+                            .font(.caption.weight(.semibold))
+                        Text("Earlier sets (\(older.count))")
+                        Spacer()
+                    }
+                    .font(.subheadline)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if showEarlier {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(older.prefix(20)) { past in
                             HStack(spacing: 8) {
@@ -161,12 +205,13 @@ private struct SetTrackerPanel: View {
                                 ForEach(Array(past.battles.enumerated()), id: \.element.id) { index, game in
                                     gameChip(index: index, game: game)
                                 }
+                                Spacer(minLength: 0)
                             }
+                            .dropDestination(for: String.self) { items, _ in drop(items, into: past.id) }
                         }
                     }
                     .padding(.top, 4)
                 }
-                .font(.subheadline)
             }
         }
         .padding(12)
@@ -184,8 +229,18 @@ private struct SetTrackerPanel: View {
     private func progressText(games: [RecordedBattle]) -> String {
         let decided = games.filter { $0.outcome != nil }.count
         let target = BattleHistoryStore.setSize
-        if games.count >= target, decided == games.count { return "set complete" }
-        return "game \(min(max(games.count, 1), target)) of \(target) · \(decided) marked"
+        if games.count >= target, decided == games.count, history.currentId == nil { return "set complete" }
+        // The game in progress is already in `games`; between games the next one isn't.
+        let number = history.currentId == nil ? games.count + 1 : games.count
+        return "game \(min(max(number, 1), target)) of \(target) · \(decided) marked"
+    }
+
+    /// Games dragged onto a set join it.
+    private func drop(_ items: [String], into setId: UUID) {
+        for item in items {
+            guard let id = UUID(uuidString: item) else { continue }
+            history.move(id, toSet: setId)
+        }
     }
 
     private func gameChip(index: Int, game: RecordedBattle) -> some View {
@@ -203,7 +258,15 @@ private struct SetTrackerPanel: View {
                 .foregroundStyle(color == .secondary ? Color.primary : color)
         }
         .buttonStyle(.plain)
-        .help(game.date.formatted(date: .abbreviated, time: .shortened))
+        .help(game.date.formatted(date: .abbreviated, time: .shortened) + " — drag onto another set to move it")
+        .draggable(game.id.uuidString)
+        .contextMenu {
+            Button("Move to a new set") { history.move(game.id, toSet: nil) }
+            Button("Delete game", role: .destructive) {
+                coach.deleteBattle(game.id)
+                if selectedId == game.id { selectedId = nil }
+            }
+        }
     }
 
     private func resultButton(_ title: String, outcome: BattleOutcome, tint: Color, battle: RecordedBattle) -> some View {
@@ -487,4 +550,3 @@ private struct BattleInsightsPanel: View {
     }
 }
 
-#endif

@@ -93,12 +93,11 @@ final class BattleHistoryStore {
 
     // MARK: - Recording
 
-    /// Feeds the battle in progress the HUD's latest view of it, creating the
-    /// battle the first time there's a team and an opponent to log.
+    /// Feeds the battle in progress the HUD's latest view of it. Observing never
+    /// creates a game (see `addGame`); with none in progress it does nothing.
     func observe(_ observation: BattleObservation, team: [TeamMember], opponents: [TeamMember],
                  format: RankingFormat, at time: Date = Date()) {
         guard !team.isEmpty, !opponents.isEmpty else { return }
-        ensureCurrent(format: format)
         guard let index = battles.firstIndex(where: { $0.id == currentId }) else { return }
 
         recorder.observe(observation, team: team.map(\.speciesId), opponents: opponents.map(\.speciesId), at: time)
@@ -207,31 +206,35 @@ final class BattleHistoryStore {
         save()
     }
 
-    /// Starts a fresh set; the next battle is game one of it.
-    func startNewSet() {
+    /// The one way a game comes into being: closes the game in progress and
+    /// starts an empty one, in the current set — or in a fresh set when asked
+    /// to, or when the current one already has `setSize` games. An empty game
+    /// already in progress is reused rather than duplicated.
+    func addGame(format: RankingFormat, newSet: Bool = false) {
+        if let index = battles.firstIndex(where: { $0.id == currentId }), !battles[index].hasContent {
+            if newSet { currentSetId = UUID(); battles[index].setId = currentSetId }
+            recorder.reset()
+            save()
+            return
+        }
         startNewBattle()
-        currentSetId = UUID()
+        if newSet || currentSet.battles.count >= Self.setSize { currentSetId = UUID() }
+        let battle = RecordedBattle(setId: currentSetId, cup: format.cup, cp: format.cp)
+        battles.append(battle)
+        currentId = battle.id
+        recorder.reset()
+        save()
     }
 
     /// Throws away every game in the current set, including the one in
-    /// progress, and starts it again from 0–0. (Unlike `startNewSet`, which
-    /// keeps the old set in the history.)
+    /// progress, and starts it again from 0–0. (A new set keeps the old one in
+    /// the history.)
     func resetSet() {
         let setId = currentSetId
         battles.removeAll { $0.setId == setId }
         currentId = nil
         recorder.reset()
         save()
-    }
-
-    private func ensureCurrent(format: RankingFormat) {
-        if let currentId, battles.contains(where: { $0.id == currentId }) { return }
-        // A set is five games, however they went (or were marked); the next game starts a new one.
-        if currentSet.battles.count >= Self.setSize { currentSetId = UUID() }
-        let battle = RecordedBattle(setId: currentSetId, cup: format.cup, cp: format.cp)
-        battles.append(battle)
-        currentId = battle.id
-        recorder.reset()
     }
 
     // MARK: - Marking
@@ -256,6 +259,30 @@ final class BattleHistoryStore {
     func delete(_ id: UUID) {
         battles.removeAll { $0.id == id }
         if currentId == id { currentId = nil; recorder.reset() }
+        save()
+    }
+
+    // MARK: - Manual set management
+
+    /// Moves a game into another set (`nil` makes it a set of its own, the
+    /// current one from now on). Moving the game in progress is allowed; it keeps logging.
+    func move(_ id: UUID, toSet setId: UUID?) {
+        guard let index = battles.firstIndex(where: { $0.id == id }) else { return }
+        let target = setId ?? UUID()
+        guard battles[index].setId != target else { return }
+        battles[index].setId = target
+        // Dropping a game on an earlier set shouldn't leave the tracker pointing at an emptied one
+        // without a way back; the current set follows the newest game's set unless one was just made.
+        if setId == nil { currentSetId = target }
+        else if !battles.contains(where: { $0.setId == currentSetId }) { currentSetId = target }
+        save()
+    }
+
+    /// Adds a finished game by hand (one the HUD missed) to the current set.
+    func addManual(outcome: BattleOutcome, format: RankingFormat) {
+        var battle = RecordedBattle(setId: currentSetId, cup: format.cup, cp: format.cp)
+        battle.outcome = outcome
+        battles.append(battle)
         save()
     }
 

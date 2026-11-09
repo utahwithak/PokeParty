@@ -19,13 +19,17 @@ struct RankCheckerResultsView: View {
 
     var body: some View {
         if let id = model.selectedSpeciesId, let selected = store.pokemonById[id] {
-            ScrollView([.vertical, .horizontal]) {
+            ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     header(for: selected)
-                    grid
+                    // The wide table is ~550pt; narrower panes (iPhone) get stacked cards instead.
+                    ViewThatFits(in: .horizontal) {
+                        grid
+                        compactGrid
+                    }
                     footnote
                 }
-                .padding()
+                .padding(20)
             }
             .navigationTitle("\(selected.speciesName) · \(model.atk)/\(model.def)/\(model.hp)")
             .inlineNavigationTitle()
@@ -42,10 +46,20 @@ struct RankCheckerResultsView: View {
 
     private func header(for selected: Pokemon) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 16) {
-                IVField(label: "ATK", value: $model.atk, color: Theme.attack)
-                IVField(label: "DEF", value: $model.def, color: Theme.defense)
-                IVField(label: "HP", value: $model.hp, color: Theme.hp)
+            // Three fields side by side where they fit; two rows on a phone.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 16) {
+                    IVField(label: "ATK", value: $model.atk, color: Theme.attack)
+                    IVField(label: "DEF", value: $model.def, color: Theme.defense)
+                    IVField(label: "HP", value: $model.hp, color: Theme.hp)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 16) {
+                        IVField(label: "ATK", value: $model.atk, color: Theme.attack)
+                        IVField(label: "DEF", value: $model.def, color: Theme.defense)
+                    }
+                    IVField(label: "HP", value: $model.hp, color: Theme.hp)
+                }
             }
 
             HStack(spacing: 8) {
@@ -161,6 +175,39 @@ struct RankCheckerResultsView: View {
             }
         }
         .padding()
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Phone layout: league labels once on top, then one card row per family
+    /// member with its four league cells sharing the width equally.
+    private var compactGrid: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 4) {
+                ForEach(CheckLeague.allCases) { league in
+                    Text(league.short)
+                        .font(.caption.weight(.bold))
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            ForEach(family) { pokemon in
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(pokemon.speciesName)
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(1)
+                        TypeBadgeRow(types: pokemon.displayTypes)
+                    }
+                    HStack(spacing: 4) {
+                        ForEach(CheckLeague.allCases) { league in
+                            cell(for: pokemon, league: league)
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
     }
 

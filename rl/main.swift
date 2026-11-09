@@ -302,7 +302,7 @@ func buildTrios(count: Int, seed: UInt64) -> [[Int]] {
         var members: [Int] = []
         var families = Set<String>()
         while members.count < 3 {
-            let i = rng.next(below: pool.count)
+            let i = rng.next(below: min(pool.count, flagValue("--trio-top", default: pool.count)))
             let f = family(pool[i].id)
             if families.insert(f).inserted { members.append(i) }
         }
@@ -835,6 +835,445 @@ if CommandLine.arguments.contains("--lead-eval") {
                  100 * Double(winsLead) / d, ratingLead / d))
     print(String(format: "both sides EV leads:       win rate %5.1f%%  (side-bias check: expect ~50%%)",
                  100 * Double(winsMirror) / d))
+    exit(0)
+}
+
+// MARK: - --faint-diag: at a faint replacement, who picks the better backup?
+
+// Counterfactual replay: the sim is deterministic, so for each game (both sides
+// never switching voluntarily, built-in faint picks) we re-run it forcing my
+// first two-backup faint replacement to each option, and score the heuristic's
+// pick, the net's pick, the better of the two and the worse against the truth.
+if CommandLine.arguments.contains("--faint-diag") {
+    let switchNet = try SwitchPolicyNet(contentsOf: URL(fileURLWithPath: switchWeightsPath))
+    let shieldNet = try ShieldPolicyNet(contentsOf: URL(fileURLWithPath: "\(outDir)/shield_policy.json"))
+    let trios = buildTrios(count: flagValue("--faint-diag", default: 120), seed: UInt64(flagValue("--seed", default: 424242)))
+    let n = trios.count
+    final class Acc {
+        var games = 0.0, heur = 0.0, net = 0.0, best = 0.0, worst = 0.0
+        var agree = 0.0, disagree = 0.0, heurWhenDis = 0.0, netWhenDis = 0.0, tied = 0.0
+    }
+    let acc = Acc()
+    let lock = NSLock()
+    DispatchQueue.concurrentPerform(iterations: n) { i in
+        let local = Acc()
+        for j in 0..<n where j != i {
+            for side in 0...1 {
+                func run(force: Int?, capture: ((SwitchContext) -> Void)?) -> (rating: Int, entrances: [Int])? {
+                    guard let mine = makeTrio(trios[i]), let theirs = makeTrio(trios[j]) else { return nil }
+                    var battle = ThreeVThreeBattle(teamA: side == 0 ? mine : theirs, teamB: side == 0 ? theirs : mine,
+                                                   optimalShields: false, voluntarySwitching: true)
+                    battle.learnedShieldNet = shieldNet
+                    var seen = false
+                    battle.switchDecisionHook = { c in
+                        guard c.mandatory else { return .stay }
+                        guard c.side == side, !seen, SwitchObservation.backups(c).count == 2 else { return .heuristic }
+                        seen = true
+                        capture?(c)
+                        if let force { return .switchTo(SwitchObservation.backups(c)[force]) }
+                        return .heuristic
+                    }
+                    let r = battle.run()
+                    let rating = side == 0 ? r.ratingA : 1000 - r.ratingA
+                    return (rating, side == 0 ? r.entrancesA : r.entrancesB)
+                }
+                var ctxCopy: SwitchContext?
+                guard let base = run(force: nil, capture: { ctxCopy = $0 }), let ctx = ctxCopy,
+                      let v0 = run(force: 0, capture: nil), let v1 = run(force: 1, capture: nil)
+                else { continue }
+                let backups = SwitchObservation.backups(ctx)
+                // The heuristic's pick = the entrance after this faint; the net's = its argmax.
+                let heurIdx = base.entrances.count > ctx.fainted.count ? base.entrances[ctx.fainted.count] : backups[0]
+                guard let heurPos = backups.firstIndex(of: heurIdx) else { continue }
+                var netPos = heurPos
+                if case .switchTo(let t) = switchNet.decide(ctx), let p = backups.firstIndex(of: t) { netPos = p }
+                let values = [Double(v0.rating), Double(v1.rating)]
+                local.games += 1
+                local.heur += values[heurPos]; local.net += values[netPos]
+                local.best += values.max()!; local.worst += values.min()!
+                if heurPos == netPos { local.agree += 1 } else {
+                    local.disagree += 1; local.heurWhenDis += values[heurPos]; local.netWhenDis += values[netPos]
+                }
+                if values[0] == values[1] { local.tied += 1 }
+            }
+        }
+        lock.lock()
+        acc.games += local.games; acc.heur += local.heur; acc.net += local.net; acc.best += local.best
+        acc.worst += local.worst; acc.agree += local.agree; acc.disagree += local.disagree
+        acc.heurWhenDis += local.heurWhenDis; acc.netWhenDis += local.netWhenDis; acc.tied += local.tied
+        lock.unlock()
+    }
+    let g = max(acc.games, 1), d = max(acc.disagree, 1)
+    print(String(format: "%.0f first-faint decisions with two backups (%.0f%% outcome-tied)", acc.games, 100 * acc.tied / g))
+    print(String(format: "mean final rating (0-1000): heuristic %.1f | net %.1f | oracle best %.1f | worst %.1f",
+                 acc.heur / g, acc.net / g, acc.best / g, acc.worst / g))
+    print(String(format: "net agrees with heuristic %.1f%%; when they disagree (%.0f games): heuristic %.1f vs net %.1f",
+                 100 * acc.agree / g, acc.disagree, acc.heurWhenDis / d, acc.netWhenDis / d))
+    exit(0)
+}
+
+// MARK: - --skill-gap: how much does each team depend on playing well?
+
+// Plays every team against the rest of the field with *its* side degraded to
+// each skill tier while the field plays at --field-tier (default perfect), then
+// reports per-team win rate by tier and the skill gap (perfect − novice-ish).
+// Tiers, per side:
+//   3 perfect : shield net + switch net
+//   2 classic : built-in wouldShield + built-in switch heuristics
+//   1 basic   : built-in wouldShield, never voluntarily switches
+//   0 novice  : shields every charged move, never voluntarily switches
+if CommandLine.arguments.contains("--skill-gap") {
+    let switchNet = try SwitchPolicyNet(contentsOf: URL(fileURLWithPath: switchWeightsPath))
+    let shieldNet = try ShieldPolicyNet(contentsOf: URL(fileURLWithPath: "\(outDir)/shield_policy.json"))
+    let teamCount = flagValue("--skill-gap", default: 120)
+    let seed = UInt64(flagValue("--seed", default: 424242))
+    let fieldTier = flagValue("--field-tier", default: 3)
+    let trios = buildTrios(count: teamCount, seed: seed)
+    let n = trios.count
+    let tiers = [0, 1, 2, 3]
+    print("Skill gap: \(n) teams, field at tier \(fieldTier), \(n * (n - 1) * 2 * tiers.count) games")
+
+    /// Switch brain for a tier (nil side-brain = fall through to the heuristics).
+    func switchBrain(_ tier: Int) -> (SwitchContext) -> SwitchDecision {
+        switch tier {
+        case 3: return { switchNet.decide($0) }
+        case 2: return { _ in .heuristic }
+        default: return { $0.mandatory ? .heuristic : .stay }
+        }
+    }
+
+    /// Win value (1 / 0.5 / 0) for team `me` at `tier` against `opp` at the field tier.
+    func play(me: Int, opp: Int, tier: Int, meSide: Int) -> Double? {
+        guard let mine = makeTrio(trios[me]), let theirs = makeTrio(trios[opp]) else { return nil }
+        var battle = ThreeVThreeBattle(teamA: meSide == 0 ? mine : theirs,
+                                       teamB: meSide == 0 ? theirs : mine,
+                                       optimalShields: false, voluntarySwitching: true)
+        battle.learnedShieldNet = shieldNet
+        // The net shields for whichever sides are at tier 3; the rest use wouldShield.
+        let tierOf = [meSide: tier, 1 - meSide: fieldTier]
+        battle.learnedShieldSides = Set(tierOf.filter { $0.value == 3 }.keys)
+        battle.alwaysShieldSides = Set(tierOf.filter { $0.value == 0 }.keys)
+        let hooks = [0: switchBrain(tierOf[0]!), 1: switchBrain(tierOf[1]!)]
+        battle.switchDecisionHook = { hooks[$0.side]!($0) }
+        let r = battle.run().ratingA
+        let mineRating = meSide == 0 ? r : 1000 - r
+        return mineRating > 500 ? 1 : (mineRating == 500 ? 0.5 : 0)
+    }
+
+    // winRate[tier][team]
+    var winRate = [[Double]](repeating: [Double](repeating: 0, count: n), count: tiers.count)
+    let cores = ProcessInfo.processInfo.activeProcessorCount
+    for tier in tiers {
+        let t0 = ContinuousClock.now
+        nonisolated(unsafe) var rates = [Double](repeating: 0, count: n)
+        nonisolated(unsafe) var diffs = 0
+        nonisolated(unsafe) let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: cores * 4) { c in
+            var team = c
+            while team < n {
+                var total = 0.0, games = 0.0
+                for opp in 0..<n where opp != team {
+                    for side in 0...1 {
+                        if let v = play(me: team, opp: opp, tier: tier, meSide: side) {
+                            total += v; games += 1
+                            // Diagnostic: does shielding every move ever change an outcome vs wouldShield?
+                            if tier == 0, let v1 = play(me: team, opp: opp, tier: 1, meSide: side), v1 != v {
+                                lock.lock(); diffs += 1; lock.unlock()
+                            }
+                        }
+                    }
+                }
+                lock.lock(); rates[team] = games > 0 ? total / games : 0; lock.unlock()
+                team += cores * 4
+            }
+        }
+        winRate[tier] = rates
+        if tier == 0 { print("  (tier 0 vs tier 1 outcome differs in \(diffs) games)") }
+        let d = ContinuousClock.now - t0
+        print(String(format: "  tier %d: mean win rate %.3f  (%.1fs)", tier,
+                     rates.reduce(0, +) / Double(n),
+                     Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18))
+    }
+
+    // Rank agreement between tiers (do the same teams look good?).
+    func ranks(_ scores: [Double]) -> [Int] {
+        var r = [Int](repeating: 0, count: n)
+        for (rank, i) in (0..<n).sorted(by: { scores[$0] > scores[$1] }).enumerated() { r[i] = rank }
+        return r
+    }
+    func spearman(_ a: [Double], _ b: [Double]) -> Double {
+        let ra = ranks(a), rb = ranks(b)
+        let dSq = (0..<n).reduce(0.0) { $0 + pow(Double(ra[$1] - rb[$1]), 2) }
+        return 1 - 6 * dSq / Double(n * (n * n - 1))
+    }
+    func pearson(_ a: [Double], _ b: [Double]) -> Double {
+        let ma = a.reduce(0, +) / Double(n), mb = b.reduce(0, +) / Double(n)
+        var sab = 0.0, saa = 0.0, sbb = 0.0
+        for i in 0..<n { sab += (a[i] - ma) * (b[i] - mb); saa += pow(a[i] - ma, 2); sbb += pow(b[i] - mb, 2) }
+        return sab / max((saa * sbb).squareRoot(), 1e-9)
+    }
+    print("\nrank correlation (Spearman) vs perfect play:")
+    for t in 0..<3 { print(String(format: "  tier %d: %.3f", t, spearman(winRate[t], winRate[3]))) }
+
+    // Skill gap = perfect − basic (tier 1): the cost of not switching/baiting well.
+    let gap = (0..<n).map { winRate[3][$0] - winRate[1][$0] }
+    let floor = winRate[0]
+    // Team bulk (mean HP×Def) and attack (mean Atk) as sanity proxies for "easy" teams.
+    let bulk = trios.map { t in t.map { Double(pool[$0].stats.hp) * pool[$0].stats.def }.reduce(0, +) / 3 }
+    let atk = trios.map { t in t.map { pool[$0].stats.atk }.reduce(0, +) / 3 }
+    print(String(format: "\nmean gap %.3f (perfect − tier 1); corr(gap, bulk) %.2f, corr(gap, atk) %.2f, corr(tier1 wr, bulk) %.2f",
+                 gap.reduce(0, +) / Double(n), pearson(gap, bulk), pearson(gap, atk), pearson(winRate[1], bulk)))
+
+    func row(_ i: Int) -> String {
+        String(format: "  gap %+.3f | wr by tier %.2f %.2f %.2f %.2f | %@", gap[i],
+               winRate[0][i], winRate[1][i], winRate[2][i], winRate[3][i], trioKey(trios[i]))
+    }
+    print("\nsmallest skill gap among teams that win ≥50% at perfect play (easy to play):")
+    for i in (0..<n).filter({ winRate[3][$0] >= 0.5 }).sorted(by: { gap[$0] < gap[$1] }).prefix(8) { print(row(i)) }
+    print("\nlargest skill gap (hard to play):")
+    for i in (0..<n).sorted(by: { gap[$0] > gap[$1] }).prefix(8) { print(row(i)) }
+    print("\nbest teams at tier 1 (what a casual player should pick):")
+    for i in (0..<n).sorted(by: { winRate[1][$0] > winRate[1][$1] }).prefix(8) { print(row(i)) }
+    _ = floor
+    exit(0)
+}
+
+// MARK: - --switch-diag: switch brain vs switch brain (is the net really the best brain?)
+
+// Head-to-head matrix over the same random trios: row brain's win rate against
+// the column brain, shield net on both sides, sides alternated.
+if CommandLine.arguments.contains("--switch-diag") {
+    let switchNet = try SwitchPolicyNet(contentsOf: URL(fileURLWithPath: switchWeightsPath))
+    let shieldNet = try ShieldPolicyNet(contentsOf: URL(fileURLWithPath: "\(outDir)/shield_policy.json"))
+    let trios = buildTrios(count: flagValue("--switch-diag", default: 120), seed: UInt64(flagValue("--seed", default: 424242)))
+    let n = trios.count
+    let names = ["net", "stay", "heuristic"]
+    let brains: [(SwitchContext) -> SwitchDecision] = [
+        { switchNet.decide($0) },
+        { $0.mandatory ? .heuristic : .stay },
+        { _ in .heuristic },
+    ]
+    var matrix = [[Double]](repeating: [Double](repeating: 0.5, count: 3), count: 3)
+    for x in 0..<3 { for y in 0..<3 where x != y {
+        nonisolated(unsafe) var total = 0.0
+        nonisolated(unsafe) var games = 0.0
+        nonisolated(unsafe) let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: n) { i in
+            var t = 0.0, g = 0.0
+            for j in 0..<n where j != i {
+                for xSide in 0...1 {
+                    guard let a = makeTrio(trios[i]), let b = makeTrio(trios[j]) else { continue }
+                    var battle = ThreeVThreeBattle(teamA: a, teamB: b, optimalShields: false, voluntarySwitching: true)
+                    battle.learnedShieldNet = shieldNet
+                    battle.switchDecisionHook = { ctx in (ctx.side == xSide ? brains[x] : brains[y])(ctx) }
+                    // Team i is on side xSide in this game's frame: put i's team on A when xSide == 0.
+                    if xSide == 1 { battle = ThreeVThreeBattle(teamA: b, teamB: a, optimalShields: false, voluntarySwitching: true)
+                        battle.learnedShieldNet = shieldNet
+                        battle.switchDecisionHook = { ctx in (ctx.side == xSide ? brains[x] : brains[y])(ctx) } }
+                    let r = battle.run().ratingA
+                    let mine = xSide == 0 ? r : 1000 - r
+                    t += mine > 500 ? 1 : (mine == 500 ? 0.5 : 0); g += 1
+                }
+            }
+            lock.lock(); total += t; games += g; lock.unlock()
+        }
+        matrix[x][y] = total / games
+    } }
+    print("row brain's win rate vs column brain (\(n) teams, same team pool, sides alternated):")
+    print("            " + names.map { $0.padding(toLength: 10, withPad: " ", startingAt: 0) }.joined())
+    for x in 0..<3 {
+        print(names[x].padding(toLength: 12, withPad: " ", startingAt: 0)
+              + matrix[x].enumerated().map { x == $0.offset ? "   -      " : String(format: "%.3f     ", $0.element) }.joined())
+    }
+    exit(0)
+}
+
+// MARK: - --skill-noise: a one-number skill slider (switch decisions go erratic)
+
+// Skill = 1 − ε. At each switch decision the player's brain is replaced, with
+// probability ε, by a random legal action (over-switching / bad faint picks) —
+// the way people actually err. Seeded per game, so different ε levels replay the
+// same games and the per-team drop is a paired difference. Shield play is left
+// alone: --skill-gap showed it barely moves outcomes.
+//   --base net|stay   the player's un-noised brain (default net)
+//   --field net|stay  the opposing field's brain (default net)
+if CommandLine.arguments.contains("--skill-noise") {
+    let switchNet = try SwitchPolicyNet(contentsOf: URL(fileURLWithPath: switchWeightsPath))
+    let shieldNet = try ShieldPolicyNet(contentsOf: URL(fileURLWithPath: "\(outDir)/shield_policy.json"))
+    let n = flagValue("--skill-noise", default: 200)
+    let trios = buildTrios(count: n, seed: UInt64(flagValue("--seed", default: 424242)))
+    let baseName = stringFlag("--base") ?? "net"
+    let fieldName = stringFlag("--field") ?? "net"
+    func brain(_ name: String) -> (SwitchContext) -> SwitchDecision {
+        name == "stay" ? { $0.mandatory ? .heuristic : .stay } : { switchNet.decide($0) }
+    }
+    let epsilons = [0.0, 0.1, 0.25, 0.5, 1.0]
+    print("Skill noise: \(trios.count) teams, base \(baseName), field \(fieldName), ε \(epsilons)")
+
+    final class Box { var rng: SplitMix64; init(_ s: UInt64) { rng = SplitMix64(state: s) } }
+
+    func play(me: Int, opp: Int, side: Int, eps: Double) -> Double? {
+        guard let mine = makeTrio(trios[me]), let theirs = makeTrio(trios[opp]) else { return nil }
+        var battle = ThreeVThreeBattle(teamA: side == 0 ? mine : theirs, teamB: side == 0 ? theirs : mine,
+                                       optimalShields: false, voluntarySwitching: true)
+        battle.learnedShieldNet = shieldNet
+        let base = brain(baseName), field = brain(fieldName)
+        let box = Box(UInt64(me) &* 1_000_003 &+ UInt64(opp) &* 7919 &+ UInt64(side) &+ 17)
+        battle.switchDecisionHook = { ctx in
+            guard ctx.side == side else { return field(ctx) }
+            // Always draw, so the stream stays aligned across ε levels.
+            let roll = Double(box.rng.next() >> 11) / Double(1 << 53)
+            let pick = box.rng.next(below: 3)
+            guard roll < eps else { return base(ctx) }
+            let legal = SwitchObservation.legalActions(ctx)
+            guard !legal.isEmpty else { return .heuristic }
+            let a = legal[pick % legal.count]
+            let backups = SwitchObservation.backups(ctx)
+            return a == 0 ? .stay : (a - 1 < backups.count ? .switchTo(backups[a - 1]) : .heuristic)
+        }
+        let r = battle.run().ratingA
+        let mineRating = side == 0 ? r : 1000 - r
+        return mineRating > 500 ? 1 : (mineRating == 500 ? 0.5 : 0)
+    }
+
+    var winRate = [[Double]](repeating: [Double](repeating: 0, count: n), count: epsilons.count)
+    let cores = ProcessInfo.processInfo.activeProcessorCount
+    for (k, eps) in epsilons.enumerated() {
+        nonisolated(unsafe) var rates = [Double](repeating: 0, count: n)
+        nonisolated(unsafe) let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: cores * 4) { c in
+            var team = c
+            while team < n {
+                var total = 0.0, games = 0.0
+                for opp in 0..<n where opp != team {
+                    for side in 0...1 {
+                        if let v = play(me: team, opp: opp, side: side, eps: eps) { total += v; games += 1 }
+                    }
+                }
+                lock.lock(); rates[team] = games > 0 ? total / games : 0; lock.unlock()
+                team += cores * 4
+            }
+        }
+        winRate[k] = rates
+        print(String(format: "  ε=%.2f: mean win rate %.3f", eps, rates.reduce(0, +) / Double(n)))
+    }
+
+    func pearson(_ a: [Double], _ b: [Double]) -> Double {
+        let ma = a.reduce(0, +) / Double(n), mb = b.reduce(0, +) / Double(n)
+        var sab = 0.0, saa = 0.0, sbb = 0.0
+        for i in 0..<n { sab += (a[i] - ma) * (b[i] - mb); saa += pow(a[i] - ma, 2); sbb += pow(b[i] - mb, 2) }
+        return sab / max((saa * sbb).squareRoot(), 1e-9)
+    }
+    let bulk = trios.map { t in t.map { Double(pool[$0].stats.hp) * pool[$0].stats.def }.reduce(0, +) / 3 }
+    let atk = trios.map { t in t.map { pool[$0].stats.atk }.reduce(0, +) / 3 }
+    let last = epsilons.count - 1
+    for k in 1...last {
+        let drop = (0..<n).map { winRate[0][$0] - winRate[k][$0] }
+        print(String(format: "  ε=%.2f: mean drop %+.3f  corr(drop,bulk) %+.2f  corr(drop,atk) %+.2f  corr(wr@ε,bulk) %+.2f",
+                     epsilons[k], drop.reduce(0, +) / Double(n), pearson(drop, bulk), pearson(drop, atk),
+                     pearson(winRate[k], bulk)))
+    }
+    if let csv = stringFlag("--csv") {
+        func fast(_ id: String) -> Move? { movesById[id] }
+        var lines = ["key,wr0,wr10,wr25,wr50,wr100,hp,def,atk,bulk,fastEPT,fastDPT,cheapCharge,avgCharge,shadows"]
+        for i in 0..<n {
+            let mons = trios[i].map { pool[$0] }
+            func mean(_ f: (PoolEntry) -> Double) -> Double { mons.map(f).reduce(0, +) / 3 }
+            func turns(_ m: Move) -> Double { Double(m.turns ?? max(1, m.cooldown / 500)) }
+            lines.append(([trioKey(trios[i])] + winRate.map { String(format: "%.4f", $0[i]) } + [
+                mean { Double($0.stats.hp) }, mean { $0.stats.def }, mean { $0.stats.atk },
+                mean { Double($0.stats.hp) * $0.stats.def },
+                mean { fast($0.combatant.fastMoveId).map { Double($0.energyGain) / turns($0) } ?? 0 },
+                mean { fast($0.combatant.fastMoveId).map { Double($0.power) / turns($0) } ?? 0 },
+                mean { Double($0.combatant.chargedMoveIds.compactMap { movesById[$0]?.energy }.min() ?? 0) },
+                mean { e in Double(e.combatant.chargedMoveIds.compactMap { movesById[$0]?.energy }.reduce(0, +)) / Double(max(1, e.combatant.chargedMoveIds.count)) },
+                mean { $0.combatant.shadow ? 1 : 0 },
+            ].map { String(format: "%.4f", $0) }).joined(separator: ","))
+        }
+        try lines.joined(separator: "\n").write(toFile: csv, atomically: true, encoding: .utf8)
+        print("wrote \(csv)")
+    }
+    let drop = (0..<n).map { winRate[0][$0] - winRate[3][$0] }
+    func row(_ i: Int) -> String {
+        String(format: "  drop@0.5 %+.3f | wr by ε %@ | %@", drop[i],
+               (0...last).map { String(format: "%.2f", winRate[$0][i]) }.joined(separator: " "), trioKey(trios[i]))
+    }
+    print("\nmost robust to erratic switching (wr@0 ≥ 0.5):")
+    for i in (0..<n).filter({ winRate[0][$0] >= 0.5 }).sorted(by: { drop[$0] < drop[$1] }).prefix(6) { print(row(i)) }
+    print("\nmost fragile:")
+    for i in (0..<n).sorted(by: { drop[$0] > drop[$1] }).prefix(6) { print(row(i)) }
+    exit(0)
+}
+
+// MARK: - --switch-kinds: which KIND of voluntary switch helps or hurts?
+
+// Each row brain plays the same teams against two fields (never-switch, full
+// net). Voluntary switches are split by situation: turn-0 boundary swap,
+// counterswap (opponent just switched), later boundary (escape / catch / sac).
+// Faint replacements are split out too (net pick vs the built-in best-matchup).
+if CommandLine.arguments.contains("--switch-kinds") {
+    ThreeVThreeBattle.ratesCarriedState = CommandLine.arguments.contains("--carried")
+    ThreeVThreeBattle.switchTempoFastMoves = flagValue("--tempo", default: 3)
+    let switchNet = try SwitchPolicyNet(contentsOf: URL(fileURLWithPath: switchWeightsPath))
+    let shieldNet = try ShieldPolicyNet(contentsOf: URL(fileURLWithPath: "\(outDir)/shield_policy.json"))
+    let trios = buildTrios(count: flagValue("--switch-kinds", default: 120), seed: UInt64(flagValue("--seed", default: 424242)))
+    let n = trios.count
+    enum Kind { case turn0, counter, later }
+    func kind(_ c: SwitchContext) -> Kind { c.opponentLocked ? .counter : (c.time == 0 ? .turn0 : .later) }
+    /// Brain with a chosen set of voluntary kinds on net control and faint picks by net or built-in.
+    func make(kinds: Set<Int>, netFaint: Bool, builtIn: Bool = false) -> (SwitchContext) -> SwitchDecision {
+        return { c in
+            if c.mandatory { return netFaint ? switchNet.decide(c) : .heuristic }
+            let k = kind(c)
+            let id = k == .turn0 ? 0 : (k == .counter ? 1 : 2)
+            guard kinds.contains(id) else { return .stay }
+            return builtIn ? .heuristic : switchNet.decide(c)
+        }
+    }
+    let rows: [(String, (SwitchContext) -> SwitchDecision)] = [
+        ("stay + heuristic faint", make(kinds: [], netFaint: false)),
+        ("stay + net faint", make(kinds: [], netFaint: true)),
+        ("net all", make(kinds: [0, 1, 2], netFaint: true)),
+        ("net all, heuristic faint", make(kinds: [0, 1, 2], netFaint: false)),
+        ("net turn0 only", make(kinds: [0], netFaint: true)),
+        ("net counter only", make(kinds: [1], netFaint: true)),
+        ("net later only", make(kinds: [2], netFaint: true)),
+        ("net turn0+counter", make(kinds: [0, 1], netFaint: true)),
+        ("net counter+later", make(kinds: [1, 2], netFaint: true)),
+        ("built-in turn0 only", make(kinds: [0], netFaint: false, builtIn: true)),
+        ("built-in counter only", make(kinds: [1], netFaint: false, builtIn: true)),
+        ("built-in later only", make(kinds: [2], netFaint: false, builtIn: true)),
+        ("built-in all", make(kinds: [0, 1, 2], netFaint: false, builtIn: true)),
+    ]
+    let fields: [(String, (SwitchContext) -> SwitchDecision)] = [rows[0], rows[2]]
+    print("row win rate vs field (\(n) teams, sides alternated):")
+    print("brain".padding(toLength: 28, withPad: " ", startingAt: 0) + fields.map { $0.0.padding(toLength: 26, withPad: " ", startingAt: 0) }.joined())
+    for (name, brain) in rows {
+        var line = name.padding(toLength: 28, withPad: " ", startingAt: 0)
+        for (_, field) in fields {
+            nonisolated(unsafe) var total = 0.0
+            nonisolated(unsafe) var games = 0.0
+            nonisolated(unsafe) let lock = NSLock()
+            DispatchQueue.concurrentPerform(iterations: n) { i in
+                var t = 0.0, g = 0.0
+                for j in 0..<n where j != i {
+                    for side in 0...1 {
+                        guard let mine = makeTrio(trios[i]), let theirs = makeTrio(trios[j]) else { continue }
+                        var battle = ThreeVThreeBattle(teamA: side == 0 ? mine : theirs, teamB: side == 0 ? theirs : mine,
+                                                       optimalShields: false, voluntarySwitching: true)
+                        battle.learnedShieldNet = shieldNet
+                        battle.switchDecisionHook = { c in c.side == side ? brain(c) : field(c) }
+                        let r = battle.run().ratingA
+                        let m = side == 0 ? r : 1000 - r
+                        t += m > 500 ? 1 : (m == 500 ? 0.5 : 0); g += 1
+                    }
+                }
+                lock.lock(); total += t; games += g; lock.unlock()
+            }
+            line += String(format: "%.3f", total / games).padding(toLength: 26, withPad: " ", startingAt: 0)
+        }
+        print(line)
+    }
     exit(0)
 }
 

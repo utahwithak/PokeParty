@@ -77,6 +77,48 @@ final class SavedTeamsStore {
         persist()
     }
 
+    func team(id: UUID) -> Team? {
+        teams.first { $0.id == id }
+    }
+
+    /// Adds a team under its own id (so renaming never collides with another
+    /// team's name the way `save(name:…)` does). Members may be empty.
+    @discardableResult
+    func add(name: String, members: [TeamMember], cup: String, cp: Int) -> Team {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let team = Team(name: trimmed.isEmpty ? "New Team" : trimmed, members: members, cup: cup, cp: cp)
+        teams.append(team)
+        persist()
+        return team
+    }
+
+    /// Autosave for the team being edited. A no-op when nothing changed.
+    func update(id: UUID, members: [TeamMember]) {
+        guard let index = teams.firstIndex(where: { $0.id == id }), teams[index].members != members else { return }
+        teams[index].members = members
+        persist()
+    }
+
+    func rename(id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let index = teams.firstIndex(where: { $0.id == id }),
+              teams[index].name != trimmed else { return }
+        teams[index].name = trimmed
+        persist()
+    }
+
+    /// A copy right after the original, named "<name> Copy".
+    @discardableResult
+    func duplicate(_ team: Team) -> Team {
+        var copy = Team(name: team.name + " Copy", members: team.members, cup: team.cup, cp: team.cp)
+        // Fresh member ids so the copy is independent of the original.
+        copy.members = team.members.map { member in var m = member; m.id = UUID(); return m }
+        let index = teams.firstIndex { $0.id == team.id }.map { $0 + 1 } ?? teams.count
+        teams.insert(copy, at: index)
+        persist()
+        return copy
+    }
+
     /// Saved teams for the given format only.
     func teams(for format: RankingFormat) -> [Team] {
         teams.filter { $0.matches(format) }

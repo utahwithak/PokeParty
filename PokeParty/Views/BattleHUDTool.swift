@@ -8,8 +8,6 @@
 
 import SwiftUI
 
-#if os(macOS)
-
 /// Middle column: every saved team across all leagues, active cups first,
 /// with a search box and a league filter. Picking one switches the league
 /// and loads the team, so the coach is ready for that league's battle.
@@ -82,7 +80,8 @@ struct BattleHUDTeamPane: View {
                     Text("No teams match.").foregroundStyle(.secondary)
                 }
             }
-            ForEach(groups) { group in
+            let allGroups = groups
+            ForEach(allGroups.filter { $0.format != nil }) { group in
                 Section {
                     ForEach(group.teams) { team in teamRow(team, in: group) }
                 } header: {
@@ -92,6 +91,19 @@ struct BattleHUDTeamPane: View {
                                 .foregroundStyle(format.tint)
                         }
                         Text(group.title)
+                    }
+                }
+            }
+            // Cups no longer in rotation can't be coached, so they sit apart.
+            let past = allGroups.filter { $0.format == nil }
+            if !past.isEmpty {
+                Section("Past leagues") {
+                    ForEach(past) { group in
+                        Text(group.title.replacingOccurrences(of: " (ended)", with: ""))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                        ForEach(group.teams) { team in teamRow(team, in: group) }
                     }
                 }
             }
@@ -120,7 +132,7 @@ struct BattleHUDTeamPane: View {
         let isLoaded = group.format != nil && team.matches(store.format) && team.members == model.members
         return Button {
             guard let format = group.format else { return }
-            model.setTeam(team.members, for: format)
+            model.select(team, for: format)
             store.format = format
         } label: {
             HStack(alignment: .top) {
@@ -157,33 +169,25 @@ struct BattleHUDDetailView: View {
     @State private var resetToken = UUID()
     /// A past game picked from the set tracker; nil follows the game in progress.
     @State private var selectedBattleId: UUID?
+    #if os(iOS)
+    /// iPad: this device's own Screen Scan also feeds the coach.
+    @Environment(OpponentScanModel.self) private var scan
+    #endif
+
+    /// Where the coach's live readings come from right now.
+    private var detectionSource: String? {
+        #if os(iOS)
+        if scan.isScanning { return "this iPad" }
+        #endif
+        return phoneLink.phoneName != nil ? "your iPhone" : nil
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                CoachConnectionRow(phoneLink: phoneLink)
-                BattleHistorySection(coach: coach, store: store, team: model.members, selectedId: $selectedBattleId)
-                CoachInputsPanel(
-                    coach: coach, team: model.members, opponents: opponents, store: store,
-                    onNewBattle: newBattle)
-                CoachBanner(coach: coach)
-                teamCards
-                OpponentCheckView(
-                    store: store, model: model,
-                    onOpponentsChange: { opponents = $0 },
-                    observedFastMoves: coach.observedFastMoves,
-                    onActiveOpponent: { activeOpponentId = $0 },
-                    onReset: newBattle,
-                    resetToken: resetToken,
-                    faintedOpponents: coach.inputs.opponentFainted,
-                    phoneLink: phoneLink)
-                BattleLogSection(coach: coach, store: store, selectedId: selectedBattleId)
-                BattleReviewSection(coach: coach, store: store, team: model.members, selectedId: selectedBattleId)
-                BattleInsightsSection(coach: coach, store: store, team: model.members)
-                AttributionFooter()
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(spacing: 0) {
+            mainPanel
+            Divider()
+            coachSidebar
+                .frame(width: 400)
         }
         .navigationTitle("Battle HUD")
         .onAppear {
@@ -192,6 +196,7 @@ struct BattleHUDDetailView: View {
         }
         .onDisappear { phoneLink.stop() }
         .onChange(of: coach.inputs) { refresh() }
+        .onChange(of: coach.seenOpponentMoves) { refresh() }
         .onChange(of: model.members) { refresh() }
         .onChange(of: opponents) {
             syncActiveOpponent()
@@ -203,13 +208,65 @@ struct BattleHUDDetailView: View {
             guard let snapshot else { return }
             coach.apply(snapshot, team: model.members, opponents: opponents, store: store)
         }
+        #if os(iOS)
+        .onChange(of: scan.latestSnapshot) { _, snapshot in
+            guard let snapshot else { return }
+            coach.apply(snapshot, team: model.members, opponents: opponents, store: store)
+        }
+        #endif
+    }
+
+    /// Right-hand column: the coach's call and plans, with the battle log.
+    private var coachSidebar: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                CoachBanner(coach: coach)
+                ShieldPlanCard(coach: coach)
+                TempoCard(coach: coach)
+                LeadPlanCard(coach: coach)
+                MidGameCard(coach: coach)
+                BackLineCard(coach: coach)
+                BattleLogSection(coach: coach, store: store, selectedId: selectedBattleId)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Left column: connection, battle inputs, and both teams.
+    private var mainPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                CoachConnectionRow(phoneLink: phoneLink, store: store)
+                BattleHistorySection(coach: coach, store: store, team: model.members, selectedId: $selectedBattleId,
+                                     onNewGame: { newBattle() }, onNewSet: { newBattle(newSet: true) })
+                CoachInputsPanel(coach: coach, team: model.members, opponents: opponents, store: store,
+                                 detecting: detectionSource != nil && coach.hasPhoneData,
+                                 source: detectionSource ?? "your iPhone")
+                teamCards
+                OpponentCheckView(
+                    store: store, model: model,
+                    onOpponentsChange: { opponents = $0 },
+                    observedFastMoves: coach.observedFastMoves,
+                    onActiveOpponent: { activeOpponentId = $0 },
+                    resetToken: resetToken,
+                    faintedOpponents: coach.inputs.opponentFainted,
+                    phoneLink: phoneLink)
+                BattleReviewSection(coach: coach, store: store, team: model.members, selectedId: selectedBattleId)
+                BattleInsightsSection(coach: coach, store: store, team: model.members)
+                AttributionFooter()
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// Starts over: opponents cleared, shields back to two each, nobody fainted.
-    private func newBattle() {
+    /// A new set is the same thing in a fresh set.
+    private func newBattle(newSet: Bool = false) {
         selectedBattleId = nil
         activeOpponentId = nil
-        coach.newBattle()
+        coach.newBattle(format: store.format, newSet: newSet)
         resetToken = UUID()
     }
 
@@ -221,12 +278,14 @@ struct BattleHUDDetailView: View {
         // A missed faint banner: their Pokémon-left count is lower than the faints
         // seen, and someone new is out, so the one that was out has fainted.
         let previous = coach.inputs.opponentActive
-        if opponents.indices.contains(previous), !coach.inputs.opponentFainted.contains(previous),
+        if coach.opponentActiveEstablished, opponents.indices.contains(previous),
+           !coach.inputs.opponentFainted.contains(previous),
            coach.inputs.opponentAlive < 3 - coach.inputs.opponentFainted.count {
             coach.inputs.opponentFainted.insert(previous)
             coach.inputs.opponentHP[previous] = nil
         }
         coach.inputs.opponentActive = index
+        coach.opponentActiveEstablished = true
     }
 
     /// The team being coached, with the same editable moves and fast-move
@@ -260,9 +319,25 @@ struct BattleHUDDetailView: View {
 /// phone is feeding the coach. Expands to setup instructions.
 private struct CoachConnectionRow: View {
     let phoneLink: PhoneLinkServer
+    let store: RankingsStore
     @State private var showInfo = false
+    #if os(iOS)
+    /// iPad: this device's own Screen Scan, started and stopped from here.
+    @Environment(OpponentScanModel.self) private var scan
+    #endif
+
+    private var deviceName: String {
+        #if os(macOS)
+        "this Mac"
+        #else
+        "this iPad"
+        #endif
+    }
 
     private var status: (text: String, color: Color) {
+        #if os(iOS)
+        if scan.isScanning { return ("Scanning this iPad's screen", .green) }
+        #endif
         if let name = phoneLink.phoneName { return ("Connected to \(name)", .green) }
         switch phoneLink.state {
         case .listening: return ("Waiting for iPhone", .orange)
@@ -272,11 +347,28 @@ private struct CoachConnectionRow: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            card
+            #if os(iOS)
+            // Why a scan didn't start (e.g. no screen capture on the simulator).
+            if let message = scan.stream.errorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            #endif
+        }
+    }
+
+    private var card: some View {
         let status = status
-        DisclosureGroup(isExpanded: $showInfo) {
+        return DisclosureGroup(isExpanded: $showInfo) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Your iPhone can send the opponent it sees in a Pokémon GO battle straight to this Mac, which fills in the opponent slots below.")
-                Text("On iPhone: open PokeParty → Check Opponent → Detect from screen, choose Entire Screen, then start a battle. Both devices need to be on the same Wi-Fi network, and the iPhone needs iOS 27.")
+                #if os(iOS)
+                Text("Tap Begin Scan, choose Entire Screen, then open Pokémon GO next to PokeParty in Split View or Slide Over. This iPad reads the battle itself and fills in the opponent slots below.")
+                #endif
+                Text("Your iPhone can also send the opponent it sees in a Pokémon GO battle straight to \(deviceName), which fills in the opponent slots below.")
+                Text("On iPhone: open PokeParty → Screen Scan, choose Entire Screen, then start a battle. Both devices need to be on the same Wi-Fi network, and the iPhone needs iOS 27.")
                 if case .failed(let message) = phoneLink.state {
                     Text(message).foregroundStyle(.red)
                 }
@@ -292,6 +384,19 @@ private struct CoachConnectionRow: View {
                 Text(status.text)
                     .font(.subheadline.weight(.medium))
                 Circle().fill(status.color).frame(width: 8, height: 8)
+                #if os(iOS)
+                Spacer()
+                Button(scan.isScanning ? "Stop Scan" : "Begin Scan") {
+                    if scan.isScanning {
+                        Task { await scan.end() }
+                    } else {
+                        scan.begin(store: store)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(scan.isScanning ? .red : .accentColor)
+                .controlSize(.small)
+                #endif
             }
         }
         .padding(10)
@@ -306,7 +411,7 @@ private struct CoachBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(headline)
-                .font(.system(size: 38, weight: .heavy, design: .rounded))
+                .font(.system(size: 30, weight: .heavy, design: .rounded))
                 .minimumScaleFactor(0.6)
                 .lineLimit(2)
                 .foregroundStyle(tint)
@@ -361,24 +466,333 @@ private struct CoachBanner: View {
     }
 }
 
+/// The shield call for each charged move their Pokémon might throw, shown before
+/// any of them goes off so the decision is already made when the banner appears.
+private struct ShieldPlanCard: View {
+    let coach: BattleCoachModel
+
+    var body: some View {
+        if !coach.shieldPlan.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("If they throw…")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(coach.shieldPlan, id: \.moveName) { move in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(verdict(move))
+                            .font(.caption.weight(.bold))
+                            .padding(.horizontal, 8).padding(.vertical, 2)
+                            .background(tint(move).opacity(0.22), in: Capsule())
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(move.moveName).font(.body.weight(.semibold))
+                            Text(move.detail).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Text("The sim's call against your Pokémon at its current HP. Their moves are a guess until seen thrown.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func verdict(_ move: ThrowAlert.Incoming) -> String {
+        switch move.call {
+        case .shield: return "SHIELD"
+        case .takeIt: return "TANK"
+        case .noShields: return "NO SHIELD"
+        }
+    }
+
+    private func tint(_ move: ThrowAlert.Incoming) -> Color {
+        switch move.call {
+        case .shield: return .red
+        case .takeIt: return .green
+        case .noShields: return .orange
+        }
+    }
+}
+
+/// The shield call when they throw a charged move, and how long until each side
+/// can switch again.
+private struct TempoCard: View {
+    let coach: BattleCoachModel
+
+    /// How long the shield call stays up after a throw.
+    private static let incomingLifetime: TimeInterval = 6
+
+    var body: some View {
+        if coach.hasPhoneData, coach.tempo.active(.mine) != nil || coach.tempo.active(.theirs) != nil {
+            TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                let now = context.date.timeIntervalSinceReferenceDate
+                VStack(alignment: .leading, spacing: 12) {
+                    if let incoming = coach.incomingThrow, now - coach.incomingThrowAt < Self.incomingLifetime {
+                        incomingBanner(incoming)
+                    }
+                    HStack(alignment: .top, spacing: 24) {
+                        column("You", side: .mine, at: now)
+                        column("Them", side: .theirs, at: now)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(16)
+            .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func incomingBanner(_ incoming: ThrowAlert.Incoming) -> some View {
+        let tint: Color = incoming.call == .shield ? .red : (incoming.call == .takeIt ? .green : .orange)
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(incoming.headline).font(.title2.weight(.bold))
+            Text(incoming.detail).font(.callout)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(tint.opacity(0.5), lineWidth: 2))
+    }
+
+    private func column(_ title: String, side: TempoTracker.Side, at now: TimeInterval) -> some View {
+        let wait = coach.tempo.switchRemaining(side, at: now)
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Text(wait > 0 ? "Switch in \(Int(wait.rounded(.up)))s" : "Can switch")
+                .font(.caption.weight(.medium).monospacedDigit())
+                .foregroundStyle(wait > 0 ? .orange : .green)
+        }
+        .frame(maxWidth: 220, alignment: .leading)
+    }
+}
+
+/// The script for the lead matchup, from the sims: what to shield, what to throw,
+/// and whether to swap. Shown only while it's still the lead.
+private struct LeadPlanCard: View {
+    let coach: BattleCoachModel
+
+    var body: some View {
+        if let plan = coach.leadPlan {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Lead plan · \(plan.myName) vs \(plan.opponentName)")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(plan.headline)
+                    .font(.title2.weight(.bold))
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(plan.steps.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(index + 1).")
+                                .font(.body.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            Text(step)
+                        }
+                    }
+                }
+                BaitCallView(bait: plan.bait)
+                HStack(spacing: 8) {
+                    ForEach(plan.shieldLines, id: \.shields) { line in
+                        Text("\(line.shields)–\(line.shields) shields: \(line.verdict.phrase)")
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(color(for: line.verdict).opacity(0.18), in: Capsule())
+                    }
+                }
+                Text("Based on \(plan.samples) simulated games, most of which end this way (\(Int((plan.share * 100).rounded()))%).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(color(for: plan.verdict).opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func color(for verdict: LeadCoach.Verdict) -> Color {
+        switch verdict {
+        case .dominant, .favored: return .green
+        case .close: return .yellow
+        case .unfavored, .hopeless: return .red
+        }
+    }
+}
+
+/// The bait and shield calls, shared by the lead and mid-game cards.
+private struct BaitCallView: View {
+    let bait: BaitCall.Plan?
+
+    var body: some View {
+        if let bait, !bait.lines.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Bait & shields")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(Array(bait.lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.callout)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
+
+/// After the lead: where the shields stand, rules of thumb for them, and who to
+/// close the game with.
+private struct MidGameCard: View {
+    let coach: BattleCoachModel
+
+    var body: some View {
+        if !coach.inLead, let plan = coach.midGame {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Mid-game")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(plan.headline)
+                    .font(.title2.weight(.bold))
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(plan.tips.enumerated()), id: \.offset) { _, tip in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("•").foregroundStyle(.secondary)
+                            Text(tip)
+                        }
+                    }
+                }
+                BaitCallView(bait: plan.bait)
+                if plan.endgame.count > 1 {
+                    Divider()
+                    Text("Endgame, no shields left")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(plan.endgame) { row in
+                        HStack(spacing: 8) {
+                            Text(row.name).font(.body.weight(.medium))
+                            Text("beats \(Int((row.winShare * 100).rounded()))%")
+                                .font(.body.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            switch row.role {
+                            case .closer: tag("Closer", .green)
+                            case .sacrifice: tag("Spare", .orange)
+                            case .neutral: EmptyView()
+                            }
+                        }
+                    }
+                }
+                Text("Sims assume fresh energy (it isn't on screen); HP is used where read. Rules of thumb are guidance, not certainties.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func tag(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 8).padding(.vertical, 2)
+            .background(color.opacity(0.2), in: Capsule())
+    }
+}
+
+/// Who the opponent probably has in the back, from what they've shown and what
+/// the meta pairs with it.
+private struct BackLineCard: View {
+    let coach: BattleCoachModel
+
+    var body: some View {
+        if !coach.backLine.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Likely in the back")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(coach.backLine) { guess in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(guess.name).font(.body.weight(.medium))
+                        Text("\(Int((guess.likelihood * 100).rounded()))%")
+                            .font(.body.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        if !guess.covers.isEmpty {
+                            Text("covers \(guess.covers.map(\.capitalized).joined(separator: ", "))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Text("A guess from their lead's weaknesses and the most-used Pokémon in this league. The coach plays its advice against teams like these.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+}
+
 /// What the coach can't read off the screen yet: shields, who's out, who's fainted.
 private struct CoachInputsPanel: View {
     @Bindable var coach: BattleCoachModel
     let team: [TeamMember]
     let opponents: [TeamMember]
     let store: RankingsStore
-    let onNewBattle: () -> Void
+    /// The phone is connected and feeding the coach.
+    let detecting: Bool
+    /// Who's feeding it: "your iPhone", or "this iPad" when its own Screen Scan is.
+    let source: String
+    /// Open by hand while detecting, to correct what the phone read.
+    @State private var showManual = false
 
     var body: some View {
+        if detecting {
+            VStack(alignment: .leading, spacing: 12) {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { showManual.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "iphone.gen3.radiowaves.left.and.right").foregroundStyle(.green)
+                        Text("Detecting from \(source)").font(.subheadline.weight(.medium))
+                        Text(summary).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(showManual ? 90 : 0))
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Show the shields and active Pokémon, to correct them by hand")
+                if showManual { inputs }
+                noteLabel
+            }
+            .padding(12)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+        } else {
+            inputs
+                .padding(12)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    /// What the phone has read, in a line.
+    private var summary: String {
+        var parts = ["Shields \(coach.inputs.myShields)–\(coach.inputs.opponentShields)"]
+        if team.indices.contains(coach.inputs.myActive) {
+            parts.append(store.name(forSpeciesId: team[coach.inputs.myActive].speciesId))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var inputs: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 24) {
                 shieldPicker("Your shields", selection: $coach.inputs.myShields)
                 shieldPicker("Their shields", selection: $coach.inputs.opponentShields)
                 Spacer()
-                Button(action: onNewBattle) {
-                    Label("New battle", systemImage: "arrow.counterclockwise")
-                }
-                .help("Clear the opponents and reset shields, fainted Pokémon and HP")
             }
             if !team.isEmpty {
                 HStack(spacing: 8) {
@@ -399,18 +813,22 @@ private struct CoachInputsPanel: View {
                 }
             }
             if coach.hasPhoneData {
-                Label("Shields, Pokémon left and your active Pokémon are coming from your iPhone.", systemImage: "iphone.gen3.radiowaves.left.and.right")
+                Label("Shields, Pokémon left and your active Pokémon are coming from \(source).", systemImage: "iphone.gen3.radiowaves.left.and.right")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let note = coach.note {
-                Label(note, systemImage: "scope")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            if !detecting { noteLabel }
         }
-        .padding(12)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// What the coach inferred from the screen (e.g. an opponent's fast move).
+    @ViewBuilder
+    private var noteLabel: some View {
+        if let note = coach.note {
+            Label(note, systemImage: "scope")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func shieldPicker(_ title: String, selection: Binding<Int>) -> some View {
@@ -474,4 +892,3 @@ private struct CoachInputsPanel: View {
         .buttonStyle(.plain)
     }
 }
-#endif

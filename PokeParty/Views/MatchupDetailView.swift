@@ -67,7 +67,33 @@ struct MatchupDetailView: View {
 
     // MARK: - Combatants
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
+    /// Side by side wherever there's room; stacked on a compact-width iPhone,
+    /// where half-width cards squeeze the move names down to nothing.
+    @ViewBuilder
     private var combatantsRow: some View {
+        #if os(iOS)
+        if horizontalSizeClass == .compact {
+            VStack(alignment: .leading, spacing: 12) {
+                MatchupMemberCard(side: .a, store: store, model: model)
+                Text("vs")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                MatchupMemberCard(side: .b, store: store, model: model)
+            }
+        } else {
+            sideBySideCombatants
+        }
+        #else
+        sideBySideCombatants
+        #endif
+    }
+
+    private var sideBySideCombatants: some View {
         HStack(alignment: .top, spacing: 12) {
             MatchupMemberCard(side: .a, store: store, model: model)
             Text("vs")

@@ -7,9 +7,9 @@
 //  the grades / threats / suggested teammates, using data from the shared
 //  `RankingsStore`.
 //
-//  Each league (format) remembers the team last used in it — not a *saved*
-//  team, just wherever the user left off — and restores it when they come
-//  back, including after a relaunch.
+//  Each league (format) remembers where the user left off — the saved team
+//  they had open, or an unsaved draft — and restores it when they come back,
+//  including after a relaunch. Edits to an open saved team autosave to it.
 //
 
 import SwiftUI
@@ -43,10 +43,37 @@ final class TeamBuilderModel {
     private var activeFormatId: String?
     private let lastUsedURL: URL
 
+    // MARK: - Saved team being edited
+
+    /// The saved team `members` is the live copy of; edits are written back to
+    /// it as they happen. nil means a draft (members that aren't saved yet,
+    /// e.g. opened from the Party Finder) or an empty builder.
+    private(set) var currentTeamId: UUID?
+    /// The saved team last selected in each league, by `RankingFormat.id`.
+    /// A league with no entry is showing a draft (or nothing).
+    private var selectedIds: [String: UUID]
+    private let selectedURL: URL
+    @ObservationIgnored private var savedTeams: SavedTeamsStore?
+
+    /// Members that aren't a saved team yet.
+    var isDraft: Bool { currentTeamId == nil && hasMembers }
+
     init(lastUsedURL: URL? = nil) {
         self.lastUsedURL = lastUsedURL ?? JSONFileStore.defaultFileURL(filename: "LastUsedTeams.json")
+        selectedURL = self.lastUsedURL.deletingLastPathComponent().appendingPathComponent("SelectedTeams.json")
         let data = try? Data(contentsOf: self.lastUsedURL)
         lastUsed = data.flatMap { try? JSONDecoder().decode([String: [TeamMember]].self, from: $0) } ?? [:]
+        let selected = try? Data(contentsOf: selectedURL)
+        selectedIds = selected.flatMap { try? JSONDecoder().decode([String: UUID].self, from: $0) } ?? [:]
+    }
+
+    /// Connects the saved teams, so edits autosave and the last-selected team
+    /// per league can be restored. Call before `activate` at launch.
+    func attach(_ savedTeams: SavedTeamsStore) {
+        self.savedTeams = savedTeams
+        guard activeFormatId != nil else { return }
+        resolveSelection()
+        invalidate()
     }
 
     /// Points the builder at `format`, swapping in that league's last-used
@@ -62,7 +89,97 @@ final class TeamBuilderModel {
         } else {
             members = lastUsed[format.id] ?? []
         }
+        currentTeamId = nil
+        resolveSelection()
         invalidate()
+    }
+
+    /// Makes the league's remembered saved team the one being edited, using
+    /// its members (the saved copy is the truth). Leaves a draft alone when
+    /// the league has no remembered team or it was since deleted.
+    private func resolveSelection() {
+        guard let activeFormatId, let id = selectedIds[activeFormatId],
+              let team = savedTeams?.team(id: id) else { currentTeamId = nil; return }
+        currentTeamId = id
+        members = Array(team.members.prefix(Self.maxMembers))
+    }
+
+    private func persistSelected() {
+        if let data = try? JSONEncoder().encode(selectedIds) {
+            JSONFileStore.write(data, to: selectedURL)
+        }
+    }
+
+    /// Opens a saved team for editing in its league.
+    func select(_ team: Team, for format: RankingFormat) {
+        activeFormatId = format.id
+        members = Array(team.members.prefix(Self.maxMembers))
+        currentTeamId = team.id
+        selectedIds[format.id] = team.id
+        persistSelected()
+        invalidate()
+    }
+
+    /// A team someone asked to open as a draft while another draft in the same
+    /// league was still unsaved; waits on the player's answer.
+    struct PendingDraft {
+        var members: [TeamMember]
+        var format: RankingFormat?
+    }
+    private(set) var pendingDraft: PendingDraft?
+
+    /// Opens `members` as a draft (Party Finder, Bench). If that would replace
+    /// an unsaved draft in the same league, asks first (`pendingDraft`).
+    func openDraft(_ members: [TeamMember], for format: RankingFormat?) {
+        let sameLeague = format == nil || format?.id == activeFormatId
+        if isDraft, sameLeague, members != self.members {
+            pendingDraft = PendingDraft(members: members, format: format)
+        } else {
+            setTeam(members, for: format)
+        }
+    }
+
+    func resolvePendingDraft(replace: Bool) {
+        guard let pending = pendingDraft else { return }
+        pendingDraft = nil
+        if replace { setTeam(pending.members, for: pending.format) }
+    }
+
+    /// Picks up changes made to the open saved team from outside the builder
+    /// (an import over the same name, an iCloud sync from another device).
+    func syncFromSaved() {
+        guard let currentTeamId, let team = savedTeams?.team(id: currentTeamId) else { return }
+        let incoming = Array(team.members.prefix(Self.maxMembers))
+        guard incoming != members else { return }
+        members = incoming
+        invalidate()
+    }
+
+    /// Marks the draft as now saved as `team`.
+    func adopt(_ team: Team) {
+        guard let activeFormatId else { return }
+        currentTeamId = team.id
+        selectedIds[activeFormatId] = team.id
+        persistSelected()
+    }
+
+    /// Throws the draft away.
+    func discardDraft() {
+        guard isDraft else { return }
+        members = []
+        invalidate()
+    }
+
+    /// Deletes a saved team, emptying the builder if it was the one open.
+    func deleteTeam(_ team: Team) {
+        savedTeams?.delete(team)
+        for (formatId, id) in selectedIds where id == team.id { selectedIds[formatId] = nil }
+        persistSelected()
+        if currentTeamId == team.id {
+            currentTeamId = nil
+            members = []
+            invalidate()
+        }
     }
 
     private func persistLastUsed() {
@@ -90,6 +207,15 @@ final class TeamBuilderModel {
     func add(_ member: TeamMember) {
         guard !isFull, !contains(speciesId: member.speciesId) else { return }
         members.append(member)
+        invalidate()
+    }
+
+    /// Swaps the member in a slot for another (no-op if that species is already on the team elsewhere).
+    func replace(at index: Int, with member: TeamMember) {
+        guard members.indices.contains(index),
+              !members.enumerated().contains(where: { $0.offset != index && $0.element.speciesId == member.speciesId })
+        else { return }
+        members[index] = member
         invalidate()
     }
 
@@ -131,9 +257,15 @@ final class TeamBuilderModel {
     /// Replaces the whole team (used when loading a saved team). Pass
     /// `format` when the caller is also switching the league, so the team
     /// lands in that league's slot rather than the one being left.
+    /// The members are a draft: not tied to any saved team until saved.
     func setTeam(_ newMembers: [TeamMember], for format: RankingFormat? = nil) {
         if let format { activeFormatId = format.id }
         members = Array(newMembers.prefix(Self.maxMembers))
+        currentTeamId = nil
+        if let activeFormatId, selectedIds[activeFormatId] != nil {
+            selectedIds[activeFormatId] = nil
+            persistSelected()
+        }
         invalidate()
     }
 
@@ -158,6 +290,8 @@ final class TeamBuilderModel {
 
     private func invalidate() {
         persistLastUsed()
+        // Autosave: the saved team being edited always matches the builder.
+        if let currentTeamId { savedTeams?.update(id: currentTeamId, members: members) }
         analysis = nil
         analyzeTask?.cancel()
         phase = hasMembers ? .ready : .empty

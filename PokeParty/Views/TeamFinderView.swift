@@ -27,6 +27,14 @@ struct TeamFinderView: View {
     @State private var showingResults = false
     @Environment(ShareImportModel.self) private var shareImport
 
+    private static var deviceName: String {
+        #if os(macOS)
+        "the Mac"
+        #else
+        "this device"
+        #endif
+    }
+
     private var visibleCupFormats: [RankingFormat] {
         store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
     }
@@ -70,7 +78,7 @@ struct TeamFinderView: View {
                     ) {
                         Text("CPU cores")
                     }
-                    Text("Use up to \(model.coreLimit) of \(CoreLimit.totalCores) cores — fewer keeps the Mac responsive while a long search runs in the background. Changes apply immediately.")
+                    Text("Use up to \(model.coreLimit) of \(CoreLimit.totalCores) cores — fewer keeps \(Self.deviceName) responsive while a long search runs in the background. Changes apply immediately.")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -431,6 +439,36 @@ struct TeamFinderView: View {
                     .foregroundStyle(.secondary)
             }
 
+            VStack(alignment: .leading, spacing: 4) {
+                Slider(
+                    value: Binding(
+                        get: { Double(model.playSkill.rawValue) },
+                        set: { model.playSkill = PlaySkill(rawValue: Int($0.rounded())) ?? .perfect }),
+                    in: 0...Double(PlaySkill.allCases.count - 1),
+                    step: 1
+                ) {
+                    Text("Your play skill")
+                } minimumValueLabel: {
+                    Text("Perfect")
+                } maximumValueLabel: {
+                    Text("Beginner")
+                }
+                .disabled(model.isRunning || model.isValidatingBroadField)
+                Text("\(model.playSkill.title): \(model.playSkill.detail)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if model.playSkill != .perfect {
+                    Text("Scores each team with your own switch decisions going wrong now and then, so results favor teams that stay strong when played imperfectly. About 3× slower. Win rates shown are typical outcomes, not exact odds.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if !model.simulateCounterswaps {
+                        Text("Turn on “Simulate counterswaps” for the full effect — otherwise only the choice of who replaces a fainted Pokémon can go wrong.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+
             Toggle("Simulate counterswaps", isOn: Bindable(model).simulateCounterswaps)
                 .disabled(model.isRunning)
             Toggle("Learned shield AI", isOn: Bindable(model).learnedShields)
@@ -620,6 +658,7 @@ struct TeamFinderResultsView: View {
             }
         }
         .navigationTitle("Suggested Teams")
+        .inlineNavigationTitle()
     }
 
     private var emptyDescription: String {
@@ -640,7 +679,7 @@ struct TeamFinderResultsView: View {
         if let format = model.resultsFormat {
             store.format = format
         }
-        teamBuilder.setTeam(members, for: model.resultsFormat)
+        teamBuilder.openDraft(members, for: model.resultsFormat)
         guard let dismissResults else {
             selection = .teamBuilder
             onOpenedTeamBuilder()

@@ -153,7 +153,9 @@ struct TeamAnalysisSections: View {
                         .contentShape(RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)
-                    .disabled(onAddSuggestion == nil)
+                    // Read-only when the team is full; hit testing off rather than
+                    // `.disabled`, which would fade the whole card as if broken.
+                    .allowsHitTesting(onAddSuggestion != nil)
                 }
             }
         }

@@ -31,6 +31,18 @@ struct TeamResultMember: Identifiable {
     var tooltip: String? = nil
 }
 
+/// Side margin for the ranked-team lists and their headers; iPhone screens
+/// elsewhere in the app use 20pt.
+enum ResultsLayout {
+    static var margin: CGFloat {
+        #if os(iOS)
+        20
+        #else
+        16
+        #endif
+    }
+}
+
 struct TeamResultRow<Record: View>: View {
     let rank: Int
     let members: [TeamResultMember]
@@ -44,7 +56,7 @@ struct TeamResultRow<Record: View>: View {
             row(stacked: false)
             row(stacked: true)
         }
-        .padding(.horizontal)
+        .padding(.horizontal, ResultsLayout.margin)
         .padding(.vertical, 8)
     }
 
@@ -61,21 +73,29 @@ struct TeamResultRow<Record: View>: View {
                     }
                 }
                 record()
+                // Stacked (narrow) rows put the actions underneath so the
+                // stats get the full row width instead of what the button leaves.
+                if stacked { HStack(spacing: 12) { actions } }
             }
             Spacer(minLength: 8)
-            if let onOpenInBuilder {
-                Button("Open in Team Builder", action: onOpenInBuilder)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .fixedSize()
+            if !stacked { actions }
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        if let onOpenInBuilder {
+            Button("Open in Team Builder", action: onOpenInBuilder)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .fixedSize()
+        }
+        if let shareItem {
+            ShareLink(item: shareItem, preview: SharePreview(shareItem.title)) {
+                Image(systemName: "square.and.arrow.up")
             }
-            if let shareItem {
-                ShareLink(item: shareItem, preview: SharePreview(shareItem.title)) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .buttonStyle(.borderless)
-                .help("Share this team")
-            }
+            .buttonStyle(.borderless)
+            .help("Share this team")
         }
     }
 

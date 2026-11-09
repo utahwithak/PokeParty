@@ -96,6 +96,7 @@ import Testing
 
     @Test func aBattleAppearsOnceAnOpponentIsSeen() {
         let store = makeStore()
+        store.addGame(format: format)
         store.observe(BattleObservation(), team: [member("azumarill")], opponents: [member("registeel")], format: format)
 
         #expect(store.battles.count == 1)
@@ -104,6 +105,7 @@ import Testing
 
     @Test func threeOpponentFaintsAreDetectedAsAWin() {
         let store = makeStore()
+        store.addGame(format: format)
         var state = BattleObservation(); state.opponentFainted = [0, 1, 2]
         store.observe(state, team: [member("a"), member("b"), member("c")],
                       opponents: [member("x"), member("y"), member("z")], format: format)
@@ -114,6 +116,7 @@ import Testing
 
     @Test func aManualMarkOverridesTheDetectedResult() {
         let store = makeStore()
+        store.addGame(format: format)
         var state = BattleObservation(); state.opponentFainted = [0, 1, 2]
         let team = [member("a"), member("b"), member("c")], opponents = [member("x"), member("y"), member("z")]
         store.observe(state, team: team, opponents: opponents, format: format)
@@ -128,10 +131,11 @@ import Testing
     @Test func aFullSetRollsOverToANewOne() {
         let store = makeStore()
         for _ in 0..<BattleHistoryStore.setSize {
+            store.addGame(format: format)
             store.observe(BattleObservation(), team: [member("a")], opponents: [member("x")], format: format)
             store.mark(store.current!.id, as: .win)
-            store.startNewBattle()
         }
+        store.addGame(format: format)
         store.observe(BattleObservation(), team: [member("a")], opponents: [member("x")], format: format)
 
         #expect(store.sets.count == 2)
@@ -141,11 +145,11 @@ import Testing
     @Test func resettingASetClearsItButKeepsEarlierSets() {
         let store = makeStore()
         for _ in 0..<2 {
+            store.addGame(format: format)
             store.observe(BattleObservation(), team: [member("a")], opponents: [member("x")], format: format)
             store.mark(store.current!.id, as: .win)
-            store.startNewBattle()
         }
-        store.startNewSet()
+        store.addGame(format: format, newSet: true)
         store.observe(BattleObservation(), team: [member("a")], opponents: [member("x")], format: format)
         store.mark(store.current!.id, as: .loss)
 
@@ -159,6 +163,7 @@ import Testing
 
     @Test func afterANewBattleTheOldGameIsStillInTheSetButNotShown() {
         let store = makeStore()
+        store.addGame(format: format)
         store.observe(BattleObservation(), team: [member("a")], opponents: [member("x")], format: format)
         let first = store.current!.id
         #expect(store.displayed(selectedId: nil)?.id == first)
@@ -173,6 +178,7 @@ import Testing
 
     @Test func deletingTheCurrentBattleRemovesIt() {
         let store = makeStore()
+        store.addGame(format: format)
         store.observe(BattleObservation(), team: [member("a")], opponents: [member("x")], format: format)
         store.delete(store.current!.id)
 

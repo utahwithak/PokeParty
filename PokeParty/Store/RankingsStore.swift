@@ -291,6 +291,17 @@ final class RankingsStore {
         eligiblePokemon(for: format)
     }
 
+    /// The species pool to resolve a detected opponent name against: the
+    /// current format's ranked Pokémon first, so ranked forms keep winning
+    /// ambiguous names, widening to every Pokémon when the name isn't ranked
+    /// (a Goomy under the Great League cap is a valid opponent even though
+    /// it never makes the rankings).
+    func opponentPool(forName name: String) -> [Pokemon] {
+        let ranked = entries.compactMap { pokemonById[$0.speciesId] }
+        if !OpponentNameMatcher.candidates(for: name, in: ranked).isEmpty { return ranked }
+        return allPokemonIncludingShadows
+    }
+
     /// The Mega Evolution(s) available for an owned species (e.g. a bench
     /// entry), or empty if it has none.
     func megaEvolutions(for speciesId: String) -> [Pokemon] {

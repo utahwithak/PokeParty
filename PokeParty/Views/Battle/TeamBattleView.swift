@@ -69,7 +69,30 @@ struct TeamBattleView: View {
 
     // MARK: - Teams
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
+    /// Side by side wherever there's room; stacked on a compact-width iPhone,
+    /// where two half-width columns truncate every name.
+    @ViewBuilder
     private var teamsHeader: some View {
+        #if os(iOS)
+        if horizontalSizeClass == .compact {
+            VStack(alignment: .leading, spacing: 12) {
+                teamColumn(title: "Your Team", members: model.members, opponent: false)
+                Text("vs").font(.headline).foregroundStyle(.secondary)
+                teamColumn(title: "Opponent", members: model.opponentMembers, opponent: true)
+            }
+        } else {
+            sideBySideTeams
+        }
+        #else
+        sideBySideTeams
+        #endif
+    }
+
+    private var sideBySideTeams: some View {
         HStack(alignment: .top, spacing: 12) {
             teamColumn(title: "Your Team", members: model.members, opponent: false)
             Text("vs").font(.headline).foregroundStyle(.secondary).padding(.top, 28)
@@ -116,9 +139,11 @@ struct TeamBattleView: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, 4).padding(.vertical, 2)
                     .background(Color.accentColor, in: Capsule())
+                    .fixedSize()
             }
             Text(species(member)?.speciesName ?? member.speciesId)
                 .font(.subheadline.weight(.medium)).lineLimit(1)
+                .layoutPriority(1)
             if member.shadow { ShadowBadge() }
             Spacer(minLength: 4)
             TypeBadgeRow(types: species(member)?.displayTypes ?? [])

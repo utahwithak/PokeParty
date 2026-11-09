@@ -135,9 +135,7 @@ nonisolated private func sendMessage(_ message: PhoneLinkMessage, on connection:
     connection.send(content: data, completion: .contentProcessed { _ in })
 }
 
-// MARK: - Mac: listener
-
-#if os(macOS)
+// MARK: - Mac / iPad: listener
 
 /// Runs while Opponent Check is on screen. Accepts one phone at a time (a
 /// newer connection replaces the old one) and publishes what it sends.
@@ -240,8 +238,6 @@ final class PhoneLinkServer {
     }
 }
 
-#endif
-
 // MARK: - iPhone: browser + client
 
 #if os(iOS)
@@ -298,7 +294,13 @@ final class PhoneLinkClient {
     }
 
     private func connectIfNeeded() {
-        guard connection == nil, let result = results.first else { return }
+        // An iPad running Battle HUD advertises the service too; don't connect to ourselves.
+        let ownName = UIDevice.current.name
+        let others = results.filter { result in
+            if case .service(let serviceName, _, _, _) = result.endpoint { return serviceName != ownName }
+            return true
+        }
+        guard connection == nil, let result = others.first else { return }
         let name: String
         if case .service(let serviceName, _, _, _) = result.endpoint { name = serviceName } else { name = "Mac" }
 

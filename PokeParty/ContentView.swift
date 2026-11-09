@@ -87,6 +87,7 @@ struct ContentView: View {
         .frame(minWidth: 1040, minHeight: 600)
         #endif
         .task {
+            teamBuilder.attach(savedTeams)
             teamBuilder.activate(format: store.format)
             await store.load()
             restoreSavedSelection()
@@ -143,7 +144,8 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerInputView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamBuilderView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
+            TeamBuilderView(store: store, model: teamBuilder, savedTeams: savedTeams, hiddenCups: hiddenCups,
+                            onOpenEditor: { compactColumn = .detail })
         case .partyFinder:
             if entitlements.isUnlocked {
                 TeamFinderView(store: store, model: teamFinder, teamBuilder: teamBuilder, bench: bench, hiddenCups: hiddenCups, selection: $selection,
@@ -151,14 +153,12 @@ struct ContentView: View {
             } else {
                 PaywallView()
             }
-        #if os(macOS)
         case .battleHUD:
             if entitlements.isUnlocked {
                 BattleHUDTeamPane(store: store, model: teamBuilder, savedTeams: savedTeams)
             } else {
                 PaywallView()
             }
-        #endif
         case .matchup:
             MatchupSimulatorView(store: store, model: matchup, hiddenCups: hiddenCups)
         case .breakpoints:
@@ -167,7 +167,7 @@ struct ContentView: View {
             BenchView(bench: bench, store: store, selectedID: $selectedBenchID,
                       openTeamInBuilder: { league, members in
                           store.format = league.format
-                          teamBuilder.setTeam(members, for: league.format)
+                          teamBuilder.openDraft(members, for: league.format)
                           selection = .teamBuilder
                           compactColumn = .detail
                       })
@@ -219,12 +219,11 @@ struct ContentView: View {
         case .rankChecker:
             RankCheckerResultsView(store: store, model: rankChecker)
         case .teamBuilder:
-            TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups,
-                                  openBattleHUD: {
-                                      #if os(macOS)
+            TeamBuilderDetailView(store: store, model: teamBuilder, savedTeams: savedTeams, bench: bench,
+                                  openBattleHUD: SidebarSelection.battleHUDAvailable ? {
                                       selection = .battleHUD
-                                      #endif
-                                  })
+                                      compactColumn = .detail
+                                  } : nil)
         case .partyFinder:
             if entitlements.isUnlocked {
                 TeamFinderResultsView(store: store, model: teamFinder,
@@ -233,14 +232,12 @@ struct ContentView: View {
             } else {
                 ContentUnavailableView("", systemImage: "wand.and.stars")
             }
-        #if os(macOS)
         case .battleHUD:
             if entitlements.isUnlocked {
                 BattleHUDDetailView(store: store, model: teamBuilder)
             } else {
                 ContentUnavailableView("", systemImage: "speedometer")
             }
-        #endif
         case .matchup:
             MatchupDetailView(store: store, model: matchup, hiddenCups: hiddenCups)
         case .breakpoints:

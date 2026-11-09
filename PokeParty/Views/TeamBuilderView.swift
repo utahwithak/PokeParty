@@ -2,9 +2,11 @@
 //  TeamBuilderView.swift
 //  PokeParty
 //
-//  Middle column of the 3v3 Team Builder: the "Add Pokémon" palette. Tapping a
-//  Pokémon adds it to the team, which is shown and edited in the main panel
-//  (`TeamBuilderDetailView`).
+//  Middle column of the 3v3 Team Builder: every saved team, grouped by league
+//  (the way Battle HUD lists them), each league with a "+" to start a team in
+//  it. Picking a team opens it in the editor (`TeamBuilderDetailView`), where
+//  edits save as they're made. A team opened from elsewhere (Party Finder,
+//  Bench) shows up as an unsaved draft until it's saved.
 //
 
 import SwiftUI
@@ -13,154 +15,209 @@ struct TeamBuilderView: View {
     var store: RankingsStore
     @Bindable var model: TeamBuilderModel
     var savedTeams: SavedTeamsStore
-    var bench: BenchStore
     var hiddenCups: HiddenCupsStore
-    @State private var searchText = ""
+    /// Called after a team is opened, so a collapsed layout (iPhone) can move to the editor.
+    var onOpenEditor: () -> Void = {}
 
-    /// A bench entry offered as an addable team member — either its own
-    /// species, or (when Megas are in play) one of its Mega Evolutions,
-    /// since mega-evolving keeps the same IVs/moves as the owned Pokémon.
-    private struct BenchOption: Identifiable {
-        let entry: BenchEntry
-        let megaForm: Pokemon?
-        var speciesId: String { megaForm?.speciesId ?? entry.speciesId }
-        var id: String { "\(entry.id)-\(speciesId)" }
-    }
+    @State private var renaming: Team?
+    @State private var renameText = ""
+    @State private var deleting: Team?
+    /// A switch waiting on the answer to "discard the draft?".
+    @State private var pendingSwitch: (() -> Void)?
+    @Environment(ShareImportModel.self) private var shareImport
 
-    /// Bench entries rated for the team's current league (CP cap) and not
-    /// already on the team, plus a Mega-form option for each bench entry
-    /// whose species can mega evolve, when the current format allows Megas
-    /// (its own cup).
-    private var benchResults: [BenchOption] {
-        let league = League(cpCap: store.format.cp)
-        let allowsMega = store.cupAllowsMegas(store.format)
-        return bench.entries
-            .filter { $0.league == league }
-            .flatMap { entry -> [BenchOption] in
-                var options: [BenchOption] = []
-                if !model.contains(speciesId: entry.speciesId) {
-                    options.append(BenchOption(entry: entry, megaForm: nil))
-                }
-                if allowsMega {
-                    for mega in store.megaEvolutions(for: entry.speciesId)
-                    where !model.contains(speciesId: mega.speciesId) {
-                        options.append(BenchOption(entry: entry, megaForm: mega))
-                    }
-                }
-                return options
-            }
-    }
-
-    /// Released Pokémon matching the search, excluding those already on the team.
-    /// Includes Mega Evolutions when the current format allows them.
-    private var searchResults: [Pokemon] {
-        let query = searchText.trimmingCharacters(in: .whitespaces)
-        return store.eligiblePokemon(for: store.format).filter { pokemon in
-            if model.contains(speciesId: pokemon.speciesId) { return false }
-            guard !query.isEmpty else { return true }
-            return pokemon.speciesName.localizedCaseInsensitiveContains(query)
+    /// Core leagues and the cups in rotation: always listed, even with no teams yet.
+    /// A cup the player hid from the sidebar still appears while it has teams,
+    /// so those teams don't vanish.
+    private var formats: [RankingFormat] {
+        RankingFormat.coreLeagues + store.cupFormats.filter { cup in
+            !hiddenCups.isHidden(cup.id) || savedTeams.teams.contains { $0.matches(cup) }
         }
+    }
+
+    /// Teams from cups that are no longer running: their rankings aren't
+    /// loaded, so they can't be opened, only removed.
+    private var pastTeams: [Team] {
+        let known = store.cupFormats + RankingFormat.coreLeagues
+        return savedTeams.teams.filter { team in !known.contains { team.matches($0) } }
     }
 
     var body: some View {
         List {
-            if !benchResults.isEmpty && searchText.isEmpty {
-                Section("From Your Bench") {
-                    ForEach(benchResults) { option in
-                        let entry = option.entry
-                        Button {
-                            model.add(entry.asTeamMember(speciesId: option.megaForm?.speciesId))
-                        } label: {
-                            HStack(spacing: 10) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack(spacing: 4) {
-                                        Text(benchDisplayName(option))
-                                            .font(.body.weight(.medium))
-                                            .lineLimit(1)
-                                        if entry.shadow { ShadowBadge() }
-                                    }
-                                    HStack(spacing: 6) {
-                                        Text(entry.league?.title ?? "")
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundStyle(entry.league?.tint ?? .secondary)
-                                            .lineLimit(1)
-                                        if let ivs = entry.ivs {
-                                            Text("· IVs \(ivs.atk)/\(ivs.def)/\(ivs.hp)")
-                                                .font(.caption2).foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        } else {
-                                            Text("· Optimal IVs")
-                                                .font(.caption2).foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                    }
-                                }
-                                Spacer()
-                                if let sp = option.megaForm ?? store.pokemonById[entry.speciesId] {
-                                    TypeBadgeRow(types: sp.displayTypes)
-                                }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(model.isFull)
+            ForEach(formats) { format in
+                Section {
+                    if model.isDraft, format == store.format { draftRow }
+                    ForEach(savedTeams.teams(for: format)) { team in
+                        teamRow(team, in: format)
+                    }
+                } header: {
+                    header(for: format)
+                }
+            }
+            let past = pastTeams
+            if !past.isEmpty {
+                Section("Past leagues") {
+                    ForEach(Dictionary(grouping: past, by: { "\($0.cup) · \($0.cp) CP" }).sorted { $0.key < $1.key }, id: \.key) { group in
+                        Text(group.key)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(group.value) { team in pastRow(team) }
                     }
                 }
-                .themedPlainRow()
             }
-            Section {
-                ForEach(searchResults) { pokemon in
-                    Button {
-                        if let member = model.makeMember(speciesId: pokemon.speciesId, store: store) {
-                            model.add(member)
-                        }
-                    } label: {
-                        HStack(spacing: 10) {
-                            Text(pokemon.speciesName)
-                                .font(.body.weight(.medium))
-                                .lineLimit(1)
-                            Spacer()
-                            TypeBadgeRow(types: pokemon.displayTypes)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.isFull)
-                }
-            } header: {
-                Text(model.isFull ? "Team full — remove one to add another" : "All Pokémon")
-            }
-            .themedPlainRow()
         }
-        .themedBackground()
         .navigationTitle("Team Builder")
         .inlineNavigationTitle()
-        .searchable(text: $searchText, prompt: "Add a Pokémon")
-        .overlay {
-            if searchResults.isEmpty, !searchText.isEmpty {
-                ContentUnavailableView.search(text: searchText)
-            }
-        }
-        #if os(iOS)
-        // See MatchupSimulatorView: on iOS the detail column (here,
-        // TeamBuilderDetailView) has no other way to become reachable.
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink {
-                    TeamBuilderDetailView(store: store, model: model, savedTeams: savedTeams, bench: bench, hiddenCups: hiddenCups)
+            ToolbarItem {
+                Button {
+                    shareImport.isImporterPresented = true
                 } label: {
-                    Label("View Team", systemImage: "person.3.sequence.fill")
+                    Label("Import Shared Team…", systemImage: "square.and.arrow.down")
                 }
-                .disabled(!model.hasMembers)
+                .help("Import a team someone shared with you")
             }
         }
-        #endif
+        .alert("Rename Team", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Team name", text: $renameText)
+            Button("Rename") {
+                if let renaming { savedTeams.rename(id: renaming.id, to: renameText) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "Delete \(deleting?.name ?? "team")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let deleting { model.deleteTeam(deleting) }
+            }
+        } message: {
+            Text("This can't be undone.")
+        }
+        .confirmationDialog(
+            "Discard the unsaved draft?", isPresented: Binding(get: { pendingSwitch != nil }, set: { if !$0 { pendingSwitch = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Discard Draft", role: .destructive) {
+                model.discardDraft()
+                pendingSwitch?()
+            }
+        } message: {
+            Text("The team you opened hasn't been saved. Save it from the editor first to keep it.")
+        }
     }
 
-    private func benchDisplayName(_ option: BenchOption) -> String {
-        if let mega = option.megaForm { return mega.speciesName }
-        let entry = option.entry
-        if !entry.nickname.isEmpty { return entry.nickname }
-        return store.pokemonById[entry.speciesId]?.speciesName ?? entry.speciesId
+    // MARK: - Rows
+
+    private func header(for format: RankingFormat) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: format.isCoreLeague ? "shield.lefthalf.filled" : "trophy.fill")
+                .foregroundStyle(format.tint)
+            Text(format.title)
+            Spacer()
+            Button {
+                switchTeam { newTeam(in: format) }
+            } label: {
+                Image(systemName: "plus.circle")
+                    .touchTarget()
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("New team")
+            .help("New team in \(format.title)")
+        }
+    }
+
+    private var draftRow: some View {
+        Button {
+            onOpenEditor()
+        } label: {
+            row(title: "Untitled draft", subtitle: model.members.map { store.name(forSpeciesId: $0.speciesId) },
+                selected: true, badge: "DRAFT")
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Discard Draft", role: .destructive) { model.discardDraft() }
+        }
+    }
+
+    private func teamRow(_ team: Team, in format: RankingFormat) -> some View {
+        Button {
+            switchTeam { open(team, in: format) }
+        } label: {
+            row(title: team.name, subtitle: team.members.map { store.name(forSpeciesId: $0.speciesId) },
+                selected: model.currentTeamId == team.id)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Rename…") { renameText = team.name; renaming = team }
+            Button("Duplicate") {
+                let copy = savedTeams.duplicate(team)
+                switchTeam { open(copy, in: format) }
+            }
+            ShareLink(
+                item: ResultsShareItem(teamNamed: team.name, members: team.members, cup: team.cup, cp: team.cp),
+                preview: SharePreview(team.name)
+            ) {
+                Label("Share…", systemImage: "square.and.arrow.up")
+            }
+            Divider()
+            Button("Delete…", role: .destructive) { deleting = team }
+        }
+    }
+
+    private func pastRow(_ team: Team) -> some View {
+        row(title: team.name, subtitle: team.members.map { store.name(forSpeciesId: $0.speciesId) }, selected: false)
+            .opacity(0.6)
+            .contextMenu {
+                Button("Delete…", role: .destructive) { deleting = team }
+            }
+            .help("This cup has ended, so its teams can't be edited.")
+    }
+
+    private func row(title: String, subtitle: [String], selected: Bool, badge: String? = nil) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title).font(.headline)
+                    if let badge {
+                        Text(badge)
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Color.orange.opacity(0.25), in: Capsule())
+                    }
+                }
+                Text(subtitle.isEmpty ? "No Pokémon yet" : subtitle.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 6)
+        .background(selected ? Color.accentColor.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+    }
+
+    // MARK: - Actions
+
+    /// Runs `action` straight away, or after the player agrees to drop an unsaved draft.
+    private func switchTeam(_ action: @escaping () -> Void) {
+        if model.isDraft {
+            pendingSwitch = action
+        } else {
+            action()
+        }
+    }
+
+    private func open(_ team: Team, in format: RankingFormat) {
+        store.format = format
+        model.select(team, for: format)
+        onOpenEditor()
+    }
+
+    private func newTeam(in format: RankingFormat) {
+        let team = savedTeams.add(name: "New Team", members: [], cup: format.cup, cp: format.cp)
+        open(team, in: format)
     }
 }

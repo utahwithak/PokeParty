@@ -21,7 +21,8 @@ struct TeamFinderSimulationView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding()
+                .padding(.horizontal, ResultsLayout.margin)
+                .padding(.vertical)
             Divider()
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -108,32 +109,55 @@ private struct LeaderboardRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            HStack(spacing: 8) {
-                Text(team.winRate, format: .percent.precision(.fractionLength(0)))
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
-                    .contentTransition(.numericText())
-                Text("\(team.wins)W · \(team.losses)L\(team.ties > 0 ? " · \(team.ties)T" : "") over \(team.gamesPlayed)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.numericText())
-                RatingBar(rating: Int(team.averageRating.rounded()))
-                    .frame(maxWidth: 160)
-                if let metaScore = team.metaScore {
-                    Text("vs meta \(metaScore, format: .percent.precision(.fractionLength(1)))")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(metaScore >= 0.5 ? Theme.win : Theme.loss)
-                        .help("Expected score against the Nash-equilibrium meta of the top teams — no credit for farming weak teams.")
+            // One line where it fits; on a phone the stats, then the bar and
+            // meta badges, each get their own line.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    winStats
+                    ratingAndMeta
                 }
-                if (team.equilibriumWeight ?? 0) >= 0.02 {
-                    Text("META CORE")
-                        .font(.caption2.weight(.bold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.tint.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.tint)
-                        .help("Part of the equilibrium meta: no top team exploits this one under strong play.")
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) { winStats }
+                    HStack(spacing: 8) { ratingAndMeta }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var winStats: some View {
+        Text(team.winRate, format: .percent.precision(.fractionLength(0)))
+            .font(.subheadline.weight(.semibold).monospacedDigit())
+            .contentTransition(.numericText())
+            .fixedSize()
+        Text("\(team.wins)W · \(team.losses)L\(team.ties > 0 ? " · \(team.ties)T" : "") over \(team.gamesPlayed)")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .contentTransition(.numericText())
+            // Reports its full width so ViewThatFits wraps rather than truncating it.
+            .fixedSize()
+    }
+
+    @ViewBuilder
+    private var ratingAndMeta: some View {
+        RatingBar(rating: Int(team.averageRating.rounded()))
+            .frame(minWidth: 80, maxWidth: 160)
+        if let metaScore = team.metaScore {
+            Text("vs meta \(metaScore, format: .percent.precision(.fractionLength(1)))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(metaScore >= 0.5 ? Theme.win : Theme.loss)
+                .fixedSize()
+                .help("Expected score against the Nash-equilibrium meta of the top teams — no credit for farming weak teams.")
+        }
+        if (team.equilibriumWeight ?? 0) >= 0.02 {
+            Text("META CORE")
+                .font(.caption2.weight(.bold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.tint.opacity(0.15), in: Capsule())
+                .foregroundStyle(.tint)
+                .fixedSize()
+                .help("Part of the equilibrium meta: no top team exploits this one under strong play.")
         }
     }
 
@@ -161,11 +185,13 @@ struct OptimizerResultsView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding()
+                .padding(.horizontal, ResultsLayout.margin)
+                .padding(.vertical)
             Divider()
             if results.isComplete {
                 broadFieldBar
-                    .padding()
+                    .padding(.horizontal, ResultsLayout.margin)
+                    .padding(.vertical)
                 Divider()
             }
             if results.teams.isEmpty {
@@ -350,7 +376,8 @@ struct GradedTeamsView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding()
+                .padding(.horizontal, ResultsLayout.margin)
+                .padding(.vertical)
             Divider()
             if teams.isEmpty {
                 ContentUnavailableView(

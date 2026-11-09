@@ -62,6 +62,11 @@ nonisolated struct Move: Decodable, Identifiable, Hashable {
         return "\(energy) energy · fast moves: " + counts.map(String.init).joined(separator: " - ")
     }
 
+    /// How many copies of this charged move fit in a full 100-energy bar —
+    /// the most a player can hold back (e.g. two Swifts, three Aqua Tails).
+    var bankSize: Int { energy > 0 ? 100 / energy : 0 }
+
+
     /// Fast moves needed purely for energy before each of the next
     /// `throwCount` throws, carrying leftover energy between them.
     static func readyCounts(cost: Int, gain: Int, throwCount: Int) -> [Int] {

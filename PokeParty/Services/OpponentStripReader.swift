@@ -35,6 +35,7 @@ nonisolated final class OpponentStripReader {
 
     /// Reused across frames — building a text request is comparatively costly.
     private let request: VNRecognizeTextRequest
+    private let baseRegion: CGRect
 
     /// `region` picks which header panel is read (default: the opponent's).
     init(region: CGRect = OpponentStripReader.region) {
@@ -44,9 +45,17 @@ nonisolated final class OpponentStripReader {
         request.usesLanguageCorrection = false
         request.regionOfInterest = region
         self.request = request
+        self.baseRegion = region
     }
 
-    func read(_ pixelBuffer: CVPixelBuffer) -> OpponentReading? {
+    /// `region` moved by the header's vertical shift (see `BattleHeaderReader.findShift`).
+    /// Vision's origin is the bottom, so a header that sits higher moves the region up.
+    static func shifted(_ region: CGRect, by yShift: Double) -> CGRect {
+        region.offsetBy(dx: 0, dy: -yShift)
+    }
+
+    func read(_ pixelBuffer: CVPixelBuffer, yShift: Double = 0) -> OpponentReading? {
+        request.regionOfInterest = Self.shifted(baseRegion, by: yShift)
         var lines: [String] = []
         autoreleasepool {
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up)

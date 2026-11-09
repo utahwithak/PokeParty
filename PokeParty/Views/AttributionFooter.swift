@@ -14,18 +14,18 @@ import SwiftUI
 struct AttributionFooter: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 28) {
-                linkItem(
-                    title: "Data & rankings from PvPoke",
-                    subtitle: "pvpoke.com",
-                    url: URL(string: "https://pvpoke.com")!
-                )
-                linkItem(
-                    title: "Source on GitHub",
-                    subtitle: "github.com/pvpoke/pvpoke",
-                    url: URL(string: "https://github.com/pvpoke/pvpoke")!
-                )
-                Spacer(minLength: 0)
+            // The links are fixed-size, so side by side they can be wider than a
+            // phone screen and stretch the whole screen's layout; stack them then.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 28) {
+                    pvpokeLink
+                    githubLink
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    pvpokeLink
+                    githubLink
+                }
             }
             Text("PvPoke is open source under the MIT License. PokeParty is an unofficial fan-made tool. It is not affiliated with, endorsed by, or sponsored by PvPoke, Nintendo, Game Freak, The Pokémon Company, or Scopely. Pokémon and Pokémon GO are trademarks of their respective owners.")
                 .font(.footnote)
@@ -33,6 +33,22 @@ struct AttributionFooter: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var pvpokeLink: some View {
+        linkItem(
+            title: "Data & rankings from PvPoke",
+            subtitle: "pvpoke.com",
+            url: URL(string: "https://pvpoke.com")!
+        )
+    }
+
+    private var githubLink: some View {
+        linkItem(
+            title: "Source on GitHub",
+            subtitle: "github.com/pvpoke/pvpoke",
+            url: URL(string: "https://github.com/pvpoke/pvpoke")!
+        )
     }
 
     private func linkItem(title: String, subtitle: String, url: URL) -> some View {

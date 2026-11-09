@@ -207,6 +207,11 @@ final class TeamFinderModel {
     /// simulation on. Default ON — measured +1.8 pts win rate / +18 mean rating
     /// on held-out teams (ungated farming is a wash; the policy picks the moments).
     var learnedFarming = true { didSet { persistSettings() } }
+
+    /// How well the player is assumed to play (AI Optimizer). Anything below
+    /// `.perfect` makes the player's own switch decisions fallible, so the search
+    /// favors teams that still win when played imperfectly. Costs ~3x battle time.
+    var playSkill: PlaySkill = .perfect { didSet { persistSettings() } }
     static let fieldSizeRange = 100.0...10000.0
     static let fieldSizeStep = 100.0
 
@@ -245,6 +250,7 @@ final class TeamFinderModel {
         var learnedShields: Bool
         var learnedSwitches: Bool
         var learnedFarming: Bool
+        var playSkill: PlaySkill?
         var broadFieldSize: Int
         var coreLimit: Int
     }
@@ -268,7 +274,7 @@ final class TeamFinderModel {
             useObservedMeta: useObservedMeta,
             simulateCounterswaps: simulateCounterswaps, optimalShields: optimalShields,
             learnedShields: learnedShields, learnedSwitches: learnedSwitches,
-            learnedFarming: learnedFarming, broadFieldSize: broadFieldSize,
+            learnedFarming: learnedFarming, playSkill: playSkill, broadFieldSize: broadFieldSize,
             coreLimit: coreLimit)
         if let data = try? JSONEncoder().encode(settings) {
             UserDefaults.standard.set(data, forKey: Self.settingsKey)
@@ -296,6 +302,7 @@ final class TeamFinderModel {
         learnedShields = saved.learnedShields
         learnedSwitches = saved.learnedSwitches
         learnedFarming = saved.learnedFarming
+        playSkill = saved.playSkill ?? .perfect
         broadFieldSize = saved.broadFieldSize
         coreLimit = min(max(saved.coreLimit, 1), CoreLimit.totalCores)
     }
@@ -423,6 +430,7 @@ final class TeamFinderModel {
         let learnedShields = learnedShields
         let learnedSwitches = learnedSwitches
         let learnedFarming = learnedFarming
+        let playSkill = playSkill
         let movesById = store.movesById
         let pokemonById = store.pokemonById
         let method = method
@@ -508,6 +516,7 @@ final class TeamFinderModel {
                         learnedFarming: learnedFarming,
                         voluntarySwitching: simulateCounterswaps,
                         optimalShields: optimalShields,
+                        playSkill: playSkill,
                         exploreAlternateMovesets: exploreAlternateMovesets,
                         onProgress: { fraction in
                             Task { @MainActor in self.noteProgress(fraction) }
@@ -654,6 +663,7 @@ final class TeamFinderModel {
         let learnedFarming = learnedFarming
         let voluntarySwitching = simulateCounterswaps
         let optimalShields = optimalShields
+        let playSkill = playSkill
 
         isValidatingBroadField = true
         broadFieldResults = nil
@@ -689,6 +699,7 @@ final class TeamFinderModel {
                     learnedShields: learnedShields, learnedSwitches: learnedSwitches,
                     learnedFarming: learnedFarming,
                     voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
+                    playSkill: playSkill,
                     onResults: { snapshot in
                         Task { @MainActor [self] in
                             withAnimation(.spring(duration: 0.6)) { self.broadFieldResults = snapshot }

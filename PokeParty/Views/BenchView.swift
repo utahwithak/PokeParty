@@ -35,6 +35,9 @@ struct BenchView: View {
     /// Called when the user taps "Open in Team Builder" in the bench finder results.
     var openTeamInBuilder: ((League, [TeamMember]) -> Void)? = nil
     @State private var searchText = ""
+    /// Closed after adding a Pokémon, so the detail screen it opens isn't pushed
+    /// with the search field still active (which hid the navigation bar).
+    @State private var isSearchPresented = false
     @State private var addLeague: League = .great
     @State private var sortOrder: BenchSortOrder = .alphabetical
     @State private var sortCache = BenchSortCache()
@@ -149,7 +152,7 @@ struct BenchView: View {
         .themedBackground()
         .navigationTitle("My Bench")
         .inlineNavigationTitle()
-        .searchable(text: $searchText, prompt: "Search or add Pokémon")
+        .searchable(text: $searchText, isPresented: $isSearchPresented, prompt: "Search or add Pokémon")
         .safeAreaInset(edge: .top, spacing: 0) {
             HStack(spacing: 6) {
                 Text("Sort")
@@ -298,6 +301,7 @@ struct BenchView: View {
         let entry = bench.addFromRankings(
             speciesId: pokemon.speciesId, store: store, league: addLeague)
         searchText = ""
+        isSearchPresented = false
         // Defer so the list re-renders with the new row before selection is applied.
         Task { @MainActor in selectedID = entry.id }
     }

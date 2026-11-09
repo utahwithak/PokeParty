@@ -100,6 +100,11 @@ nonisolated struct ThreeVThreeBattle {
     /// (0 = team A, 1 = team B). Both by default; evaluation harnesses restrict
     /// it to one side so improvements can be attributed fairly.
     var learnedShieldSides: Set<Int> = [0, 1]
+    /// Sides (0 = team A, 1 = team B) that shield every charged move while they
+    /// have a shield — a novice's play. Takes precedence over every other shield
+    /// brain for that side; the other side is unaffected. Used by skill-tier
+    /// experiments; empty (perfect-ish play) by default.
+    var alwaysShieldSides: Set<Int> = []
 
     /// RL milestone 2: external switch policy, consulted at every switch
     /// decision point (boundary voluntary switch, counterswap, and faint
@@ -141,6 +146,10 @@ nonisolated struct ThreeVThreeBattle {
         farmDecisionHook = { ctx, window in net.shouldFarm(ctx, window: window) }
     }
 
+    /// EXPERIMENT: rate backups from their carried HP/energy/buffs instead of
+    /// pretending every switch-in arrives fresh (full HP, no energy).
+    nonisolated(unsafe) static var ratesCarriedState = false
+
     private let battleTimeLimit = 240_000
     /// Longest single farm window (battle-ms); the boundary re-evaluates afterwards.
     private static let maxFarmMs = 10_000
@@ -169,7 +178,7 @@ nonisolated struct ThreeVThreeBattle {
     /// Tempo cost of switching: the side that stays gets this many free fast moves —
     /// energy for itself, and real fast-move damage against whichever Pokémon just
     /// switched in — while the other spends its turn switching.
-    private static let switchTempoFastMoves = 3
+    nonisolated(unsafe) static var switchTempoFastMoves = 3   // EXPERIMENT: was a private let
     /// A catch swap must bring in a backup that beats this rating — dodging one
     /// super-effective move isn't worth 30s locked into a losing matchup.
     private static let catchMinRating = 475
@@ -457,6 +466,13 @@ nonisolated struct ThreeVThreeBattle {
                         return net.decide(ShieldObservation.capture(
                             battle: battle, defenderIndex: d, opportunity: o, move: move))
                     }
+                }
+            }
+            if !alwaysShieldSides.isEmpty {
+                let naive = alwaysShieldSides
+                let prior = battle.shieldPolicy
+                battle.shieldPolicy = { d, o, move in
+                    naive.contains(d) ? true : prior?(d, o, move)
                 }
             }
             battle.simulate()
@@ -831,7 +847,7 @@ nonisolated struct ThreeVThreeBattle {
     private func rate(_ mon: BattlePokemon, vs opponent: BattlePokemon,
                       myShields: Int, oppShields: Int, fresh: Bool) -> Int {
         var m = mon
-        if fresh { m.startHp = 0; m.startEnergy = 0; m.startStatBuffs = [0, 0] }
+        if fresh && !Self.ratesCarriedState { m.startHp = 0; m.startEnergy = 0; m.startStatBuffs = [0, 0] }
         m.startingShields = myShields
         var o = opponent
         o.startingShields = oppShields
@@ -882,8 +898,8 @@ nonisolated struct ThreeVThreeBattle {
         var bestRating = Int.min
         for i in alive {
             var cand = team[i]
-            cand.startHp = 0; cand.startEnergy = 0
-            cand.startingShields = teamShields; cand.startStatBuffs = [0, 0]
+            if !Self.ratesCarriedState { cand.startHp = 0; cand.startEnergy = 0; cand.startStatBuffs = [0, 0] }
+            cand.startingShields = teamShields
             var opp = opponent                         // carries the opponent's current state
             opp.startingShields = opponentShields
             let battle = Battle(cand, opp)

@@ -140,6 +140,7 @@ nonisolated enum TeamOptimizer {
         learnedFarming: Bool = true,
         voluntarySwitching: Bool = false,
         optimalShields: Bool = false,
+        playSkill: PlaySkill = .perfect,
         exploreAlternateMovesets: Bool = false,
         prefilterTopK: Int = 30,
         onProgress: (@Sendable (Double) -> Void)? = nil,
@@ -207,7 +208,8 @@ nonisolated enum TeamOptimizer {
         let env = EvalEnv(
             pool: pool, metaField: metaField, movesById: movesById,
             shieldNet: shieldNet, switchNet: switchNet, farmNet: farmNet,
-            voluntarySwitching: voluntarySwitching, optimalShields: optimalShields)
+            voluntarySwitching: voluntarySwitching, optimalShields: optimalShields,
+            mistakeRate: playSkill.mistakeRate)
 
         await withTaskGroup(of: OptimizedTeam?.self) { group in
             for start in starts {
@@ -260,6 +262,7 @@ nonisolated enum TeamOptimizer {
         learnedFarming: Bool = true,
         voluntarySwitching: Bool = false,
         optimalShields: Bool = false,
+        playSkill: PlaySkill = .perfect,
         onProgress: (@Sendable (Double) -> Void)? = nil,
         onResults: (@Sendable (BroadFieldResults) -> Void)? = nil
     ) async -> BroadFieldResults {
@@ -290,7 +293,7 @@ nonisolated enum TeamOptimizer {
                         return (index, 0, 0, 0)
                     }
                     var wins = 0, losses = 0, ties = 0
-                    for opponent in field {
+                    for (opponentIndex, opponent) in field.enumerated() {
                         if Task.isCancelled { break }
                         let oppMembers = opponent.map { pool[$0] }
                         guard let oppTeam = makeTeam(oppMembers, movesById: movesById) else { continue }
@@ -301,6 +304,16 @@ nonisolated enum TeamOptimizer {
                             voluntarySwitching: voluntarySwitching,
                             learnedShieldNet: shieldNet)
                         if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
+                        if playSkill != .perfect {
+                            // Our side slips; the field plays normally. One noisy game
+                            // per opponent — the large field averages the luck out.
+                            let normal: (SwitchContext) -> SwitchDecision =
+                                { switchNet?.decide($0) ?? .heuristic }
+                            let fallible = PlaySkill.fallible(
+                                base: normal, mistakeRate: playSkill.mistakeRate,
+                                seed: PlaySkill.seed(index, opponentIndex))
+                            battle.switchDecisionHook = { $0.side == 0 ? fallible($0) : normal($0) }
+                        }
                         battle.applyFarmNet(farmNet)
                         switch battle.run().winner {
                         case .teamA: wins += 1
@@ -942,6 +955,9 @@ nonisolated enum TeamOptimizer {
         private let farmNet: FarmPolicyNet?
         private let voluntarySwitching: Bool
         private let optimalShields: Bool
+        /// Chance the player's own switch decisions are replaced by random legal
+        /// ones (see `PlaySkill`). 0 = flawless play, the classic behavior.
+        private let mistakeRate: Double
 
         // Memo, sharded to keep lock contention negligible next to a 3v3 sim.
         // Outcomes pack 2 bits per meta team into `outcomes`; `known` marks which
@@ -959,7 +975,7 @@ nonisolated enum TeamOptimizer {
         init(
             pool: [Candidate], metaField: [MetaTeam], movesById: [String: Move],
             shieldNet: ShieldPolicyNet?, switchNet: SwitchPolicyNet?, farmNet: FarmPolicyNet?,
-            voluntarySwitching: Bool, optimalShields: Bool
+            voluntarySwitching: Bool, optimalShields: Bool, mistakeRate: Double = 0
         ) {
             self.pool = pool
             self.metaWeights = metaField.map(\.weight)
@@ -971,6 +987,7 @@ nonisolated enum TeamOptimizer {
             self.farmNet = farmNet
             self.voluntarySwitching = voluntarySwitching
             self.optimalShields = optimalShields
+            self.mistakeRate = mistakeRate
             self.memoEnabled = metaField.count <= 32
             self.shards = (0..<64).map { _ in Shard() }
         }
@@ -982,7 +999,23 @@ nonisolated enum TeamOptimizer {
         // Teams are built fresh per evaluation rather than shared: BattlePokemon
         // holds arrays, and every thread retaining/releasing the same buffers
         // costs more in atomic contention than rebuilding does.
-        private func simulate(_ team: [BattlePokemon], meta: Int) -> Outcome? {
+        private func simulate(_ team: [BattlePokemon], key: Key, meta: Int) -> Outcome? {
+            guard mistakeRate > 0 else { return play(team, meta: meta, seed: nil) }
+            // A fallible player: average a few seeded noisy games into one outcome.
+            // Seeds come from the ordered team and meta team, so the result is
+            // deterministic and the memo stays exact.
+            var total = 0.0
+            for draw in 0..<PlaySkill.rolloutsPerMatchup {
+                let seed = PlaySkill.seed(Int(key.a), Int(key.b), Int(key.c), meta, draw)
+                guard let outcome = play(team, meta: meta, seed: seed) else { return nil }
+                total += value(outcome)
+            }
+            let mean = total / Double(PlaySkill.rolloutsPerMatchup)
+            return mean >= 0.6 ? .win : (mean <= 0.4 ? .loss : .tie)
+        }
+
+        /// One battle against meta team `meta`; `seed` non-nil makes our side slip.
+        private func play(_ team: [BattlePokemon], meta: Int, seed: UInt64?) -> Outcome? {
             guard let opp = makeTeam(metaMembers[meta], movesById: movesById) else { return nil }
             var battle = ThreeVThreeBattle(
                 teamA: team, teamB: opp,
@@ -990,7 +1023,15 @@ nonisolated enum TeamOptimizer {
                 optimalShields: optimalShields,
                 voluntarySwitching: voluntarySwitching,
                 learnedShieldNet: shieldNet)
-            if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
+            if let seed {
+                let normal: (SwitchContext) -> SwitchDecision = { [switchNet] in
+                    switchNet?.decide($0) ?? .heuristic
+                }
+                let fallible = PlaySkill.fallible(base: normal, mistakeRate: mistakeRate, seed: seed)
+                battle.switchDecisionHook = { $0.side == 0 ? fallible($0) : normal($0) }
+            } else if let switchNet {
+                battle.switchDecisionHook = { switchNet.decide($0) }
+            }
             battle.applyFarmNet(farmNet)
             switch battle.run().winner {
             case .teamA: return .win
@@ -1060,7 +1101,7 @@ nonisolated enum TeamOptimizer {
                 let outcome: Outcome
                 if memoEnabled, entry.known & (1 << UInt32(m)) != 0 {
                     outcome = Outcome(rawValue: UInt8((entry.outcomes >> UInt64(2 * m)) & 3)) ?? .loss
-                } else if let o = simulate(battleTeam, meta: m) {
+                } else if let o = simulate(battleTeam, key: key, meta: m) {
                     outcome = o
                     if memoEnabled {
                         entry.known |= 1 << UInt32(m)

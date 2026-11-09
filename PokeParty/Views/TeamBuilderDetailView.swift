@@ -3,20 +3,20 @@
 //  PokeParty
 //
 //  Main panel of the 3v3 Team Builder. Shows the team as up to three editable
-//  cards (moveset pickers, reorder, remove, shadow), a league selector for what
-//  the team is rated against, and the analysis (grades / threats / suggested
-//  teammates) below. Pokémon are added from the palette in the middle column
-//  (`TeamBuilderView`).
+//  cards (moveset pickers, reorder, remove, shadow) under the team's name and
+//  league, and the analysis (grades / threats / suggested teammates) below.
+//  The team is the one picked in the middle column (`TeamBuilderView`), rated
+//  against its own league; edits save as they're made. Pokémon are added from
+//  a popover on an empty slot (`TeamPokemonPicker`).
 //
 
 import SwiftUI
 
 struct TeamBuilderDetailView: View {
-    @Bindable var store: RankingsStore
+    var store: RankingsStore
     @Bindable var model: TeamBuilderModel
     var savedTeams: SavedTeamsStore
     var bench: BenchStore
-    var hiddenCups: HiddenCupsStore
     /// Mac only: jumps to Battle HUD with the current team loaded.
     var openBattleHUD: (() -> Void)? = nil
     @State private var showingBattle = false
@@ -24,7 +24,12 @@ struct TeamBuilderDetailView: View {
     @State private var metaTestModel = TeamMetaTestModel()
     @State private var showingSavePrompt = false
     @State private var saveName = ""
-    @Environment(ShareImportModel.self) private var shareImport
+    /// The slot whose Pokémon picker is open.
+    @State private var pickerSlot: Int?
+    /// The slot whose Pokémon is being swapped for another.
+    @State private var replaceSlot: Int?
+    @State private var nameText = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         ScrollView {
@@ -39,11 +44,40 @@ struct TeamBuilderDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle("Team Builder")
-        .onAppear { analyzeIfNeeded() }
+        .onAppear { model.syncFromSaved(); analyzeIfNeeded(); syncNameText() }
         .onChange(of: model.members) { analyzeIfNeeded() }
+        // The open team changed outside the builder (an import, another device).
+        .onChange(of: currentTeam?.members) { model.syncFromSaved() }
+        .confirmationDialog(
+            "Replace the unsaved draft?",
+            isPresented: Binding(get: { model.pendingDraft != nil },
+                                 set: { if !$0 { model.resolvePendingDraft(replace: false) } }),
+            titleVisibility: .visible
+        ) {
+            Button("Replace Draft", role: .destructive) { model.resolvePendingDraft(replace: true) }
+            Button("Keep Current Draft", role: .cancel) { model.resolvePendingDraft(replace: false) }
+        } message: {
+            Text("You have a draft in \(store.format.title) that hasn't been saved. Opening this team replaces it.")
+        }
+        .onChange(of: model.currentTeamId) { syncNameText() }
+        .onChange(of: currentTeam?.name) { syncNameText() }
         // League changes reload the ranking list asynchronously; re-analyze once
         // the new meta has arrived.
         .onChange(of: store.entries) { analyzeIfNeeded() }
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    pickerSlot = model.members.count
+                } label: {
+                    Label("Add Pokémon", systemImage: "magnifyingglass")
+                }
+                .disabled(model.isFull)
+                .help("Search for a Pokémon to add to this team")
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if model.isDraft { draftBar }
+        }
         .sheet(isPresented: $showingBattle) {
             TeamBattleView(store: store, model: model, savedTeams: savedTeams, bench: bench)
         }
@@ -53,13 +87,78 @@ struct TeamBuilderDetailView: View {
         .alert("Save Team", isPresented: $showingSavePrompt) {
             TextField("Team name", text: $saveName)
             Button("Save") {
-                savedTeams.save(name: saveName, members: model.members,
-                                cup: store.format.cup, cp: store.format.cp)
+                let name = saveName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty else { return }
+                let team = savedTeams.add(name: name, members: model.members,
+                                          cup: store.format.cup, cp: store.format.cp)
+                model.adopt(team)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Saving with an existing team's name replaces that team for \(store.format.title).")
+            Text("Saves this team in \(store.format.title). From then on, changes save automatically.")
         }
+    }
+
+    // MARK: - Team name and draft
+
+    private var currentTeam: Team? {
+        model.currentTeamId.flatMap { savedTeams.team(id: $0) }
+    }
+
+    private func syncNameText() {
+        nameText = currentTeam?.name ?? ""
+    }
+
+    private func commitName() {
+        guard let id = model.currentTeamId else { return }
+        savedTeams.rename(id: id, to: nameText)
+        // An empty name isn't kept; show the stored one again.
+        syncNameText()
+    }
+
+    /// The team's name, editable in place; a draft has none yet.
+    @ViewBuilder
+    private var titleField: some View {
+        if currentTeam != nil {
+            TextField("Team name", text: $nameText)
+                .textFieldStyle(.plain)
+                .font(.title2.weight(.semibold))
+                .focused($nameFocused)
+                .onSubmit(commitName)
+                .onChange(of: nameFocused) { _, focused in if !focused { commitName() } }
+                .help("Rename this team")
+        } else {
+            Text(model.hasMembers ? "Untitled draft" : "No team open")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var leagueBadge: some View {
+        Text(store.format.title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(store.format.tint)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(store.format.tint.opacity(0.15), in: Capsule())
+            .help("The league this team is rated against")
+    }
+
+    /// Pinned under a draft: it isn't saved until the player says so.
+    private var draftBar: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+            Text("This team isn't saved yet.").font(.subheadline.weight(.medium))
+            Spacer()
+            Button("Discard", role: .destructive) { model.discardDraft() }
+            Button("Save Team…") {
+                saveName = defaultSaveName
+                showingSavePrompt = true
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 20).padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
     }
 
     private func analyzeIfNeeded() {
@@ -69,67 +168,35 @@ struct TeamBuilderDetailView: View {
 
     // MARK: - Controls
 
-    /// On macOS the detail column is wide enough for every control on one
-    /// row. On iOS that same row has no room to fit — the two `.fixedSize()`
-    /// controls (league picker, teams menu) refuse to shrink, so "Rated
-    /// against" and the "Battle" button got squeezed into a sliver and wrapped
-    /// one syllable per line — so it splits into two rows instead.
+    /// The team's name and league, then the actions. On iOS the actions don't
+    /// fit beside the name, so they drop to a second row.
     private var controlsHeader: some View {
         #if os(iOS)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Text("Rated against")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                leaguePicker
+                titleField
+                leagueBadge
                 Spacer()
                 memberCountText
             }
             HStack(spacing: 10) {
-                teamsMenu
                 battleButton
                 metaTestButton
+                coachButton
                 Spacer()
             }
         }
         #else
         HStack(spacing: 10) {
-            Text("Rated against")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            leaguePicker
+            titleField
+            leagueBadge
             Spacer()
-            teamsMenu
             battleButton
             metaTestButton
             coachButton
             memberCountText
         }
         #endif
-    }
-
-    private var visibleCupFormats: [RankingFormat] {
-        store.cupFormats.filter { !hiddenCups.isHidden($0.id) }
-    }
-
-    private var leaguePicker: some View {
-        Picker("League", selection: $store.format) {
-            ForEach(RankingFormat.coreLeagues) { Text($0.title).tag($0) }
-            if !visibleCupFormats.isEmpty {
-                Divider()
-                ForEach(visibleCupFormats) { Text($0.title).tag($0) }
-            }
-            // A team opened from the Party Finder can belong to a cup that
-            // isn't in the list above (hidden / not published); keep it
-            // selectable so the picker's selection always has a tag.
-            if !store.format.isCoreLeague, !visibleCupFormats.contains(store.format) {
-                Divider()
-                Text(store.format.title).tag(store.format)
-            }
-        }
-        .labelsHidden()
-        .pickerStyle(.menu)
-        .fixedSize()
     }
 
     private var battleButton: some View {
@@ -169,45 +236,6 @@ struct TeamBuilderDetailView: View {
             .foregroundStyle(.secondary)
     }
 
-    // MARK: - Saved teams
-
-    private var teamsForCurrentFormat: [Team] {
-        savedTeams.teams(for: store.format)
-    }
-
-    private var teamsMenu: some View {
-        Menu {
-            if teamsForCurrentFormat.isEmpty {
-                Text("No saved teams for \(store.format.title)")
-            }
-            ForEach(teamsForCurrentFormat) { team in
-                Menu(team.name) {
-                    Button("Load") { model.setTeam(team.members) }
-                    ShareLink(
-                        item: ResultsShareItem(teamNamed: team.name, members: team.members, cup: team.cup, cp: team.cp),
-                        preview: SharePreview(team.name)
-                    ) {
-                        Label("Share…", systemImage: "square.and.arrow.up")
-                    }
-                    Button("Delete", role: .destructive) { savedTeams.delete(team) }
-                }
-            }
-            Divider()
-            Button("Save Current Team…") {
-                saveName = defaultSaveName
-                showingSavePrompt = true
-            }
-            .disabled(!model.hasMembers)
-            Button("Import Shared Team…") {
-                shareImport.isImporterPresented = true
-            }
-        } label: {
-            Label("Teams", systemImage: "person.3.sequence")
-        }
-        .fixedSize()
-        .help("Save the current team or load a saved one")
-    }
-
     /// Default name for the save prompt: the members' species names.
     private var defaultSaveName: String {
         model.members
@@ -241,31 +269,60 @@ struct TeamBuilderDetailView: View {
     private var teamSlots: some View {
         ForEach(0..<TeamBuilderModel.maxMembers, id: \.self) { index in
             if index < model.members.count {
-                TeamMemberCard(index: index, store: store, model: model)
+                TeamMemberCard(index: index, store: store, model: model, onReplace: { replaceSlot = index })
+                    .contextMenu {
+                        Button("Replace Pokémon…") { replaceSlot = index }
+                    }
+                    .popover(isPresented: Binding(
+                        get: { replaceSlot == index },
+                        set: { if !$0, replaceSlot == index { replaceSlot = nil } }
+                    )) {
+                        TeamPokemonPicker(store: store, model: model, bench: bench, replacing: index,
+                                          onDone: { replaceSlot = nil })
+                            #if os(iOS)
+                            .presentationCompactAdaptation(.sheet)
+                            #endif
+                    }
             } else {
-                emptySlot
+                emptySlot(index)
             }
         }
     }
 
-    private var emptySlot: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "plus")
-                .font(.title2)
-                .foregroundStyle(.secondary)
-            Text("Add from the list")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+    /// Click to pick a Pokémon from this league's bench and list.
+    private func emptySlot(_ index: Int) -> some View {
+        Button {
+            pickerSlot = index
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                Text("Add Pokémon")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 150)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
+                    .foregroundStyle(.quaternary)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 12))
         }
-        .frame(maxWidth: .infinity)
-        .frame(minHeight: 150)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
-                .foregroundStyle(.quaternary)
-        )
+        .buttonStyle(.plain)
+        .popover(isPresented: Binding(
+            get: { pickerSlot == index },
+            set: { if !$0, pickerSlot == index { pickerSlot = nil } }
+        )) {
+            TeamPokemonPicker(store: store, model: model, bench: bench, onDone: { pickerSlot = nil })
+                #if os(iOS)
+                .presentationCompactAdaptation(.sheet)
+                #endif
+        }
     }
 
     // MARK: - Analysis
@@ -335,6 +392,9 @@ struct TeamMemberCard: View {
     let index: Int
     let store: RankingsStore
     @Bindable var model: TeamBuilderModel
+    /// When set, the card shows a swap button that calls it (the Team Builder
+    /// opens its Pokémon picker; Battle HUD leaves it off).
+    var onReplace: (() -> Void)? = nil
 
     private var member: TeamMember? {
         model.members.indices.contains(index) ? model.members[index] : nil
@@ -379,13 +439,25 @@ struct TeamMemberCard: View {
                 }
             }
             Spacer()
+            if let onReplace {
+                Button(action: onReplace) {
+                    Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .touchTarget()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Replace Pokémon")
+                .help("Replace with another Pokémon")
+            }
             Button {
                 model.remove(at: index)
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
+                    .touchTarget()
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Remove from team")
             .help("Remove from team")
         }
     }
@@ -403,11 +475,15 @@ struct TeamMemberCard: View {
             HStack(spacing: 6) {
                 Button { model.move(from: index, to: index - 1) } label: {
                     Image(systemName: "chevron.left")
+                        .touchTarget(width: 40, height: 32)
                 }
+                .accessibilityLabel("Move earlier")
                 .disabled(index == 0)
                 Button { model.move(from: index, to: index + 1) } label: {
                     Image(systemName: "chevron.right")
+                        .touchTarget(width: 40, height: 32)
                 }
+                .accessibilityLabel("Move later")
                 .disabled(index >= model.members.count - 1)
                 Spacer()
             }
@@ -560,7 +636,10 @@ struct TeamMovePicker: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                         .help(designation?.help ?? "")
-                    if let move { TypeBadge(type: move.type) }
+                    if let move {
+                        TypeBadge(type: move.type)
+                        if showsDetail { ChargeBankBars(count: move.bankSize) }
+                    }
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 8))
@@ -600,5 +679,40 @@ struct TeamMovePicker: View {
         }
         if id == recommendedId { name += " (Recommended)" }
         return name
+    }
+}
+
+/// One slanted segment per charge that fits in a full energy bar, like the
+/// bars Pokémon GO draws beside a charged move.
+struct ChargeBankBars: View {
+    let count: Int
+
+    var body: some View {
+        if count > 0 {
+            HStack(spacing: 2) {
+                ForEach(0..<count, id: \.self) { _ in
+                    Slant()
+                        .fill(Color.secondary.opacity(0.6))
+                        .frame(width: 14, height: 7)
+                }
+            }
+            .accessibilityElement()
+            .accessibilityLabel("Can bank \(count)")
+            .help("A full energy bar holds \(count) of this move")
+        }
+    }
+
+    /// A trapezoid leaning right, wider along the bottom.
+    private nonisolated struct Slant: Shape {
+        func path(in rect: CGRect) -> Path {
+            var path = Path()
+            let inset = rect.height * 0.5
+            path.move(to: CGPoint(x: rect.minX + inset, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX - inset, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+            path.closeSubpath()
+            return path
+        }
     }
 }

@@ -26,6 +26,8 @@ final class OpponentScanModel {
 
     /// Opponents detected this session, newest first.
     private(set) var detections: [OpponentDetection] = []
+    /// Newest battle-header reading, for Battle HUD when it runs on this device (iPad).
+    private(set) var latestSnapshot: BattleSnapshot?
     /// Detections Opponent Check hasn't taken yet.
     @ObservationIgnored private var untaken: [OpponentDetection] = []
 
@@ -43,6 +45,7 @@ final class OpponentScanModel {
             self?.received(detection)
         }
         stream.onSnapshot = { [weak self] snapshot in
+            self?.latestSnapshot = snapshot
             self?.link.send(snapshot)
         }
         stream.onAppraisalFrame = { [weak self] image in

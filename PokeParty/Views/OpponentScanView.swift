@@ -184,7 +184,7 @@ struct OpponentScanView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if matches.isEmpty {
-                    Text("Not matched to a ranked Pokémon in this format")
+                    Text("Not matched to a Pokémon")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -200,7 +200,7 @@ struct OpponentScanView: View {
 
     /// The same name + type-icon resolution Check Opponent uses.
     private func resolve(_ detection: OpponentDetection) -> [Pokemon] {
-        let ranked = store.entries.compactMap { store.pokemonById[$0.speciesId] }
+        let ranked = store.opponentPool(forName: detection.name)
         let byName = OpponentNameMatcher.candidates(for: detection.name, in: ranked)
         return OpponentNameMatcher.narrow(byName, byIcons: detection.icons)
     }

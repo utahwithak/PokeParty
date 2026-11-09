@@ -36,7 +36,8 @@ final class EntitlementStore {
         Bundle.main.url(forResource: "embedded", withExtension: "provisionprofile") != nil
 
     /// Whether the pro features are currently unlocked.
-    #if DEBUG
+    #if DEBUG || targetEnvironment(simulator)
+    // The simulator is always unlocked so Pro screens can be shown (store screenshots).
     private(set) var isUnlocked = true
     #else
     private(set) var isUnlocked = EntitlementStore.isNonAppStoreBuild

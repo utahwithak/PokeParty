@@ -139,6 +139,7 @@ import Testing
 
     @Test func theResultScreenMarksTheCurrentGameAndAsksForAReview() {
         let store = makeStore()
+        store.addGame(format: .great)
         store.observe(BattleObservation(), team: [member("a")], opponents: [member("x")], format: .great)
 
         let id = store.observeResult(.win)
@@ -150,6 +151,7 @@ import Testing
 
     @Test func aHandMarkIsNotOverriddenByTheScreen() {
         let store = makeStore()
+        store.addGame(format: .great)
         store.observe(BattleObservation(), team: [member("a")], opponents: [member("x")], format: .great)
         store.mark(store.current!.id, as: .loss)
 
