@@ -600,6 +600,8 @@ struct TeamMovePicker: View {
     /// / fast-move counts. For a charged move, pass the fast move's energy gain.
     var showsDetail = false
     var fastEnergyGain: Int? = nil
+    /// A move that's only a guess (an opponent's unconfirmed set) shows in lighter text.
+    var isGuess = false
 
     /// "Fast" → "F", "Charged 2" → "2": the slot is clear from the order, and
     /// the narrower column lets three cards sit side by side.
@@ -649,7 +651,8 @@ struct TeamMovePicker: View {
                         .font(.caption.weight(.medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
-                        .help(designation?.help ?? "")
+                        .foregroundStyle(isGuess ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                        .help(designation?.help ?? (isGuess ? "A guess: not seen in this battle yet" : ""))
                     if let move {
                         TypeBadge(type: move.type)
                         if showsDetail { ChargeBankBars(count: move.bankSize) }

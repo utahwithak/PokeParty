@@ -21,6 +21,8 @@ struct OpponentCheckView: View {
     var onOpponentsChange: (([TeamMember]) -> Void)?
     /// Fast moves inferred in battle (species id → move id), applied to the matching slots.
     var observedFastMoves: [String: String] = [:]
+    /// Charged moves seen thrown in battle (species id → move ids), put into the matching slots.
+    var seenChargedMoves: [String: [String]] = [:]
     /// Called with the species an opponent was just detected or picked as — the one on the field.
     var onActiveOpponent: ((String) -> Void)?
     /// Changing this clears the opponents — lets the host trigger a new battle.
@@ -40,10 +42,16 @@ struct OpponentCheckView: View {
     /// Slot holding the opponent's lead — the first one picked or detected
     /// once the slots were empty (a new battle). The user can reassign it.
     @State private var leadSlot: Int?
+    /// Species whose fast move the user chose by hand, so the in-battle guess leaves it alone.
+    @State private var userSetFastMoves: Set<String> = []
+    /// Charged moves the user chose by hand, per species. Those count as confirmed.
+    @State private var userSetCharged: [String: Set<String>] = [:]
     /// Species credited as lead in `usage`, so reassigning the lead moves the credit.
     @State private var recordedLead: String?
     /// `ratings[slot][teamIndex]`, recomputed when the inputs change.
     @State private var ratings: [[Int?]] = Array(repeating: [], count: 3)
+    /// `cmp[slot][teamIndex]`: who wins a charge move priority tie, recomputed with `ratings`.
+    @State private var cmp: [[CMPOutlook?]] = Array(repeating: [], count: 3)
     /// Forms of a just-detected opponent when the screen's name alone can't
     /// say which one it is (Zacian, Kyurem, Necrozma…); the user taps one.
     @State private var formChoices: [Pokemon] = []
@@ -85,6 +93,11 @@ struct OpponentCheckView: View {
                 slot: slot, store: store, model: model,
                 member: slots[slot],
                 ratings: ratings[slot],
+                cmp: cmp[slot],
+                confirmedCharged: slots[slot].map { member in
+                    Set(seenChargedMoves[member.speciesId] ?? []).union(userSetCharged[member.speciesId] ?? [])
+                } ?? [],
+                fastConfirmed: slots[slot].map { userSetFastMoves.contains($0.speciesId) } ?? false,
                 isActive: activeSlot == slot,
                 isFainted: isFainted(slot),
                 isLead: isLead(slot),
@@ -134,12 +147,16 @@ struct OpponentCheckView: View {
         .onChange(of: resetToken) { clearOpponents() }
         .onChange(of: observedFastMoves) { _, moves in
             for (speciesId, moveId) in moves {
-                guard let slot = slots.firstIndex(where: { $0?.speciesId == speciesId }),
+                // A fast move picked by hand beats the guess from what hit you.
+                guard !userSetFastMoves.contains(speciesId),
+                      let slot = slots.firstIndex(where: { $0?.speciesId == speciesId }),
                       slots[slot]?.fastMoveId != moveId else { continue }
                 slots[slot]?.fastMoveId = moveId
             }
         }
+        .onChange(of: seenChargedMoves) { applySeenMoves() }
         .onChange(of: slots) {
+            applySeenMoves()
             refreshRatings()
             onOpponentsChange?(slots.compactMap { $0 })
         }
@@ -148,6 +165,8 @@ struct OpponentCheckView: View {
         .onChange(of: store.format) {
             // Movesets and rankings are per format, so start fresh.
             slots = Array(repeating: nil, count: 3)
+            userSetFastMoves = []
+        userSetCharged = [:]
             activeSlot = 0
             leadSlot = nil
             recordedLead = nil
@@ -261,7 +280,7 @@ struct OpponentCheckView: View {
         case 1:
             formChoices = []
             detectionNote = "Detected \(matches[0].speciesName)\(cp)\(usedTypes ? ", form chosen by type" : "")."
-            pick(matches[0].speciesId)
+            pick(matches[0].speciesId, fromDetection: true)
         default:
             let rank = store.rankBySpeciesId
             formChoices = matches.sorted { (rank[$0.speciesId] ?? .max) < (rank[$1.speciesId] ?? .max) }
@@ -299,13 +318,57 @@ struct OpponentCheckView: View {
             usage.replace(old, with: new, isLead: wasLead, in: store.format)
             if wasLead { recordedLead = new }
         }
+        if let old = slots[slot], let member, old.speciesId == member.speciesId,
+           old.fastMoveId != member.fastMoveId {
+            userSetFastMoves.insert(member.speciesId)
+        }
+        if let old = slots[slot], let member, old.speciesId == member.speciesId {
+            let added = Set(member.chargedMoveIds).subtracting(old.chargedMoveIds).subtracting([""])
+            if !added.isEmpty { userSetCharged[member.speciesId, default: []].formUnion(added) }
+        }
         slots[slot] = member
         if member == nil, leadSlot == slot { leadSlot = nil }
     }
 
-    private func pick(_ speciesId: String) {
+    /// Puts the charged moves seen thrown into their slots: seen moves first, then
+    /// moves the user picked, then the rest of the guess. Moves a Mega has in a third
+    /// slot are left alone. Leaves the slot untouched when nothing would change.
+    private func applySeenMoves() {
+        for index in slots.indices {
+            guard let member = slots[index], member.chargedMoveIds.count <= 2,
+                  let seen = seenChargedMoves[member.speciesId], !seen.isEmpty else { continue }
+            let known = store.pokemonById[member.speciesId]?.chargedMoves ?? []
+            let thrown = seen.filter { known.contains($0) }
+            let chosen = userSetCharged[member.speciesId] ?? []
+            let rest = member.chargedMoveIds.filter { !thrown.contains($0) }
+            let ordered = thrown + rest.filter { chosen.contains($0) } + rest.filter { !chosen.contains($0) }
+            let updated = Array(ordered.prefix(max(2, thrown.count)))
+            if updated != member.chargedMoveIds { slots[index]?.chargedMoveIds = updated }
+        }
+    }
+
+    /// Whether the user changed this opponent's moves or Shadow from the defaults.
+    private func isCustomized(_ member: TeamMember) -> Bool {
+        guard let standard = store.makeMember(speciesId: member.speciesId) else { return false }
+        return member.fastMoveId != standard.fastMoveId
+            || member.chargedMoveIds != standard.chargedMoveIds
+            || member.shadow != standard.shadow
+    }
+
+    /// Picks an opponent into a slot. A detection (`fromDetection`) never writes over
+    /// a slot the user has set up: with all three full it takes an untouched one, or
+    /// does nothing. Picking by hand still replaces the active slot.
+    private func pick(_ speciesId: String, fromDetection: Bool = false) {
         guard let member = store.makeMember(speciesId: speciesId) else { return }
-        let target = slots.firstIndex(where: { $0 == nil }) ?? activeSlot
+        var target = slots.firstIndex(where: { $0 == nil }) ?? activeSlot
+        if fromDetection, slots[target] != nil {
+            let untouched = slots.indices.filter { slots[$0].map { !isCustomized($0) } ?? true }
+            guard let free = untouched.contains(activeSlot) ? activeSlot : untouched.first else {
+                detectionNote = "\(store.name(forSpeciesId: speciesId)) isn't in the opponent slots, and all three have custom moves, so nothing was replaced."
+                return
+            }
+            target = free
+        }
         let isNewBattle = slots.allSatisfy { $0 == nil }
         slots[target] = member
         activeSlot = slots.firstIndex(where: { $0 == nil }) ?? target
@@ -325,6 +388,8 @@ struct OpponentCheckView: View {
     /// Empties the opponent slots and the notes about them.
     private func clearOpponents() {
         slots = Array(repeating: nil, count: 3)
+        userSetFastMoves = []
+        userSetCharged = [:]
         activeSlot = 0
         leadSlot = nil
         recordedLead = nil
@@ -336,6 +401,22 @@ struct OpponentCheckView: View {
         ratings = slots.map { slot in
             guard let slot, model.hasMembers else { return [] }
             return store.teamRatings(for: model.members, against: slot)
+        }
+        let cap = store.format.cp
+        cmp = slots.map { slot in
+            guard let slot, model.hasMembers, let species = store.pokemonById[slot.speciesId],
+                  let theirs = CMPOutlook.attackRange(
+                    species: species, shadow: slot.shadow, megaLevel: slot.megaLevel,
+                    isBestBuddy: false, ivs: nil, cpCap: cap)
+            else { return [] }
+            return model.members.map { member in
+                guard let mine = store.pokemonById[member.speciesId],
+                      let range = CMPOutlook.attackRange(
+                        species: mine, shadow: member.shadow, megaLevel: member.megaLevel,
+                        isBestBuddy: member.isBestBuddy, ivs: member.ivs, cpCap: cap)
+                else { return nil }
+                return CMPOutlook.compare(mine: range, theirs: theirs)
+            }
         }
     }
 
@@ -459,6 +540,11 @@ private struct OpponentColumn: View {
     let model: TeamBuilderModel
     let member: TeamMember?
     let ratings: [Int?]
+    let cmp: [CMPOutlook?]
+    /// Charged moves seen thrown or chosen by hand; the others are guesses and show lighter.
+    let confirmedCharged: Set<String>
+    /// Whether the fast move was chosen by hand (it's never read from a banner).
+    let fastConfirmed: Bool
     let isActive: Bool
     let isFainted: Bool
     let isLead: Bool
@@ -647,7 +733,7 @@ private struct OpponentColumn: View {
                     guard let id else { return }
                     var m = member; m.fastMoveId = id; onChange(m)
                 },
-                showsDetail: true)
+                showsDetail: true, isGuess: !fastConfirmed)
             TeamMovePicker(
                 label: "Charged 1", currentId: member.chargedMoveIds.first ?? "",
                 optionIds: species.chargedMoves,
@@ -656,7 +742,8 @@ private struct OpponentColumn: View {
                 onSelect: { id in
                     var m = member; m.setChargedMove(id, slot: 0); onChange(m)
                 },
-                showsDetail: true, fastEnergyGain: fastGain)
+                showsDetail: true, fastEnergyGain: fastGain,
+                isGuess: !confirmedCharged.contains(member.chargedMoveIds.first ?? ""))
             TeamMovePicker(
                 label: "Charged 2",
                 currentId: member.chargedMoveIds.count > 1 ? member.chargedMoveIds[1] : "",
@@ -666,7 +753,8 @@ private struct OpponentColumn: View {
                 onSelect: { id in
                     var m = member; m.setChargedMove(id, slot: 1); onChange(m)
                 },
-                showsDetail: true, fastEnergyGain: fastGain)
+                showsDetail: true, fastEnergyGain: fastGain,
+                isGuess: !confirmedCharged.contains(member.chargedMoveIds.count > 1 ? member.chargedMoveIds[1] : ""))
             if species.hasThirdChargedMove {
                 TeamMovePicker(
                     label: "Charged 3",
@@ -698,7 +786,8 @@ private struct OpponentColumn: View {
                     ForEach(Array(model.members.enumerated()), id: \.element.id) { index, teamMember in
                         VStack(alignment: .leading, spacing: 3) {
                             matchupRow(teamMember: teamMember,
-                                       rating: ratings.indices.contains(index) ? ratings[index] : nil)
+                                       rating: ratings.indices.contains(index) ? ratings[index] : nil,
+                                       cmp: cmp.indices.contains(index) ? cmp[index] : nil)
                             throwTiming(teamMember: teamMember, opponentFastId: opponentFastId)
                         }
                     }
@@ -738,7 +827,7 @@ private struct OpponentColumn: View {
         }
     }
 
-    private func matchupRow(teamMember: TeamMember, rating: Int?) -> some View {
+    private func matchupRow(teamMember: TeamMember, rating: Int?, cmp: CMPOutlook?) -> some View {
         let name = store.pokemonById[teamMember.speciesId]?.speciesName ?? teamMember.speciesId
         return HStack(spacing: 6) {
             Text(name)
@@ -746,6 +835,7 @@ private struct OpponentColumn: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if let cmp { CMPBadge(outlook: cmp) }
             if let rating {
                 RatingBar(rating: rating)
                     .frame(width: 50)
@@ -762,6 +852,36 @@ private struct OpponentColumn: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// Small "CMP" tag: whether you win a simultaneous charged-move tie against this opponent.
+private struct CMPBadge: View {
+    let outlook: CMPOutlook
+
+    private var detail: (symbol: String, color: Color, help: String) {
+        switch outlook {
+        case .alwaysWins:
+            ("checkmark", Theme.win, "Always wins charge move priority: higher Attack than this opponent at any IVs.")
+        case .ivDependent:
+            ("questionmark", .orange, "Charge move priority depends on IVs: the Attack ranges overlap.")
+        case .cannotWin:
+            ("xmark", Theme.loss, "Can't win charge move priority: lower Attack than this opponent at any IVs.")
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Text("CMP")
+            Image(systemName: detail.symbol)
+        }
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(detail.color)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(detail.color.opacity(0.15), in: Capsule())
+        .help(detail.help)
+        .accessibilityLabel(detail.help)
     }
 }
 

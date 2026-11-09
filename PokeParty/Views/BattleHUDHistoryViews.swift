@@ -114,37 +114,41 @@ private struct SetTrackerPanel: View {
             }
 
             // Own row so a narrow panel never squeezes the score and progress text.
+            // One main action, with the occasional ones tucked into labeled menus.
             HStack(spacing: 8) {
                 Button(action: onNewGame) {
-                    Label("New game", systemImage: "arrow.counterclockwise")
+                    Label("Next game", systemImage: "play.fill")
                 }
-                .help("Add a new game to this set, clearing the opponents and resetting shields and HP.")
+                .buttonStyle(.borderedProminent)
+                .help("Start the next game in this set, clearing the opponents and resetting shields and HP.")
                 Menu {
-                    Button("Won") { history.addManual(outcome: .win, format: store.format) }
-                    Button("Lost") { history.addManual(outcome: .loss, format: store.format) }
+                    Button("I won", systemImage: "checkmark.circle") {
+                        history.addManual(outcome: .win, format: store.format)
+                    }
+                    Button("I lost", systemImage: "xmark.circle") {
+                        history.addManual(outcome: .loss, format: store.format)
+                    }
                 } label: {
-                    Label("Add game", systemImage: "plus.square")
+                    Label("Log a game", systemImage: "plus")
                 }
-                .menuIndicator(.hidden)
-                .fixedSize()
                 .help("Add a game the HUD missed, with its result, to this set")
-                Button {
-                    selectedId = nil
-                    onNewSet()
+                Menu {
+                    Button("Start a new set", systemImage: "square.stack") {
+                        selectedId = nil
+                        onNewSet()
+                    }
+                    Divider()
+                    Button("Reset this set to 0–0…", systemImage: "arrow.counterclockwise", role: .destructive) {
+                        confirmingReset = true
+                    }
+                    .disabled(games.isEmpty)
                 } label: {
-                    Label("New set", systemImage: "plus.circle")
+                    Label("Set", systemImage: "ellipsis.circle")
                 }
-                .help("Start a new set of games. A set also starts by itself after \(BattleHistoryStore.setSize) games.")
-                Button(role: .destructive) {
-                    confirmingReset = true
-                } label: {
-                    Label("Reset set", systemImage: "arrow.counterclockwise.circle")
-                }
-                .disabled(games.isEmpty)
-                .help("Throw away the games in this set and start it again from 0–0")
+                .help("Start a new set (one starts by itself after \(BattleHistoryStore.setSize) games), or reset this one")
             }
-            // Icons only; each button keeps its tooltip.
-            .labelStyle(.iconOnly)
+            .controlSize(.regular)
+            .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 6) {
                 ForEach(Array(games.enumerated()), id: \.element.id) { index, game in

@@ -19,6 +19,11 @@ struct BattleHUDTeamPane: View {
     @State private var searchText = ""
     /// `RankingFormat.id` to show, or nil for every league.
     @State private var leagueFilter: String?
+    /// The team and league last picked here, restored on the next launch.
+    @AppStorage("battleHUDLastTeamId") private var lastTeamId = ""
+    @AppStorage("battleHUDLastFormatId") private var lastFormatId = ""
+    /// Restore only once per launch, so later visits keep what Team Builder has open.
+    private static var didRestoreLastTeam = false
 
     /// A league's saved teams. `format` is nil for a cup that's no longer
     /// running — its rankings aren't loaded, so its teams can't be coached.
@@ -121,6 +126,26 @@ struct BattleHUDTeamPane: View {
             }
         }
         .navigationTitle("Battle HUD")
+        .onAppear(perform: restoreLastTeam)
+        // Cup formats load after launch; a remembered cup team waits for them.
+        .onChange(of: store.cupFormats.map(\.id)) { restoreLastTeam() }
+    }
+
+    /// Reopens the team last loaded here, in its league, the first time the HUD
+    /// shows after launch. Later visits keep whatever Team Builder has open.
+    private func restoreLastTeam() {
+        guard !Self.didRestoreLastTeam, let teamId = UUID(uuidString: lastTeamId) else { return }
+        guard let team = savedTeams.team(id: teamId) else {
+            // The team was deleted; nothing to restore.
+            Self.didRestoreLastTeam = true
+            return
+        }
+        guard let format = (store.cupFormats + RankingFormat.coreLeagues).first(where: { $0.id == lastFormatId && team.matches($0) })
+        else { return }
+        Self.didRestoreLastTeam = true
+        guard model.currentTeamId != teamId || store.format != format else { return }
+        model.select(team, for: format)
+        store.format = format
     }
 
     private func matches(_ team: Team, query: String) -> Bool {
@@ -134,6 +159,9 @@ struct BattleHUDTeamPane: View {
             guard let format = group.format else { return }
             model.select(team, for: format)
             store.format = format
+            lastTeamId = team.id.uuidString
+            lastFormatId = format.id
+            Self.didRestoreLastTeam = true
         } label: {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -173,11 +201,18 @@ struct BattleHUDDetailView: View {
     @AppStorage("battleHUDShowCoachBar") private var showCoachBar = true
     /// Width of the whole detail column, to pick side-by-side or stacked layout.
     @State private var availableWidth: CGFloat = 1000
+    /// Width of the coaching bar, set by dragging its left edge.
+    @AppStorage("battleHUDCoachBarWidth") private var storedCoachBarWidth = 340.0
+    private static let coachBarWidthRange: ClosedRange<Double> = 260...640
+    private var coachBarWidth: Binding<Double> {
+        Binding(get: { min(max(storedCoachBarWidth, Self.coachBarWidthRange.lowerBound), Self.coachBarWidthRange.upperBound) },
+                set: { storedCoachBarWidth = $0 })
+    }
     /// Below this the coaching bar can't sit beside the main panel, so it stacks above it.
-    /// Three Pokémon cards need about 860pt across; the bar takes 340 more. Stacking
+    /// Three Pokémon cards need about 860pt across, plus the bar. Stacking
     /// the bar instead keeps all three cards in a row on a 1440pt-wide window.
-    private static let sideBySideMinWidth: CGFloat = 1220
-    private var isWide: Bool { availableWidth >= Self.sideBySideMinWidth }
+    private static let mainPanelMinWidth: CGFloat = 880
+    private var isWide: Bool { availableWidth >= Self.mainPanelMinWidth + coachBarWidth.wrappedValue }
     #if os(iOS)
     /// iPad: this device's own Screen Scan also feeds the coach.
     @Environment(OpponentScanModel.self) private var scan
@@ -192,21 +227,21 @@ struct BattleHUDDetailView: View {
     }
 
     var body: some View {
-        Group {
-            if isWide {
-                HStack(spacing: 0) {
-                    mainPanel
-                        .frame(minWidth: 0, maxWidth: .infinity)
-                    if showCoachBar {
-                        Divider()
-                        ScrollView { coachContent.padding(16) }
-                            .frame(width: 340)
-                            .transition(.move(edge: .trailing))
-                    }
-                }
-            } else {
-                // Narrow: one column, the coaching content first so the call stays on top.
-                mainPanel
+        // The main panel is always the first child of the same stack, so resizing
+        // across the wide/narrow threshold keeps its identity — and with it the
+        // opponent slots, edited movesets and lead held in its @State. Narrow
+        // windows just drop the side bar (the coaching content moves inside the panel).
+        HStack(spacing: 0) {
+            mainPanel
+                .frame(minWidth: 0, maxWidth: .infinity)
+            if isWide && showCoachBar {
+                // Dragging can't widen the bar past the point where the layout would stack.
+                let maxWidth = max(Self.coachBarWidthRange.lowerBound,
+                                   min(Self.coachBarWidthRange.upperBound, availableWidth - Self.mainPanelMinWidth))
+                CoachBarDivider(width: coachBarWidth, range: Self.coachBarWidthRange.lowerBound...maxWidth)
+                ScrollView { coachContent.padding(16) }
+                    .frame(width: coachBarWidth.wrappedValue)
+                    .transition(.move(edge: .trailing))
             }
         }
         .clipped()
@@ -283,6 +318,7 @@ struct BattleHUDDetailView: View {
                     store: store, model: model,
                     onOpponentsChange: { opponents = $0 },
                     observedFastMoves: coach.observedFastMoves,
+                    seenChargedMoves: coach.seenOpponentMoves,
                     onActiveOpponent: { activeOpponentId = $0 },
                     resetToken: resetToken,
                     faintedOpponents: coach.inputs.opponentFainted,
@@ -354,6 +390,46 @@ struct BattleHUDDetailView: View {
 
     private func refresh() {
         coach.refresh(team: model.members, opponents: opponents, store: store)
+    }
+}
+
+/// The line between the main panel and the coaching bar. Drag it left or right
+/// to resize the bar; double-click resets it to the default width.
+private struct CoachBarDivider: View {
+    @Binding var width: Double
+    let range: ClosedRange<Double>
+    /// The bar's width when the current drag began.
+    @State private var startWidth: Double?
+    @State private var hovering = false
+
+    var body: some View {
+        Divider()
+            // A wider, invisible grab area around the 1pt line.
+            .overlay {
+                Rectangle()
+                    .fill(hovering || startWidth != nil ? Color.accentColor.opacity(0.35) : .clear)
+                    .frame(width: 4)
+            }
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
+            #if os(macOS)
+            .onHover { inside in
+                hovering = inside
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            #endif
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { drag in
+                        let start = startWidth ?? width
+                        startWidth = start
+                        // The bar is on the right, so dragging left makes it wider.
+                        width = min(max(start - drag.translation.width, range.lowerBound), range.upperBound)
+                    }
+                    .onEnded { _ in startWidth = nil }
+            )
+            .onTapGesture(count: 2) { width = 340 }
+            .help("Drag to resize the coaching bar. Double-click to reset.")
     }
 }
 
