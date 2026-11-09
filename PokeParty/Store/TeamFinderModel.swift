@@ -31,14 +31,19 @@ final class TeamFinderModel {
         case gradeCheck
         case combined
         case aiOptimizer
+        case myMeta
 
         var id: Self { self }
+
+        /// Both hill-climbing methods share the optimizer's settings and results UI.
+        var isOptimizer: Bool { self == .aiOptimizer || self == .myMeta }
         var title: String {
             switch self {
             case .tournament: return "Tournament (3v3 battles)"
             case .gradeCheck: return "AAAA grade check (static analysis)"
             case .combined: return "AAAA tournament (grades, then battles)"
             case .aiOptimizer: return "AI Optimizer (hill climbing)"
+            case .myMeta: return "My Meta (leads & seen opponents)"
             }
         }
     }
@@ -158,18 +163,25 @@ final class TeamFinderModel {
     /// opponent's leads weighted most.
     var useObservedMeta = false { didSet { persistSettings() } }
 
+    /// Number of ranked threats kept as a backfill in "My Meta" mode, so the
+    /// field still has some general coverage beyond the opponents logged.
+    static let myMetaBackfillSize = 6
+
     /// Opponent Pokémon to add as threats, weighted against the top automatic
-    /// threat (1.0): seen species 0.5–1.5 by frequency, plus up to +1.5 for lead frequency.
-    private func observedThreats(using store: RankingsStore) -> [TeamOptimizer.ObservedThreat] {
+    /// threat (1.0): seen species 0.5–1.5 by frequency, plus up to +1.5 for lead
+    /// frequency. In `focus` ("My Meta") mode more species count and leads
+    /// weigh up to +4, so the field is built mostly from what the user faces.
+    private func observedThreats(using store: RankingsStore, focus: Bool = false) -> [TeamOptimizer.ObservedThreat] {
         let usage = OpponentUsageStore()
-        let seen = usage.mostUsed(in: format, limit: 8)
+        let seen = usage.mostUsed(in: format, limit: focus ? 15 : 8)
         let leads = usage.recentLeads(in: format)
         let maxSeen = Double(seen.map(\.count).max() ?? 1)
         let maxLead = Double(leads.map(\.count).max() ?? 1)
+        let leadBoost = focus ? 4.0 : 1.5
         var weights: [String: Double] = [:]
         for s in seen { weights[s.speciesId] = 0.5 + Double(s.count) / maxSeen }
-        for l in leads.sorted(by: { $0.count > $1.count }).prefix(4) {
-            weights[l.speciesId, default: 0.5] += 1.5 * Double(l.count) / maxLead
+        for l in leads.sorted(by: { $0.count > $1.count }).prefix(focus ? 6 : 4) {
+            weights[l.speciesId, default: 0.5] += leadBoost * Double(l.count) / maxLead
         }
         let picked = Set(strongAgainstMembers.map(\.speciesId))
         return weights.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
@@ -435,11 +447,13 @@ final class TeamFinderModel {
         let pokemonById = store.pokemonById
         let method = method
         let restarts = restarts
-        let metaSize = metaSize
+        let isMyMeta = method == .myMeta
+        let metaSize = isMyMeta ? Self.myMetaBackfillSize : metaSize
         let exploreAlternateMovesets = exploreAlternateMovesets
         let lockedMembers = lockedMembers
         let strongAgainstMembers = strongAgainstMembers
-        let observedMeta = (method == .aiOptimizer && useObservedMeta) ? observedThreats(using: store) : []
+        let observedMeta = (isMyMeta || (method == .aiOptimizer && useObservedMeta))
+            ? observedThreats(using: store, focus: isMyMeta) : []
         let broadFieldSize = broadFieldSize
 
         phase = .loadingRankings
@@ -452,6 +466,11 @@ final class TeamFinderModel {
         broadFieldResults = nil
         isValidatingBroadField = false
         resultsFormat = nil
+
+        if isMyMeta && observedMeta.isEmpty {
+            phase = .failed("No opponents logged for this format yet — check some opponents (or scan battles) first so My Meta has leads and seen Pokémon to build against.")
+            return
+        }
 
         searchTask = Task {
             await withTaskExecutorPreference(CoreLimit.executor) {
@@ -488,7 +507,7 @@ final class TeamFinderModel {
                     return
                 }
 
-                if method == .aiOptimizer {
+                if method.isOptimizer {
                     // TeamOptimizer.findTeams builds its own pool internally (via
                     // TeamOptimizer.buildPool/buildCandidates, a *species-scanned*
                     // stopping rule) from `poolSize` below — not from the `pool`
@@ -509,6 +528,7 @@ final class TeamFinderModel {
                         lockedMembers: lockedMembers,
                         strongAgainstMembers: strongAgainstMembers,
                         observedMeta: observedMeta,
+                        observedFocus: isMyMeta,
                         metaSize: metaSize,
                         restarts: restarts,
                         learnedShields: learnedShields,
@@ -631,7 +651,7 @@ final class TeamFinderModel {
     /// `OptimizerResultsView.body`), so tying to it instead removes the race
     /// entirely.
     var canValidateAgainstBroadField: Bool {
-        method == .aiOptimizer
+        method.isOptimizer
             && (optimizerResults?.isComplete ?? false)
             && !(optimizerResults?.teams.isEmpty ?? true)
     }

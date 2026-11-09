@@ -411,7 +411,6 @@ struct TeamMemberCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 header(member: member, species: species)
                 TypeBadgeRow(types: species.displayTypes)
-                reorderControls
                 Divider()
                 movesetEditor(member: member, species: species)
                 if species.isShadow || species.isShadowEligible || member.shadow {
@@ -427,9 +426,13 @@ struct TeamMemberCard: View {
     private func header(member: TeamMember, species: Pokemon) -> some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(slotLabel)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
+                // Reorder arrows sit beside the slot number.
+                HStack(spacing: 2) {
+                    Text(slotLabel)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                    reorderControls
+                }
                 HStack(spacing: 4) {
                     Text(species.speciesName)
                         .font(.headline)
@@ -472,20 +475,19 @@ struct TeamMemberCard: View {
     @ViewBuilder
     private var reorderControls: some View {
         if model.members.count > 1 {
-            HStack(spacing: 6) {
+            HStack(spacing: 0) {
                 Button { model.move(from: index, to: index - 1) } label: {
                     Image(systemName: "chevron.left")
-                        .touchTarget(width: 40, height: 32)
+                        .touchTarget(width: 28, height: 24)
                 }
                 .accessibilityLabel("Move earlier")
                 .disabled(index == 0)
                 Button { model.move(from: index, to: index + 1) } label: {
                     Image(systemName: "chevron.right")
-                        .touchTarget(width: 40, height: 32)
+                        .touchTarget(width: 28, height: 24)
                 }
                 .accessibilityLabel("Move later")
                 .disabled(index >= model.members.count - 1)
-                Spacer()
             }
             .buttonStyle(.borderless)
             .font(.caption)
@@ -599,6 +601,14 @@ struct TeamMovePicker: View {
     var showsDetail = false
     var fastEnergyGain: Int? = nil
 
+    /// "Fast" → "F", "Charged 2" → "2": the slot is clear from the order, and
+    /// the narrower column lets three cards sit side by side.
+    private var shortLabel: String {
+        if label == "Fast" { return "F" }
+        return label.split(separator: " ").last.map(String.init) ?? label
+    }
+    private static let labelWidth: CGFloat = 16
+
     private var move: Move? { store.move(id: currentId) }
     private var designation: Pokemon.MoveDesignation? {
         species.moveDesignation(for: currentId)
@@ -611,17 +621,21 @@ struct TeamMovePicker: View {
                 Text(move.detailText(fastEnergyGain: fastEnergyGain))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .padding(.leading, 64)   // label width + spacing
+                    .help(move.isFast ? "Duration in turns and energy gained per use"
+                          : "Energy cost, then the fast moves needed before each of the next 5 throws, carrying leftover energy. \"Straight 5\" means every throw takes 5 fast moves.")
+                    .padding(.leading, Self.labelWidth + 6)   // label width + spacing
             }
         }
     }
 
     private var pickerRow: some View {
         HStack(spacing: 6) {
-            Text(label)
+            Text(shortLabel)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 58, alignment: .leading)
+                .frame(width: Self.labelWidth, alignment: .leading)
+                .help(label)
+                .accessibilityLabel(label)
             Menu {
                 if includesNone {
                     button(id: nil, label: "None")

@@ -330,7 +330,15 @@ final class ScanModel {
     /// that only shows up once a Pokémon evolves (or only in Ultra/Master)
     /// is caught the same as a great roll on the current form/league.
     /// Exposed so ScanView can show it continuously.
-    func bestRankHit(store: RankingsStore) -> RankHit? {
+    ///
+    /// `qualifying`, when given, filters which (league, result) cells may
+    /// count — e.g. to require a minimum CP so a high-IV Pokémon that only
+    /// reaches a tiny CP in Master League isn't treated as a keeper.
+    /// `result.combo.cp` is the CP of the build at its optimal level.
+    func bestRankHit(
+        store: RankingsStore,
+        qualifying: ((CheckLeague, IVCalculator.RankResult) -> Bool)? = nil
+    ) -> RankHit? {
         guard case .found(let live) = liveStatus, let sid = live.speciesId else { return nil }
         let ivs = currentIVs
         let level = determinedLevel(store: store)
@@ -353,6 +361,7 @@ final class ScanModel {
                     baseAtk: pokemon.baseStats.atk, baseDef: pokemon.baseStats.def, baseHp: pokemon.baseStats.hp,
                     cpCap: league.cap, ivs: ivs
                 ) else { continue }
+                if let qualifying, !qualifying(league, result) { continue }
                 if best == nil || result.rank < best!.rank {
                     best = RankHit(rank: result.rank, league: league, speciesName: pokemon.speciesName)
                 }

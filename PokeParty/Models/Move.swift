@@ -57,9 +57,9 @@ nonisolated struct Move: Decodable, Identifiable, Hashable {
         guard let gain = fastEnergyGain, gain > 0, energy > 0 else { return "\(energy) energy" }
         let counts = Self.readyCounts(cost: energy, gain: gain, throwCount: 5)
         if let first = counts.first, counts.allSatisfy({ $0 == first }) {
-            return "\(energy) energy · every \(first) fast move\(first == 1 ? "" : "s")"
+            return "\(energy) energy · straight \(first)"
         }
-        return "\(energy) energy · fast moves: " + counts.map(String.init).joined(separator: " - ")
+        return "\(energy) energy · " + counts.map(String.init).joined(separator: " - ")
     }
 
     /// How many copies of this charged move fit in a full 100-energy bar —

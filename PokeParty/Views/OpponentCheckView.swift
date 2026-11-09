@@ -78,6 +78,22 @@ struct OpponentCheckView: View {
         usage.mostUsed(in: store.format).filter { store.pokemonById[$0.speciesId] != nil }
     }
 
+    @ViewBuilder
+    private var opponentColumns: some View {
+        ForEach(0..<3, id: \.self) { slot in
+            OpponentColumn(
+                slot: slot, store: store, model: model,
+                member: slots[slot],
+                ratings: ratings[slot],
+                isActive: activeSlot == slot,
+                isFainted: isFainted(slot),
+                isLead: isLead(slot),
+                onActivate: { activeSlot = slot },
+                onSetLead: { setLead(slot) },
+                onChange: { change(slot, to: $0) })
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             #if os(iOS)
@@ -108,19 +124,10 @@ struct OpponentCheckView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(0..<3, id: \.self) { slot in
-                    OpponentColumn(
-                        slot: slot, store: store, model: model,
-                        member: slots[slot],
-                        ratings: ratings[slot],
-                        isActive: activeSlot == slot,
-                        isFainted: isFainted(slot),
-                        isLead: isLead(slot),
-                        onActivate: { activeSlot = slot },
-                        onSetLead: { setLead(slot) },
-                        onChange: { change(slot, to: $0) })
-                }
+            // Side by side when wide; stacked when the window is too narrow for three columns.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) { opponentColumns }
+                VStack(spacing: 12) { opponentColumns }
             }
         }
         .onAppear { refreshRatings() }

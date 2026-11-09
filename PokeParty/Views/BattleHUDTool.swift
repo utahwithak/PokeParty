@@ -169,6 +169,15 @@ struct BattleHUDDetailView: View {
     @State private var resetToken = UUID()
     /// A past game picked from the set tracker; nil follows the game in progress.
     @State private var selectedBattleId: UUID?
+    /// Whether the coaching bar on the right is showing.
+    @AppStorage("battleHUDShowCoachBar") private var showCoachBar = true
+    /// Width of the whole detail column, to pick side-by-side or stacked layout.
+    @State private var availableWidth: CGFloat = 1000
+    /// Below this the coaching bar can't sit beside the main panel, so it stacks above it.
+    /// Three Pokémon cards need about 860pt across; the bar takes 340 more. Stacking
+    /// the bar instead keeps all three cards in a row on a 1440pt-wide window.
+    private static let sideBySideMinWidth: CGFloat = 1220
+    private var isWide: Bool { availableWidth >= Self.sideBySideMinWidth }
     #if os(iOS)
     /// iPad: this device's own Screen Scan also feeds the coach.
     @Environment(OpponentScanModel.self) private var scan
@@ -183,11 +192,36 @@ struct BattleHUDDetailView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            mainPanel
-            Divider()
-            coachSidebar
-                .frame(width: 400)
+        Group {
+            if isWide {
+                HStack(spacing: 0) {
+                    mainPanel
+                        .frame(minWidth: 0, maxWidth: .infinity)
+                    if showCoachBar {
+                        Divider()
+                        ScrollView { coachContent.padding(16) }
+                            .frame(width: 340)
+                            .transition(.move(edge: .trailing))
+                    }
+                }
+            } else {
+                // Narrow: one column, the coaching content first so the call stays on top.
+                mainPanel
+            }
+        }
+        .clipped()
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
+        .animation(.easeInOut(duration: 0.2), value: showCoachBar)
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    showCoachBar.toggle()
+                } label: {
+                    Label(showCoachBar ? "Hide Coaching Bar" : "Show Coaching Bar",
+                          systemImage: "sidebar.trailing")
+                }
+                .help(showCoachBar ? "Hide the coaching bar" : "Show the coaching bar")
+            }
         }
         .navigationTitle("Battle HUD")
         .onAppear {
@@ -217,26 +251,27 @@ struct BattleHUDDetailView: View {
     }
 
     /// Right-hand column: the coach's call and plans, with the battle log.
-    private var coachSidebar: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                CoachBanner(coach: coach)
-                ShieldPlanCard(coach: coach)
-                TempoCard(coach: coach)
-                LeadPlanCard(coach: coach)
-                MidGameCard(coach: coach)
-                BackLineCard(coach: coach)
-                BattleLogSection(coach: coach, store: store, selectedId: selectedBattleId)
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    private var coachContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            CoachBanner(coach: coach)
+            ShieldPlanCard(coach: coach)
+            TempoCard(coach: coach)
+            LeadPlanCard(coach: coach)
+            MidGameCard(coach: coach)
+            BackLineCard(coach: coach)
+            BattleLogSection(coach: coach, store: store, selectedId: selectedBattleId)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Left column: connection, battle inputs, and both teams.
+    /// Left column: connection, battle inputs, and both teams. In a narrow
+    /// window the coaching content sits on top, since there's no room beside it.
     private var mainPanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if !isWide && showCoachBar {
+                    coachContent
+                }
                 CoachConnectionRow(phoneLink: phoneLink, store: store)
                 BattleHistorySection(coach: coach, store: store, team: model.members, selectedId: $selectedBattleId,
                                      onNewGame: { newBattle() }, onNewSet: { newBattle(newSet: true) })
@@ -293,19 +328,26 @@ struct BattleHUDDetailView: View {
     @ViewBuilder
     private var teamCards: some View {
         if !model.members.isEmpty {
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(0..<TeamBuilderModel.maxMembers, id: \.self) { index in
-                    if index < model.members.count {
-                        let fainted = coach.inputs.fainted.contains(index)
-                        TeamMemberCard(index: index, store: store, model: model)
-                            .opacity(fainted ? 0.4 : 1)
-                            .overlay(alignment: .topTrailing) {
-                                if fainted { FaintedBadge().padding(8) }
-                            }
-                    } else {
-                        Color.clear.frame(maxWidth: .infinity)
+            // Side by side when wide; stacked when three cards won't fit.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) { teamCardItems(padEmpty: true) }
+                VStack(spacing: 12) { teamCardItems(padEmpty: false) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func teamCardItems(padEmpty: Bool) -> some View {
+        ForEach(0..<TeamBuilderModel.maxMembers, id: \.self) { index in
+            if index < model.members.count {
+                let fainted = coach.inputs.fainted.contains(index)
+                TeamMemberCard(index: index, store: store, model: model)
+                    .opacity(fainted ? 0.4 : 1)
+                    .overlay(alignment: .topTrailing) {
+                        if fainted { FaintedBadge().padding(8) }
                     }
-                }
+            } else if padEmpty {
+                Color.clear.frame(maxWidth: .infinity)
             }
         }
     }

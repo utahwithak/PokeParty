@@ -111,9 +111,57 @@ final class AutoAdvanceModel {
     /// Master toggle; off by default so opening Beta Scan doesn't start
     /// swiping through the box unexpectedly.
     var isEnabled = false
-    /// Auto-advance stops once the current Pokémon's best rank across
-    /// Great/Ultra/Master League is at or better than this.
-    var threshold = 100
+    /// Per-league stop criteria: auto-advance stops once the current
+    /// Pokémon ranks `maxRank` or better in a league *and* its build there
+    /// reaches at least `minCP`.
+    struct LeagueCriteria: Codable {
+        var maxRank: Int
+        var minCP: Int
+    }
+    private static let defaultCriteria: [CheckLeague: LeagueCriteria] = [
+        .great: LeagueCriteria(maxRank: 100, minCP: 1400),
+        .ultra: LeagueCriteria(maxRank: 100, minCP: 2300),
+        .master: LeagueCriteria(maxRank: 100, minCP: 3000),
+    ]
+    private static let criteriaDefaultsKey = "betaScan.autoAdvanceCriteria"
+
+    /// Persisted to UserDefaults (keyed by league cap) on every change.
+    var criteria: [CheckLeague: LeagueCriteria] {
+        didSet {
+            let encodable = Dictionary(uniqueKeysWithValues: criteria.map { (String($0.key.rawValue), $0.value) })
+            if let data = try? JSONEncoder().encode(encodable) {
+                UserDefaults.standard.set(data, forKey: Self.criteriaDefaultsKey)
+            }
+        }
+    }
+
+    init() {
+        var loaded = Self.defaultCriteria
+        if let data = UserDefaults.standard.data(forKey: Self.criteriaDefaultsKey),
+           let stored = try? JSONDecoder().decode([String: LeagueCriteria].self, from: data) {
+            for (key, value) in stored {
+                if let raw = Int(key), let league = CheckLeague(rawValue: raw) { loaded[league] = value }
+            }
+        }
+        criteria = loaded
+    }
+    static let criteriaLeagues: [CheckLeague] = [.great, .ultra, .master]
+
+    private func criteriaBinding(_ league: CheckLeague) -> LeagueCriteria {
+        criteria[league] ?? LeagueCriteria(maxRank: 0, minCP: 0)
+    }
+
+    func maxRankBinding(_ league: CheckLeague) -> Binding<Int> {
+        Binding(
+            get: { self.criteriaBinding(league).maxRank },
+            set: { self.criteria[league, default: self.criteriaBinding(league)].maxRank = $0 })
+    }
+
+    func minCPBinding(_ league: CheckLeague) -> Binding<Int> {
+        Binding(
+            get: { self.criteriaBinding(league).minCP },
+            set: { self.criteria[league, default: self.criteriaBinding(league)].minCP = $0 })
+    }
     /// Why auto-advance stopped or is holding off; cleared when it resumes.
     var pausedReason: String?
     /// Set when the swipe itself fails — kept apart from the scan's live
@@ -156,12 +204,17 @@ final class AutoAdvanceModel {
         guard case .found(let live) = scan.liveStatus, live.speciesId != nil else { return }
         let barsComplete = live.barIVs?.atk != nil && live.barIVs?.def != nil && live.barIVs?.hp != nil
         guard barsComplete || !live.candidates.isEmpty else { return }
-        guard let hit = scan.bestRankHit(store: store) else { return }
-        if hit.rank <= threshold {
+        let criteria = criteria
+        let hit = scan.bestRankHit(store: store) { league, result in
+            guard let c = criteria[league] else { return false }
+            return result.rank <= c.maxRank && result.combo.cp >= c.minCP
+        }
+        if let hit {
             pausedReason = "Rank #\(hit.rank) in \(hit.league.title) League as \(hit.speciesName) — auto-advance stopped."
             isEnabled = false
             return
         }
+        guard scan.bestRankHit(store: store) != nil else { return }
         guard await scanner.isMouseOverMirroringWindow() else {
             pausedReason = "Move the mouse back over iPhone Mirroring to resume auto-advance."
             return
@@ -234,13 +287,21 @@ struct BetaScanLiveView: View {
                     .buttonStyle(.bordered)
             }
             if autoAdvance.isEnabled {
-                HStack(spacing: 6) {
-                    Text("Pause at rank")
-                    TextField("Rank", value: $autoAdvance.threshold, format: .number)
-                        .frame(width: 50)
-                        .textFieldStyle(.roundedBorder)
-                        .labelsHidden()
-                    Text("or better")
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(AutoAdvanceModel.criteriaLeagues) { league in
+                        HStack(spacing: 6) {
+                            Text("\(league.short): pause at rank")
+                            TextField("Rank", value: autoAdvance.maxRankBinding(league), format: .number)
+                                .frame(width: 50)
+                                .textFieldStyle(.roundedBorder)
+                                .labelsHidden()
+                            Text("or better, CP ≥")
+                            TextField("CP", value: autoAdvance.minCPBinding(league), format: .number)
+                                .frame(width: 60)
+                                .textFieldStyle(.roundedBorder)
+                                .labelsHidden()
+                        }
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)

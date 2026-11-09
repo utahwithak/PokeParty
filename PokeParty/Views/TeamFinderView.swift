@@ -101,6 +101,10 @@ struct TeamFinderView: View {
                     Text("Every trio from the pool is first graded with the Team Builder's static analysis; only the teams graded A in Coverage, Bulk, Safety and Consistency enter the tournament, where a full 3v3 round robin settles their order.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else if model.method == .myMeta {
+                    Text("Hill-climbs teams against the opponents you've logged for this format: every Pokémon you've seen becomes a threat to beat, with your opponents' leads weighted most. A few top-ranked threats are kept as a light backfill. Needs logged opponents — check some in the Team Builder or scan battles first.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else if model.method == .aiOptimizer {
                     Text("Hill-climbs the (Pokémon × moveset) space using recommended movesets by default — optionally alternate charged moves and fast moves with significant simulated usage too. Each restart begins from a different lead and swaps one team slot at a time until no improvement remains. Results appear as climbers converge.")
                         .font(.caption)
@@ -109,7 +113,7 @@ struct TeamFinderView: View {
             }
             .themedRow()
 
-            if model.method == .aiOptimizer {
+            if model.method.isOptimizer {
                 lockedPokemonSection
                 strongAgainstSection
                 optimizerSection
@@ -122,7 +126,7 @@ struct TeamFinderView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         if model.phase == .loadingRankings {
                             ProgressView("Loading rankings…")
-                        } else if model.method == .aiOptimizer {
+                        } else if model.method.isOptimizer {
                             if let results = model.optimizerResults, results.completedClimbers > 0 {
                                 ProgressView(
                                     value: Double(results.completedClimbers),
@@ -250,7 +254,7 @@ struct TeamFinderView: View {
         case .tournament: return "Seeding tournament…"
         case .gradeCheck: return "Grading teams…"
         case .combined: return "Finding AAAA teams…"
-        case .aiOptimizer: return "Building meta field…"
+        case .aiOptimizer, .myMeta: return "Building meta field…"
         }
     }
 
@@ -260,6 +264,7 @@ struct TeamFinderView: View {
         case .gradeCheck: return "Find AAAA Teams"
         case .combined: return "Run AAAA Tournament"
         case .aiOptimizer: return "Run AI Optimizer"
+        case .myMeta: return "Run My Meta Optimizer"
         }
     }
 
@@ -395,27 +400,30 @@ struct TeamFinderView: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Slider(
-                    value: Binding(
-                        get: { Double(model.metaSize) },
-                        set: { model.metaSize = Int($0) }),
-                    in: TeamFinderModel.metaSizeRange,
-                    step: TeamFinderModel.metaSizeStep
-                ) {
-                    Text("Meta field size")
+            if model.method == .aiOptimizer {
+                VStack(alignment: .leading, spacing: 4) {
+                    Slider(
+                        value: Binding(
+                            get: { Double(model.metaSize) },
+                            set: { model.metaSize = Int($0) }),
+                        in: TeamFinderModel.metaSizeRange,
+                        step: TeamFinderModel.metaSizeStep
+                    ) {
+                        Text("Meta field size")
+                    }
+                    .disabled(model.isRunning)
+                    Text("\(model.metaSize) top-ranked opponent threats to hill-climb against (auto-scales with pool size; more threats is a more representative field but costs one extra battle per swap per threat)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-                .disabled(model.isRunning)
-                Text("\(model.metaSize) top-ranked opponent threats to hill-climb against (auto-scales with pool size; more threats is a more representative field but costs one extra battle per swap per threat)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
 
-            Toggle("Include opponents from my meta", isOn: Bindable(model).useObservedMeta)
-                .disabled(model.isRunning)
-            Text("When on, the Pokémon you've logged in Opponent Check for this format are added as extra threats to beat — leads count the most. Does nothing until you've checked some opponents.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Toggle("Include opponents from my meta", isOn: Bindable(model).useObservedMeta)
+                    .disabled(model.isRunning)
+                Text("When on, the Pokémon you've logged in Opponent Check for this format are added as extra threats to beat — leads count the most. Does nothing until you've checked some opponents.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+            }
 
             Toggle("Explore alternate movesets", isOn: Bindable(model).exploreAlternateMovesets)
                 .disabled(model.isRunning)
@@ -665,7 +673,7 @@ struct TeamFinderResultsView: View {
         switch model.phase {
         case .searching where model.method == .gradeCheck:
             "Grading every candidate trio with the Team Builder's static analysis…"
-        case .searching where model.method == .aiOptimizer:
+        case .searching where model.method.isOptimizer:
             "Building the meta field and starting hill-climbs…"
         case .searching: "Seeding the tournament — ranking every candidate trio by meta coverage…"
         case .loadingRankings: "Loading rankings…"

@@ -118,6 +118,11 @@ nonisolated enum TeamOptimizer {
         let weight: Double
     }
 
+    /// With `observedFocus`, the ranked-meta threats are only a backfill: their
+    /// weights shrink by this factor, so the user's logged opponents (weighted
+    /// relative to the top ranked threat at 1.0) dominate the field.
+    static let observedFocusAutoScale = 0.25
+
     // MARK: - Entry point
 
     /// Runs the multi-start hill-climb and returns the best teams found.
@@ -132,6 +137,7 @@ nonisolated enum TeamOptimizer {
         lockedMembers: [TeamMember] = [],
         strongAgainstMembers: [TeamMember] = [],
         observedMeta: [ObservedThreat] = [],
+        observedFocus: Bool = false,
         metaSize: Int = 15,
         restarts: Int = 20,
         maxResults: Int = 50,
@@ -176,7 +182,8 @@ nonisolated enum TeamOptimizer {
         onProgress?(0.0)
         let metaField = await buildMetaField(
             pool: pool, metaSize: metaSize, movesById: movesById, shieldNet: shieldNet,
-            extraTargets: extraTargets)
+            extraTargets: extraTargets,
+            autoWeightScale: observedFocus ? observedFocusAutoScale : 1.0)
         guard !metaField.isEmpty else {
             return Results(teams: [], completedClimbers: 0, totalClimbers: restarts, isComplete: true)
         }
@@ -541,7 +548,8 @@ nonisolated enum TeamOptimizer {
         metaSize: Int,
         movesById: [String: Move],
         shieldNet: ShieldPolicyNet?,
-        extraTargets: [(Candidate, Double)] = []
+        extraTargets: [(Candidate, Double)] = [],
+        autoWeightScale: Double = 1.0
     ) async -> [MetaTeam] {
         // One recommended-moveset candidate per unique species, up to metaSize.
         var metaCandidates: [Candidate] = []
@@ -634,7 +642,7 @@ nonisolated enum TeamOptimizer {
             teams.append(MetaTeam(
                 members: [metaCandidates[i], matrixPool[bestJ], matrixPool[bestK]],
                 weight: 1.0))
-            rawWeights.append(i < autoCount ? 1.0 / Double(i + 1) : extraWeights[i - autoCount])
+            rawWeights.append(i < autoCount ? autoWeightScale / Double(i + 1) : extraWeights[i - autoCount])
         }
         guard !teams.isEmpty else { return [] }
         let totalWeight = rawWeights.reduce(0, +)

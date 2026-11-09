@@ -20,6 +20,15 @@ import CoreMedia
 @preconcurrency import ScreenCaptureKit
 #endif
 
+/// Diagnostic output for the scanner. Silent by default — the scan loop runs
+/// several times a second and floods the unified log (the system quarantines
+/// noisy processes). Flip to `true` when debugging bar detection.
+private nonisolated let scanLoggingEnabled = false
+
+private nonisolated func scanLog(_ message: @autoclosure () -> String) {
+    if scanLoggingEnabled { print(message()) }
+}
+
 enum ScanError: LocalizedError {
     case windowNotFound
     case parseFailure
@@ -112,9 +121,9 @@ actor ScreenScanner {
             #if DEBUG
             // The list is only worth dumping when nothing matched — it's every
             // window on the system, and this runs on a loop.
-            print("[ScreenScanner] No mirroring window among \(content.windows.count):")
+            scanLog("[ScreenScanner] No mirroring window among \(content.windows.count):")
             for w in content.windows {
-                print("  bundleID=\(w.owningApplication?.bundleIdentifier ?? "nil")  title=\(w.title ?? "nil")  frame=\(w.frame)")
+                scanLog("  bundleID=\(w.owningApplication?.bundleIdentifier ?? "nil")  title=\(w.title ?? "nil")  frame=\(w.frame)")
             }
             #endif
             throw ScanError.windowNotFound
@@ -132,7 +141,7 @@ actor ScreenScanner {
         // don't actually reflect new content.
         config.showsCursor = false
         #if DEBUG
-        print("[ScreenScanner] Starting frame stream at \(config.width)×\(config.height)px, display scale \(displayScale)×")
+        scanLog("[ScreenScanner] Starting frame stream at \(config.width)×\(config.height)px, display scale \(displayScale)×")
         #endif
 
         let relay = FrameStreamRelay()
@@ -501,7 +510,7 @@ actor ScreenScanner {
     ) -> BarIVs? {
         guard let sampler = PixelSampler(image: image) else {
             #if DEBUG
-            print("[ScreenScanner] PixelSampler init failed")
+            scanLog("[ScreenScanner] PixelSampler init failed")
             #endif
             return nil
         }
@@ -542,7 +551,7 @@ actor ScreenScanner {
         guard rows.count >= 2 else {
             #if DEBUG
             let allText = observations.compactMap { $0.topCandidates(1).first?.string }
-            print("[ScreenScanner] Bars skipped: only found labels \(rows.map { $0.label }) — all recognized text: \(allText)")
+            scanLog("[ScreenScanner] Bars skipped: only found labels \(rows.map { $0.label }) — all recognized text: \(allText)")
             #endif
             return nil
         }
@@ -555,14 +564,14 @@ actor ScreenScanner {
         }
         if labelRowYs.count == 2, let inferred = inferredRow(for: labels, from: labelRowYs) {
             #if DEBUG
-            print("[ScreenScanner] Bar label '\(inferred.label)' wasn't OCR'd — inferring its row from the other two.")
+            scanLog("[ScreenScanner] Bar label '\(inferred.label)' wasn't OCR'd — inferring its row from the other two.")
             #endif
             labelRowYs.append(inferred)
         }
         guard labelRowYs.count == labels.count else {
             #if DEBUG
             let allText = observations.compactMap { $0.topCandidates(1).first?.string }
-            print("[ScreenScanner] Bars skipped: only found labels \(rows.map { $0.label }) — all recognized text: \(allText)")
+            scanLog("[ScreenScanner] Bars skipped: only found labels \(rows.map { $0.label }) — all recognized text: \(allText)")
             #endif
             return nil
         }
@@ -595,13 +604,13 @@ actor ScreenScanner {
             }
             guard let best, best.total > Int(rowSpacing) else {
                 #if DEBUG
-                print("[ScreenScanner] Bar '\(label)': no bar row found below label y=\(labelY)")
+                scanLog("[ScreenScanner] Bar '\(label)': no bar row found below label y=\(labelY)")
                 #endif
                 continue
             }
             measurements[label] = best
             #if DEBUG
-            print("[ScreenScanner] Bar '\(label)': row=\(best.rowY) fill=\(best.fill) track=\(best.track) end=\(best.endX)")
+            scanLog("[ScreenScanner] Bar '\(label)': row=\(best.rowY) fill=\(best.fill) track=\(best.track) end=\(best.endX)")
             #endif
         }
         guard measurements.count == labels.count else { return nil }
@@ -634,7 +643,7 @@ actor ScreenScanner {
             ivs[label] = min(max(Int((15 * Double(row.fill) / Double(row.total)).rounded()), 0), 15)
         }
         #if DEBUG
-        print("[ScreenScanner] Bar IVs: \(ivs.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        scanLog("[ScreenScanner] Bar IVs: \(ivs.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
         #endif
 
         return BarIVs(atk: ivs["Attack"], def: ivs["Defense"], hp: ivs["HP"])
@@ -765,7 +774,7 @@ actor ScreenScanner {
         guard let data = rep.representation(using: .png, properties: [:]) else { return }
         let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("pokeparty_bar_debug.png")
         try? data.write(to: url)
-        print("[ScreenScanner] Saved bar debug image (crop origin y=\(y), green rows at rel y=\(rowYs.map { $0 - y }), red edges at x=\(edges.sorted())) to \(url.path)")
+        scanLog("[ScreenScanner] Saved bar debug image (crop origin y=\(y), green rows at rel y=\(rowYs.map { $0 - y }), red edges at x=\(edges.sorted())) to \(url.path)")
         #else
         _ = toSave
         #endif

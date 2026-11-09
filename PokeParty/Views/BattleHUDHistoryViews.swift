@@ -108,7 +108,13 @@ private struct SetTrackerPanel: View {
                     .foregroundStyle(set.wins > set.losses ? Theme.win : (set.wins < set.losses ? Theme.loss : .primary))
                 Text(progressText(games: games))
                     .font(.subheadline).foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
+            }
+
+            // Own row so a narrow panel never squeezes the score and progress text.
+            HStack(spacing: 8) {
                 Button(action: onNewGame) {
                     Label("New game", systemImage: "arrow.counterclockwise")
                 }
@@ -137,6 +143,8 @@ private struct SetTrackerPanel: View {
                 .disabled(games.isEmpty)
                 .help("Throw away the games in this set and start it again from 0–0")
             }
+            // Icons only; each button keeps its tooltip.
+            .labelStyle(.iconOnly)
 
             HStack(spacing: 6) {
                 ForEach(Array(games.enumerated()), id: \.element.id) { index, game in

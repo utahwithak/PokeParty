@@ -403,8 +403,8 @@ final class BattleCoachModel {
     /// whenever the inputs may have changed: it only acts on differences.
     private func trackTempo(team: [TeamMember], opponents: [TeamMember], store: RankingsStore) {
         let now = clock
-        for index in inputs.fainted where tempo.active(.mine) == index { tempo.fainted(.mine, index: index) }
-        for index in inputs.opponentFainted where tempo.active(.theirs) == index { tempo.fainted(.theirs, index: index) }
+        for index in inputs.fainted { tempo.fainted(.mine, index: index, at: now) }
+        for index in inputs.opponentFainted { tempo.fainted(.theirs, index: index, at: now) }
 
         if team.indices.contains(inputs.myActive), !inputs.fainted.contains(inputs.myActive) {
             tempo.setActive(.mine, index: inputs.myActive, at: now)

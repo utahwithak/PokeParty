@@ -21,7 +21,20 @@ nonisolated struct TempoTracker: Equatable, Sendable {
     private struct SideState: Equatable {
         var active: Int?
         var lastSwitch: TimeInterval?
+        /// What the side looked like before its latest change of Pokémon, so a faint
+        /// read late can take that change back.
+        var before: (active: Int?, lastSwitch: TimeInterval?, at: TimeInterval)?
+
+        static func == (a: SideState, b: SideState) -> Bool {
+            a.active == b.active && a.lastSwitch == b.lastSwitch
+                && a.before?.active == b.before?.active && a.before?.lastSwitch == b.before?.lastSwitch
+                && a.before?.at == b.before?.at
+        }
     }
+
+    /// How long after a change of Pokémon a faint read for the one it replaced
+    /// still counts: the banner is easy to miss, or to read a moment late.
+    static let lateFaintWindow: TimeInterval = 10
 
     private var mine = SideState()
     private var theirs = SideState()
@@ -36,15 +49,23 @@ nonisolated struct TempoTracker: Equatable, Sendable {
     mutating func setActive(_ side: Side, index: Int, at time: TimeInterval) {
         var state = self[side]
         guard state.active != index else { return }
+        state.before = (state.active, state.lastSwitch, time)
         if state.active != nil { state.lastSwitch = time }
         state.active = index
         self[side] = state
     }
 
     /// The side's Pokémon `index` fainted. If it was out, the next one in isn't a switch.
-    mutating func fainted(_ side: Side, index: Int) {
+    /// If the swap to its replacement was already counted (the faint was read late),
+    /// that swap wasn't a choice: the timer it started is taken back.
+    mutating func fainted(_ side: Side, index: Int, at time: TimeInterval) {
         var state = self[side]
-        if state.active == index { state.active = nil }
+        if state.active == index {
+            state.active = nil
+        } else if let before = state.before, before.active == index, time - before.at <= Self.lateFaintWindow {
+            state.lastSwitch = before.lastSwitch
+            state.before = nil
+        }
         self[side] = state
     }
 
