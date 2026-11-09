@@ -288,14 +288,14 @@ final class TeamFinderModel {
             learnedShields: learnedShields, learnedSwitches: learnedSwitches,
             learnedFarming: learnedFarming, playSkill: playSkill, broadFieldSize: broadFieldSize,
             coreLimit: coreLimit)
-        if let data = try? JSONEncoder().encode(settings) {
+        if let data = JSONFileStore.encode(settings) {
             UserDefaults.standard.set(data, forKey: Self.settingsKey)
         }
     }
 
     private func restoreSettings() {
         guard let data = UserDefaults.standard.data(forKey: Self.settingsKey),
-              let saved = try? JSONDecoder().decode(Settings.self, from: data)
+              let saved = JSONFileStore.decode(Settings.self, from: data)
         else { return }
         isRestoringSettings = true
         defer { isRestoringSettings = false }

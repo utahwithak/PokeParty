@@ -129,7 +129,7 @@ final class AutoAdvanceModel {
     var criteria: [CheckLeague: LeagueCriteria] {
         didSet {
             let encodable = Dictionary(uniqueKeysWithValues: criteria.map { (String($0.key.rawValue), $0.value) })
-            if let data = try? JSONEncoder().encode(encodable) {
+            if let data = JSONFileStore.encode(encodable) {
                 UserDefaults.standard.set(data, forKey: Self.criteriaDefaultsKey)
             }
         }
@@ -138,7 +138,7 @@ final class AutoAdvanceModel {
     init() {
         var loaded = Self.defaultCriteria
         if let data = UserDefaults.standard.data(forKey: Self.criteriaDefaultsKey),
-           let stored = try? JSONDecoder().decode([String: LeagueCriteria].self, from: data) {
+           let stored = JSONFileStore.decode([String: LeagueCriteria].self, from: data) {
             for (key, value) in stored {
                 if let raw = Int(key), let league = CheckLeague(rawValue: raw) { loaded[league] = value }
             }

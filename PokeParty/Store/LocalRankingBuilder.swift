@@ -200,14 +200,14 @@ final class LocalRankingBuilder {
         // `.utility` keeps this background build from competing with the UI
         // (and the rest of the system) for CPU; `Ranker` also caps its own
         // parallelism at half the cores via `BoundedParallel`.
-        let result = await Task.detached(priority: .utility) { () -> [RankingEntry] in
+        let result = await runDetached(priority: .utility) { () -> [RankingEntry] in
             let pool = MetaPool.eligiblePokemon(
                 for: cup, cpCap: cpCap, allPokemon: allPokemon,
                 greatLeagueIneligible: greatLeagueIneligible)
             return await Ranker.rank(pool: pool, cpCap: cpCap, movesById: movesById) { fraction in
                 Task { @MainActor in self.progress = fraction }
             }
-        }.value
+        }
         if Task.isCancelled { return }
 
         let entry = LocalRankingCacheEntry(
@@ -233,12 +233,12 @@ final class LocalRankingBuilder {
         guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return [] }
         return files.filter { $0.pathExtension == "json" }.compactMap { file in
             guard let data = try? Data(contentsOf: file) else { return nil }
-            return try? JSONDecoder().decode(LocalRankingCacheEntry.self, from: data)
+            return JSONFileStore.decode(LocalRankingCacheEntry.self, from: data)
         }
     }
 
     private func persist(_ entry: LocalRankingCacheEntry) {
-        guard let data = try? JSONEncoder().encode(entry) else { return }
+        guard let data = JSONFileStore.encode(entry) else { return }
         try? data.write(to: fileURL(formatId: entry.formatId), options: .atomic)
     }
 
@@ -257,7 +257,7 @@ final class LocalRankingBuilder {
                   let url = Bundle.main.url(forResource: "seed_local_ranking_\(cp)", withExtension: "json"),
                   let data = try? Data(contentsOf: url)
             else { return nil }
-            return try? JSONDecoder().decode(LocalRankingCacheEntry.self, from: data)
+            return JSONFileStore.decode(LocalRankingCacheEntry.self, from: data)
         }
     }
 }

@@ -51,7 +51,7 @@ nonisolated enum ChargedMoveMatcher {
             for candidate in candidates {
                 let name = letters(of: candidate.name)
                 guard name.count >= 3, let score = score(text, name) else { continue }
-                if best == nil || score > best!.score { best = (candidate.id, candidate.mine, score) }
+                if score > (best?.score ?? .min) { best = (candidate.id, candidate.mine, score) }
             }
             guard let best else { continue }
             // With no name to go on, a move only one side has settles it.
@@ -75,12 +75,15 @@ nonisolated enum ChargedMoveMatcher {
 
     // MARK: - Parsing
 
-    /// The text before and after the word "used", tolerating an OCR slip in it.
+    /// The text before and after the word "used", tolerating an OCR slip in it
+    /// (including the common "d" read as "cl": "usecl").
     private static func splitAtUsed(_ line: String) -> (prefix: String, suffix: String)? {
         let words = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         guard let index = words.firstIndex(where: { word in
             let letters = letters(of: word)
-            return letters.count >= 3 && letters.count <= 5 && FaintedMessage.editDistance(letters, "used") <= 1
+            guard letters.count >= 3 && letters.count <= 5 else { return false }
+            return [letters, letters.replacingOccurrences(of: "cl", with: "d")]
+                .contains { FaintedMessage.editDistance($0, "used") <= 1 }
         }) else { return nil }
         return (words[..<index].joined(separator: " "), words[(index + 1)...].joined(separator: " "))
     }

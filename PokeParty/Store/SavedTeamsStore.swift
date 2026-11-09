@@ -16,47 +16,18 @@ import SwiftUI
 @Observable
 final class SavedTeamsStore {
 
-    private static let cloudKey = "SavedTeams"
-
     private(set) var teams: [Team] = []
 
-    private let fileURL: URL
-    private let cloud: NSUbiquitousKeyValueStore
+    private let persistence: CloudBackedArray<Team>
 
     init(fileURL: URL? = nil, cloud: NSUbiquitousKeyValueStore = .default) {
-        self.fileURL = fileURL ?? Self.defaultFileURL
-        self.cloud = cloud
-
-        if let data = cloud.data(forKey: Self.cloudKey),
-           let saved = try? JSONDecoder().decode([Team].self, from: data) {
-            teams = saved
-        } else {
-            let local = Self.load(from: self.fileURL)
-            teams = local
-            if !local.isEmpty {
-                if let data = try? JSONEncoder().encode(local) {
-                    cloud.set(data, forKey: Self.cloudKey)
-                    cloud.synchronize()
-                }
-            }
-        }
-
-        cloud.synchronize()
-
-        NotificationCenter.default.addObserver(
-            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: cloud, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.applyCloudChange()
-            }
-        }
-    }
-
-    private func applyCloudChange() {
-        guard let data = cloud.data(forKey: Self.cloudKey),
-              let saved = try? JSONDecoder().decode([Team].self, from: data) else { return }
-        teams = saved
+        persistence = CloudBackedArray(
+            cloudKey: "SavedTeams",
+            fileURL: fileURL ?? JSONFileStore.defaultFileURL(filename: "SavedTeams.json"),
+            cloud: cloud
+        )
+        teams = persistence.load()
+        persistence.observeExternalChanges { [weak self] items in self?.teams = items }
     }
 
     /// Saves the members under `name` for the given format, replacing an
@@ -124,20 +95,7 @@ final class SavedTeamsStore {
         teams.filter { $0.matches(format) }
     }
 
-    // MARK: - Disk
-
-    private static var defaultFileURL: URL {
-        JSONFileStore.defaultFileURL(filename: "SavedTeams.json")
-    }
-
-    private static func load(from url: URL) -> [Team] {
-        JSONFileStore.load(from: url)
-    }
-
     private func persist() {
-        guard let data = JSONFileStore.encode(teams) else { return }
-        cloud.set(data, forKey: Self.cloudKey)
-        cloud.synchronize()
-        JSONFileStore.write(data, to: fileURL)
+        persistence.save(teams)
     }
 }

@@ -34,57 +34,16 @@ nonisolated enum FarmObservation {
 }
 
 nonisolated struct FarmPolicyNet {
-    /// Matches the JSON written by rl/train_farm.py.
-    private struct Weights: Decodable {
-        let featureNames: [String]
-        let hidden: Int
-        let W1: [[Double]]   // [features][hidden]
-        let b1: [Double]
-        let W2: [[Double]]   // [hidden][hidden]
-        let b2: [Double]
-        let W3: [[Double]]   // [hidden][2]
-        let b3: [Double]     // [2]
-    }
+    private let mlp: PolicyMLP
 
-    private let w: Weights
-
-    enum LoadError: Error { case featureMismatch }
+    typealias LoadError = PolicyMLP.LoadError
 
     init(contentsOf url: URL) throws {
-        w = try JSONDecoder().decode(Weights.self, from: Data(contentsOf: url))
-        guard w.featureNames == FarmObservation.featureNames else {
-            throw LoadError.featureMismatch
-        }
+        mlp = try PolicyMLP(contentsOf: url, expectedFeatures: FarmObservation.featureNames)
     }
 
     /// Raw [don't farm, farm] logits for one observation.
-    func logits(_ x: [Double]) -> [Double] {
-        let h = w.hidden
-        var h1 = [Double](repeating: 0, count: h)
-        for i in x.indices {
-            let xi = x[i]
-            if xi == 0 { continue }
-            let row = w.W1[i]
-            for j in 0..<h { h1[j] += xi * row[j] }
-        }
-        for j in 0..<h { h1[j] = max(h1[j] + w.b1[j], 0) }
-
-        var h2 = [Double](repeating: 0, count: h)
-        for i in 0..<h {
-            let hi = h1[i]
-            if hi == 0 { continue }
-            let row = w.W2[i]
-            for j in 0..<h { h2[j] += hi * row[j] }
-        }
-        var out = w.b3
-        for i in 0..<h {
-            let a = max(h2[i] + w.b2[i], 0)
-            if a == 0 { continue }
-            let row = w.W3[i]
-            for j in 0..<2 { out[j] += a * row[j] }
-        }
-        return out
-    }
+    func logits(_ x: [Double]) -> [Double] { mlp.forward(x) }
 
     /// True when the policy prefers farming this window over switching now.
     func shouldFarm(_ ctx: SwitchContext, window: Int) -> Bool {

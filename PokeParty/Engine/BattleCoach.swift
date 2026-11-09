@@ -77,7 +77,8 @@ nonisolated enum BattleCoach {
         let pokemonName: String
         /// Wins plus half of ties, over the sampled opponent teams (0…1).
         let winRate: Double
-        /// Mean 3v3 battle rating from your side (0…1000, 500 = even).
+        /// Mean HP margin from your side (0…1000, 500 = even): your surviving HP
+        /// minus theirs, as a share of team size.
         let averageRating: Double
 
         /// Blend used to rank options. The rating breaks near-ties in win rate
@@ -158,6 +159,7 @@ nonisolated enum BattleCoach {
                             optimalShields: false,
                             voluntarySwitching: true,
                             learnedShieldNet: shieldNet)
+                        battle.teamASwitchLockedAtStart = true
                         battle.startingHpFractionA = state.myHP
                         battle.startingHpFractionB = state.opponentHP
                         if let switchNet { battle.switchDecisionHook = { switchNet.decide($0) } }
@@ -169,7 +171,12 @@ nonisolated enum BattleCoach {
                         case .tie: win = 0.5
                         case .teamB: win = 0
                         }
-                        row.append((win, Double(r.ratingA)))
+                        // HP margin, not `r.ratingA`: that one pins at 1000 once the
+                        // opponent is wiped out however much of your team survived,
+                        // so two winning lines would look identical.
+                        let size = Double(max(state.myTeam.count, opponentTeam.count))
+                        let margin = (r.hpRemainingA - r.hpRemainingB) / size
+                        row.append((win, min(max(500 + 500 * margin, 0), 1000)))
                     }
                     return (i, row)
                 }

@@ -136,6 +136,13 @@ nonisolated struct ThreeVThreeBattle {
     var startingHpFractionA: [Int: Double] = [:]
     var startingHpFractionB: [Int: Double] = [:]
 
+    /// Team A begins with its switch timer already running, so it can't swap out
+    /// of `leadA` at turn 0. The live coach sets it: its "stay" option means
+    /// *fight on with this Pokémon* (not "stay, then swap out for free"), and a
+    /// "switch" option has just paid for its swap. Off by default, which lets the
+    /// finder's leads make a turn-0 safe swap.
+    var teamASwitchLockedAtStart = false
+
     /// Turns farming on, driven by the learned farm-vs-switch policy. A no-op when
     /// `net` is nil: ungated farming (every safe window) measured as a wash in
     /// rl `--farm-eval`, so farming is only worth enabling with the policy picking
@@ -248,7 +255,7 @@ nonisolated struct ThreeVThreeBattle {
         var timedOut = false
         // Time of each side's last voluntary switch (for the switch timer). Start
         // off-cooldown so a turn-0 safe-swap is allowed.
-        var lastSwitchA = -Self.switchTimerMs
+        var lastSwitchA = teamASwitchLockedAtStart ? 0 : -Self.switchTimerMs
         var lastSwitchB = -Self.switchTimerMs
 
         // Safety bound: at most (all Pokémon faint) + 1 faint-ended segments, plus —

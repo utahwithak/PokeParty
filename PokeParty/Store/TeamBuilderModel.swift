@@ -61,10 +61,8 @@ final class TeamBuilderModel {
     init(lastUsedURL: URL? = nil) {
         self.lastUsedURL = lastUsedURL ?? JSONFileStore.defaultFileURL(filename: "LastUsedTeams.json")
         selectedURL = self.lastUsedURL.deletingLastPathComponent().appendingPathComponent("SelectedTeams.json")
-        let data = try? Data(contentsOf: self.lastUsedURL)
-        lastUsed = data.flatMap { try? JSONDecoder().decode([String: [TeamMember]].self, from: $0) } ?? [:]
-        let selected = try? Data(contentsOf: selectedURL)
-        selectedIds = selected.flatMap { try? JSONDecoder().decode([String: UUID].self, from: $0) } ?? [:]
+        lastUsed = JSONFileStore.loadValue([String: [TeamMember]].self, from: self.lastUsedURL) ?? [:]
+        selectedIds = JSONFileStore.loadValue([String: UUID].self, from: selectedURL) ?? [:]
     }
 
     /// Connects the saved teams, so edits autosave and the last-selected team
@@ -105,7 +103,7 @@ final class TeamBuilderModel {
     }
 
     private func persistSelected() {
-        if let data = try? JSONEncoder().encode(selectedIds) {
+        if let data = JSONFileStore.encode(selectedIds) {
             JSONFileStore.write(data, to: selectedURL)
         }
     }
@@ -189,7 +187,7 @@ final class TeamBuilderModel {
         } else {
             lastUsed[activeFormatId] = members
         }
-        if let data = try? JSONEncoder().encode(lastUsed) {
+        if let data = JSONFileStore.encode(lastUsed) {
             JSONFileStore.write(data, to: lastUsedURL)
         }
     }

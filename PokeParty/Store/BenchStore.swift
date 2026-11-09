@@ -16,49 +16,18 @@ import SwiftUI
 @Observable
 final class BenchStore {
 
-    private static let cloudKey = "Bench"
-
     private(set) var entries: [BenchEntry] = []
 
-    private let fileURL: URL
-    private let cloud: NSUbiquitousKeyValueStore
+    private let persistence: CloudBackedArray<BenchEntry>
 
     init(fileURL: URL? = nil, cloud: NSUbiquitousKeyValueStore = .default) {
-        self.fileURL = fileURL ?? Self.defaultFileURL
-        self.cloud = cloud
-
-        // Cloud-first: prefer whatever iCloud already has.
-        if let data = cloud.data(forKey: Self.cloudKey),
-           let saved = try? JSONDecoder().decode([BenchEntry].self, from: data) {
-            entries = saved
-        } else {
-            // Fall back to local file and migrate it up to iCloud.
-            let local = Self.load(from: self.fileURL)
-            entries = local
-            if !local.isEmpty {
-                if let data = try? JSONEncoder().encode(local) {
-                    cloud.set(data, forKey: Self.cloudKey)
-                    cloud.synchronize()
-                }
-            }
-        }
-
-        cloud.synchronize()
-
-        NotificationCenter.default.addObserver(
-            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: cloud, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.applyCloudChange()
-            }
-        }
-    }
-
-    private func applyCloudChange() {
-        guard let data = cloud.data(forKey: Self.cloudKey),
-              let saved = try? JSONDecoder().decode([BenchEntry].self, from: data) else { return }
-        entries = saved
+        persistence = CloudBackedArray(
+            cloudKey: "Bench",
+            fileURL: fileURL ?? JSONFileStore.defaultFileURL(filename: "Bench.json"),
+            cloud: cloud
+        )
+        entries = persistence.load()
+        persistence.observeExternalChanges { [weak self] items in self?.entries = items }
     }
 
     func entry(id: BenchEntry.ID) -> BenchEntry? {
@@ -148,20 +117,7 @@ final class BenchStore {
         }
     }
 
-    // MARK: - Disk
-
-    private static var defaultFileURL: URL {
-        JSONFileStore.defaultFileURL(filename: "Bench.json")
-    }
-
-    private static func load(from url: URL) -> [BenchEntry] {
-        JSONFileStore.load(from: url)
-    }
-
     private func persist() {
-        guard let data = JSONFileStore.encode(entries) else { return }
-        cloud.set(data, forKey: Self.cloudKey)
-        cloud.synchronize()
-        JSONFileStore.write(data, to: fileURL)
+        persistence.save(entries)
     }
 }

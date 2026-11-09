@@ -362,7 +362,7 @@ final class ScanModel {
                     cpCap: league.cap, ivs: ivs
                 ) else { continue }
                 if let qualifying, !qualifying(league, result) { continue }
-                if best == nil || result.rank < best!.rank {
+                if result.rank < (best?.rank ?? .max) {
                     best = RankHit(rank: result.rank, league: league, speciesName: pokemon.speciesName)
                 }
             }

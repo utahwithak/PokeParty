@@ -874,7 +874,7 @@ nonisolated enum TeamOptimizer {
                             guard let sc = env.score(
                                 team: neighbor, order: order, threshold: threshold) else { continue }
                             threshold.raise(to: sc)
-                            if localBest == nil || sc > localBest!.0 {
+                            if sc > (localBest?.0 ?? -.infinity) {
                                 localBest = (sc, neighbor)
                             }
                         }

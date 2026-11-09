@@ -103,7 +103,8 @@ nonisolated enum HPBarReader {
         var mine: Double?, opponent: Double?
         var mineRows = 0, opponentRows = 0
         for group in groups where group.count >= 4 {
-            let top = group.first!.y, bottom = group.last!.y
+            guard let first = group.first, let last = group.last else { continue }
+            let top = first.y, bottom = last.y
             let mid = group[group.count / 2]
             let x0 = mid.x0, x1 = mid.x1
             let midX = (x0 + x1) / 2

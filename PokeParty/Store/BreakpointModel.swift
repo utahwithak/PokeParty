@@ -141,7 +141,7 @@ final class BreakpointModel {
                 let opponents = Self.opponents(from: entries, pokemonById: pokemonById,
                                                cpCap: format.cp, count: Self.opponentCount,
                                                mirrorId: member.speciesId)
-                let result = await Task.detached {
+                let result = await runDetached {
                     // IV grid at the league-legal level cap; the power-up
                     // sweep is built in, clamped to that same level.
                     let report = await BreakpointAnalyzer.analyze(subject: subject,
@@ -152,7 +152,7 @@ final class BreakpointModel {
                         rank: targetRank, subject: subject, cpCap: format.cp,
                         opponents: opponents, movesById: movesById)
                     return (report, rankComparison)
-                }.value
+                }
                 guard !Task.isCancelled else { return }
                 report = result.0
                 rankComparison = result.1

@@ -225,7 +225,7 @@ nonisolated enum BattleReviewer {
                                       myLead: myOrder.first ?? 0, theirLead: theirOrder.first ?? 0,
                                       myReplacements: forcedMine, theirReplacements: forcedTheirs).run()
                 let s = score(result)
-                if best == nil || s > best!.score { best = (keep, s) }
+                if s > (best?.score ?? -.infinity) { best = (keep, s) }
             }
             guard let best, best.score - baseScore >= BattleCoach.switchMargin else { continue }
             let skipped = team[index].chargedMoves.filter { $0.moveId != best.move.moveId }

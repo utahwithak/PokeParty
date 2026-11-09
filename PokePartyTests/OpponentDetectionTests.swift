@@ -60,6 +60,7 @@ struct OpponentDetectionTests {
     }
 
     /// Zacian / Kyurem / Necrozma: one on-screen name, several forms to choose from.
+    /// An exact name match wins outright; `family(of:)` widens it to the other forms.
     @Test func ambiguousBaseNameReturnsEveryForm() throws {
         let pool = [
             try species("kyurem", "Kyurem"),
@@ -68,7 +69,9 @@ struct OpponentDetectionTests {
             try species("sneasel", "Sneasel"),
         ]
         let matches = OpponentNameMatcher.candidates(for: "Kyurem", in: pool)
-        #expect(Set(matches.map(\.speciesId)) == ["kyurem", "kyurem_black", "kyurem_white"])
+        #expect(matches.map(\.speciesId) == ["kyurem"])
+        let family = OpponentNameMatcher.family(of: matches, in: pool)
+        #expect(Set(family.map(\.speciesId)) == ["kyurem", "kyurem_black", "kyurem_white"])
     }
 
     @Test func wordOrderDoesNotMatter() throws {

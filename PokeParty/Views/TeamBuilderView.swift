@@ -42,6 +42,11 @@ struct TeamBuilderView: View {
         return savedTeams.teams.filter { team in !known.contains { team.matches($0) } }
     }
 
+    /// Teams from leagues no longer offered, grouped by "cup · CP" label.
+    private var pastTeamGroups: [(key: String, value: [Team])] {
+        Dictionary(grouping: pastTeams, by: { "\($0.cup) · \($0.cp) CP" }).sorted { $0.key < $1.key }
+    }
+
     var body: some View {
         List {
             ForEach(formats) { format in
@@ -54,10 +59,10 @@ struct TeamBuilderView: View {
                     header(for: format)
                 }
             }
-            let past = pastTeams
-            if !past.isEmpty {
+            let pastGroups = pastTeamGroups
+            if !pastGroups.isEmpty {
                 Section("Past leagues") {
-                    ForEach(Dictionary(grouping: past, by: { "\($0.cup) · \($0.cp) CP" }).sorted { $0.key < $1.key }, id: \.key) { group in
+                    ForEach(pastGroups, id: \.key) { group in
                         Text(group.key)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)

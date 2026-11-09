@@ -28,7 +28,7 @@ import Testing
     @Test() func aSwitchAfterAFaintDoesNotStartTheTimer() {
         var tracker = TempoTracker()
         tracker.setActive(.theirs, index: 0, at: 0)
-        tracker.fainted(.theirs, index: 0)
+        tracker.fainted(.theirs, index: 0, at: 10)
         tracker.setActive(.theirs, index: 1, at: 20)
         #expect(tracker.switchRemaining(.theirs, at: 20) == 0)
     }

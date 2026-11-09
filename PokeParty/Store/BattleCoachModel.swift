@@ -228,7 +228,7 @@ final class BattleCoachModel {
         isReviewing = true
 
         reviewTask = Task {
-            let result = await Task.detached(priority: .userInitiated) { () -> BattleReviewer.Review? in
+            let result = await runDetached(priority: .userInitiated) { () -> BattleReviewer.Review? in
                 guard let myTeam = ThreeVThreeBattle.makeTeam(mine.combatants, stats: mine.stats, movesById: movesById),
                       let opponentTeam = ThreeVThreeBattle.makeTeam(theirs.combatants, stats: theirs.stats, movesById: movesById)
                 else { return nil }
@@ -236,7 +236,7 @@ final class BattleCoachModel {
                     battle: battle, team: myTeam, opponents: opponentTeam,
                     teamNames: teamNames, opponentNames: opponentNames,
                     moveName: { moveNames[$0] ?? $0 })
-            }.value
+            }
             if Task.isCancelled { return }
             isReviewing = false
             guard let result else { reviewMessage = "Couldn't simulate this game."; return }
@@ -798,14 +798,14 @@ final class BattleCoachModel {
                     let pool = await pool(for: format, pokemonById: pokemonById)
                     if Task.isCancelled { return }
                     let theirSeen = Set(seenMoves[opponentIds[theirActive]] ?? [])
-                    let insight = await Task.detached(priority: .userInitiated) {
+                    let insight = await runDetached(priority: .userInitiated) {
                         MidGameCoach.analyze(
                             myTeam: myTeam, myActive: myActive, myHP: myHP,
                             opponentRevealed: opponentTeam, opponentActive: theirActive, opponentHP: opponentHP,
                             myShields: situation.myShields, theirShields: situation.theirShields,
                             opponentTeamSize: opponentAlive, pool: pool, movesById: movesById,
                             theirSeenMoves: theirSeen)
-                    }.value
+                    }
                     if Task.isCancelled { return }
                     midInsight = insight
                     midGame = MidGameCoach.plan(latestSituation ?? situation, insight: insight)
@@ -829,9 +829,9 @@ final class BattleCoachModel {
             let pool = await pool(for: format, pokemonById: pokemonById)
             if Task.isCancelled { return }
             let ids = opponentTeam.map(\.speciesId), types = opponentTeam.map(\.types)
-            let guess = await Task.detached(priority: .utility) {
+            let guess = await runDetached(priority: .utility) {
                 BackLineGuess.predict(revealedIds: ids, revealedTypes: types, slots: slots, pool: pool)
-            }.value
+            }
             if Task.isCancelled { return }
             backLine = guess
         }

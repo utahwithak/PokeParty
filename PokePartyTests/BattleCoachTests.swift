@@ -69,16 +69,17 @@ private func makePoke(_ id: String, type: String, atk: Double, def: Double, hp: 
     }
 
     @Test func switchesOutOfAnOutclassedMatchup() async {
-        // Lead is far weaker than the opposing team; the bench Pokémon are far stronger.
+        // The lead is a weak grass type facing fire opponents; the bench is water
+        // (resists fire, hits it super-effectively) and much sturdier.
         let mine = [
-            makePoke("weak", type: "normal", atk: 100, def: 80, hp: 90),
-            makePoke("strong", type: "fire", atk: 175, def: 135, hp: 185),
-            makePoke("strong2", type: "water", atk: 175, def: 135, hp: 185),
+            makePoke("weak", type: "grass", atk: 100, def: 80, hp: 90),
+            makePoke("strong", type: "water", atk: 145, def: 112, hp: 155),
+            makePoke("strong2", type: "water", atk: 145, def: 112, hp: 155),
         ]
         let theirs = [
-            makePoke("o0", type: "grass", atk: 140, def: 110, hp: 150),
-            makePoke("o1", type: "grass", atk: 140, def: 110, hp: 150),
-            makePoke("o2", type: "grass", atk: 140, def: 110, hp: 150),
+            makePoke("o0", type: "fire", atk: 160, def: 125, hp: 170),
+            makePoke("o1", type: "fire", atk: 160, def: 125, hp: 170),
+            makePoke("o2", type: "fire", atk: 160, def: 125, hp: 170),
         ]
         let state = BattleCoach.State(
             myTeam: mine, myActive: 0, myShields: 2,
@@ -90,6 +91,28 @@ private func makePoke(_ id: String, type: String, atk: Double, def: Double, hp: 
         if case .switchTo? = advice?.recommended.action {} else {
             Issue.record("Expected a switch, got \(String(describing: advice?.headline))")
         }
+    }
+
+    @Test func aWinThatKeepsMoreOfTheTeamRatesHigher() async {
+        // Every line wins here, so only the HP margin can tell the options apart:
+        // staying in with the weak lead burns it, switching straight out keeps it.
+        let mine = [
+            makePoke("weak", type: "grass", atk: 100, def: 80, hp: 90),
+            makePoke("strong", type: "water", atk: 175, def: 135, hp: 185),
+            makePoke("strong2", type: "water", atk: 175, def: 135, hp: 185),
+        ]
+        let theirs = (0..<3).map { makePoke("o\($0)", type: "fire", atk: 140, def: 110, hp: 150) }
+        let state = BattleCoach.State(
+            myTeam: mine, myActive: 0, myShields: 2,
+            opponentRevealed: theirs, opponentActive: 0, opponentShields: 2)
+
+        let advice = await BattleCoach.advise(state, pool: [], movesById: [:], samples: 2, seed: 1)
+        let stay = advice?.options.first { $0.action == .stay }
+        let best = advice?.options.filter { $0.action != .stay }.map(\.averageRating).max()
+
+        #expect(stay?.winRate == 1)
+        #expect((best ?? 0) > (stay?.averageRating ?? .infinity))
+        #expect((stay?.averageRating ?? 1000) < 1000)
     }
 }
 
@@ -336,7 +359,7 @@ private func makePoke(_ id: String, type: String, atk: Double, def: Double, hp: 
     }
 
     #if os(macOS)
-    @Test func seenMovesComeFirstAndTopUpFromTheGuess() {
+    @MainActor @Test func seenMovesComeFirstAndTopUpFromTheGuess() {
         let guessed = TeamMember(speciesId: "talonflame", fastMoveId: "incinerate",
                                  chargedMoveIds: ["brave_bird", "flame_charge"])
         let other = TeamMember(speciesId: "azumarill", fastMoveId: "bubble",
@@ -349,7 +372,7 @@ private func makePoke(_ id: String, type: String, atk: Double, def: Double, hp: 
         #expect(result[1].chargedMoveIds == ["play_rough", "ice_beam"])
     }
 
-    @Test func seeingBothMovesReplacesTheGuessEntirely() {
+    @MainActor @Test func seeingBothMovesReplacesTheGuessEntirely() {
         let guessed = TeamMember(speciesId: "talonflame", fastMoveId: "incinerate",
                                  chargedMoveIds: ["brave_bird", "flame_charge"])
         let result = BattleCoachModel.applying(seen: ["talonflame": ["fly", "brave_bird"]], to: [guessed])
