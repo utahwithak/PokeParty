@@ -40,15 +40,6 @@ nonisolated enum SafeLeadFinder {
     static let defaultLeadCount = 10
     static let defaultTeamsPerLead = 5
 
-    /// How the safest leads are picked.
-    enum LeadRule: String, Sendable, CaseIterable {
-        /// Lowest mean softened rating of the meta attacking it.
-        case matchupPressure
-        /// Fewest type weaknesses among the cup's legal attacking types (ties
-        /// broken by matchup pressure) — "only weak to two types".
-        case typeWeakness
-    }
-
     /// The tunable knobs of the heuristic. Defaults come from sweeping 72 configs
     /// over 10 conditions (LAIC GBL + Great League; heuristic, learned and full
     /// AI stacks; pools of 100 and 200), scoring each config's top-20 by win
@@ -58,7 +49,8 @@ nonisolated enum SafeLeadFinder {
     ///    coverage), and the shared-hole penalty and lead weight were flat;
     ///  - lead safety matters: safe leads beat random leads by ~2 points, beat
     ///    the least-safe leads by ~8, and top-ranked leads by <1;
-    ///  - the type-weakness lead rule is worse than matchup pressure.
+    ///  - ranking leads by fewest type weaknesses (tried, then removed) was worse than
+    ///    ranking by matchup pressure, which is what `leadThreats` measures.
     /// Per-condition noise is ~±1.5 points, so don't re-tune on a single run.
     struct Config: Sendable {
         /// Blend of the two coverage terms: how well the back pair answers the
@@ -70,7 +62,6 @@ nonisolated enum SafeLeadFinder {
         var sharedHolePenalty = 0.0
         /// Rating points per point of lead threat — a safer lead ranks higher.
         var leadSafetyWeight = 0.0
-        var leadRule: LeadRule = .matchupPressure
 
         static let `default` = Config()
     }
@@ -97,7 +88,7 @@ nonisolated enum SafeLeadFinder {
         if Task.isCancelled { return ([], raw) }
 
         let threat = leadThreats(pool: pool, ratings: raw, metaRelevantCount: metaRelevantCount)
-        let leads = chooseLeads(pool: pool, leadThreat: threat, count: leadCount, rule: config.leadRule)
+        let leads = chooseLeads(pool: pool, leadThreat: threat, count: leadCount)
 
         var all: [SafeTrio] = []
         var done = 0
@@ -131,7 +122,7 @@ nonisolated enum SafeLeadFinder {
         let n = pool.count
         guard n >= 3, raw.count == n * n, leadCount > 0, teamsPerLead > 0 else { return [] }
         let threat = leadThreats(pool: pool, ratings: raw, metaRelevantCount: metaRelevantCount)
-        let leads = chooseLeads(pool: pool, leadThreat: threat, count: leadCount, rule: config.leadRule)
+        let leads = chooseLeads(pool: pool, leadThreat: threat, count: leadCount)
         let all = leads.flatMap {
             bestCovers(lead: $0, leadThreat: threat[$0], pool: pool, ratings: raw,
                        teamsPerLead: teamsPerLead, config: config)
@@ -157,30 +148,11 @@ nonisolated enum SafeLeadFinder {
         }
     }
 
-    /// Type weakness of each pool member against the cup's legal attacking types
-    /// (the union of the pool's own types): the summed excess over neutral, so a
-    /// double weakness counts more than a single one. Lower = safer.
-    static func typeWeaknesses(pool: [TeamFinder.Candidate]) -> [Double] {
-        let attackTypes = Set(pool.flatMap(\.types)).subtracting(["none"])
-        return pool.map { c in
-            attackTypes.reduce(0.0) { sum, type in
-                sum + max(0, TypeChart.effectiveness(moveType: type, targetTypes: c.types) - 1)
-            }
-        }
-    }
-
-    /// The `count` safest members under `rule`, one per evolutionary family (so
-    /// a shadow and regular copy don't eat two lead slots), safest first.
-    static func chooseLeads(
-        pool: [TeamFinder.Candidate], leadThreat: [Double], count: Int,
-        rule: LeadRule = .matchupPressure
-    ) -> [Int] {
-        let weakness = rule == .typeWeakness ? typeWeaknesses(pool: pool) : []
-        let order = pool.indices.sorted { a, b in
-            if rule == .typeWeakness, abs(weakness[a] - weakness[b]) > 1e-9 {
-                return weakness[a] < weakness[b]
-            }
-            return leadThreat[a] != leadThreat[b] ? leadThreat[a] < leadThreat[b] : a < b
+    /// The `count` safest members (lowest lead threat), one per evolutionary
+    /// family (so a shadow and regular copy don't eat two lead slots), safest first.
+    static func chooseLeads(pool: [TeamFinder.Candidate], leadThreat: [Double], count: Int) -> [Int] {
+        let order = pool.indices.sorted {
+            leadThreat[$0] != leadThreat[$1] ? leadThreat[$0] < leadThreat[$1] : $0 < $1
         }
         var leads: [Int] = []
         var families = Set<String>()

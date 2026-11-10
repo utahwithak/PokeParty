@@ -70,17 +70,6 @@ private func makeRatings() -> [Int] {
         #expect(threat[0] < threat[1])
     }
 
-    @Test func typeWeaknessRulePrefersFewestWeaknesses() {
-        let pool = makePool()
-        let threat = SafeLeadFinder.leadThreats(pool: pool, ratings: makeRatings(), metaRelevantCount: 40)
-        let weak = SafeLeadFinder.typeWeaknesses(pool: pool)
-        // In this pool's types, fire is weak to water and rock; water only to grass.
-        #expect(weak[0] > weak[1])
-        let leads = SafeLeadFinder.chooseLeads(pool: pool, leadThreat: threat, count: 1, rule: .typeWeakness)
-        #expect(leads.first != 0)                                   // matchup pressure would pick mon0
-        #expect(weak[try! #require(leads.first)] == weak.min())
-    }
-
     @Test func backPairCoversTheLeadsHole() {
         let pool = makePool()
         let trios = SafeLeadFinder.select(pool: pool, ratings: makeRatings(), leadCount: 1, teamsPerLead: 3)

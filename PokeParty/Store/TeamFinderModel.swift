@@ -24,12 +24,12 @@ final class TeamFinderModel {
         case failed(String)
     }
 
-    /// How suggested teams are found: full battle-sim tournament, or the Team
-    /// Builder's static grade analysis (no 3v3 simulations).
+    /// How suggested teams are found. `gradeCheck` and `safeLeadCover` are
+    /// static analyses that can optionally hand their teams to the 3v3
+    /// tournament to settle the order (`verifyWithTournament`).
     enum Method: String, CaseIterable, Identifiable {
         case tournament
         case gradeCheck
-        case combined
         case aiOptimizer
         case myMeta
         case safeLeadCover
@@ -38,14 +38,32 @@ final class TeamFinderModel {
 
         /// Both hill-climbing methods share the optimizer's settings and results UI.
         var isOptimizer: Bool { self == .aiOptimizer || self == .myMeta }
+        /// Static methods whose teams can optionally be verified in a tournament.
+        var supportsVerify: Bool { self == .gradeCheck || self == .safeLeadCover }
+
         var title: String {
             switch self {
-            case .tournament: return "Tournament (3v3 battles)"
-            case .gradeCheck: return "AAAA grade check (static analysis)"
-            case .combined: return "AAAA tournament (grades, then battles)"
-            case .aiOptimizer: return "AI Optimizer (hill climbing)"
-            case .myMeta: return "My Meta (leads & seen opponents)"
-            case .safeLeadCover: return "Safe lead + cover (static analysis)"
+            case .tournament: return "Tournament"
+            case .gradeCheck: return "AAAA teams"
+            case .aiOptimizer: return "AI Optimizer"
+            case .myMeta: return "My Meta"
+            case .safeLeadCover: return "Safe lead + cover"
+            }
+        }
+
+        /// One line on what the method does (the view adds the verify detail).
+        var summary: String {
+            switch self {
+            case .tournament:
+                return "The most promising trios fight a full 3v3 round robin."
+            case .gradeCheck:
+                return "Grades every trio with the Team Builder's Coverage, Bulk, Safety and Consistency."
+            case .aiOptimizer:
+                return "Hill-climbs Pokémon and movesets against the top of the meta."
+            case .myMeta:
+                return "Hill-climbs against the opponents you've logged, leads weighted most."
+            case .safeLeadCover:
+                return "A safe lead with two back Pokémon that cover the meta between them."
             }
         }
     }
@@ -164,9 +182,21 @@ final class TeamFinderModel {
     /// in Opponent Check for the chosen format (see `OpponentUsageStore`), the
     /// opponent's leads weighted most.
     var useObservedMeta = false { didSet { persistSettings() } }
-    /// "Safe lead + cover": run the chosen teams through the 3v3 tournament
-    /// instead of listing them straight from the static analysis.
-    var verifySafeLeadTeams = true { didSet { persistSettings() } }
+    /// For the static methods (`Method.supportsVerify`): run the chosen teams
+    /// through the 3v3 tournament instead of listing them straight from the
+    /// static analysis.
+    var verifyWithTournament = true { didSet { persistSettings() } }
+    /// How long finished runs took on this device (feeds `runTimeEstimate`).
+    private var runTimes = RunTimeLog()
+    private var runStart: ContinuousClock.Instant?
+    /// When the round robin began (the first standings snapshot), for the
+    /// seconds-per-battle rate.
+    private var tournamentStart: ContinuousClock.Instant?
+    /// Whether this run ends in a round-robin tournament (drives which
+    /// tournament settings and progress the UI shows).
+    var runsTournament: Bool {
+        method == .tournament || (method.supportsVerify && verifyWithTournament)
+    }
 
     /// Number of ranked threats kept as a backfill in "My Meta" mode, so the
     /// field still has some general coverage beyond the opponents logged.
@@ -262,7 +292,7 @@ final class TeamFinderModel {
         var restarts: Int
         var exploreAlternateMovesets: Bool
         var useObservedMeta: Bool?
-        var verifySafeLeadTeams: Bool?
+        var verifyWithTournament: Bool?
         var simulateCounterswaps: Bool
         var optimalShields: Bool
         var learnedShields: Bool
@@ -290,7 +320,7 @@ final class TeamFinderModel {
             fieldSize: fieldSize, restarts: restarts,
             exploreAlternateMovesets: exploreAlternateMovesets,
             useObservedMeta: useObservedMeta,
-            verifySafeLeadTeams: verifySafeLeadTeams,
+            verifyWithTournament: verifyWithTournament,
             simulateCounterswaps: simulateCounterswaps, optimalShields: optimalShields,
             learnedShields: learnedShields, learnedSwitches: learnedSwitches,
             learnedFarming: learnedFarming, playSkill: playSkill, broadFieldSize: broadFieldSize,
@@ -309,14 +339,15 @@ final class TeamFinderModel {
         format = saved.format
         poolSize = saved.poolSize
         metaSize = saved.metaSize   // after poolSize, whose didSet resets it
-        method = Method(rawValue: saved.method) ?? .tournament
+        // "combined" (AAAA grades, then a tournament) was folded into gradeCheck + verify.
+        method = saved.method == "combined" ? .gradeCheck : (Method(rawValue: saved.method) ?? .tournament)
         lockedMembers = saved.lockedMembers
         strongAgainstMembers = saved.strongAgainstMembers
         fieldSize = saved.fieldSize
         restarts = saved.restarts
         exploreAlternateMovesets = saved.exploreAlternateMovesets
         useObservedMeta = saved.useObservedMeta ?? false
-        verifySafeLeadTeams = saved.verifySafeLeadTeams ?? true
+        verifyWithTournament = saved.verifyWithTournament ?? true
         simulateCounterswaps = saved.simulateCounterswaps
         optimalShields = saved.optimalShields
         learnedShields = saved.learnedShields
@@ -387,6 +418,61 @@ final class TeamFinderModel {
     /// Trios a grade-check sweep of the current pool will grade (C(pool, 3)).
     var estimatedTrios: Int { poolSize * (poolSize - 1) * (poolSize - 2) / 6 }
 
+    // MARK: - Run-time estimate
+
+    /// Every setting that drives a run's cost, so "last run with these
+    /// settings" only matches a genuinely comparable run.
+    private var runSignature: String {
+        var parts = [method.rawValue, format.id, "pool\(poolSize)", "cores\(coreLimit)"]
+        if runsTournament { parts.append("field\(fieldSize)") }
+        if method.supportsVerify { parts.append("verify\(verifyWithTournament)") }
+        if method.isOptimizer {
+            parts += ["restarts\(restarts)", "meta\(metaSize)", "alt\(exploreAlternateMovesets)",
+                      "obs\(useObservedMeta)", "skill\(playSkill.rawValue)",
+                      "locked\(lockedMembers.count)", "strong\(strongAgainstMembers.count)"]
+        }
+        if simulatesBattles { parts.append(battleSignature) }
+        return parts.joined(separator: "|")
+    }
+
+    /// The battle-AI settings that decide how long one 3v3 takes.
+    private var battleSignature: String {
+        "ai\(simulateCounterswaps)\(optimalShields)\(learnedShields)\(learnedSwitches)\(learnedFarming)|cores\(coreLimit)"
+    }
+
+    /// Whether this run simulates battles (so the battle-simulation settings apply).
+    var simulatesBattles: Bool { runsTournament || method.isOptimizer }
+
+    /// What to expect, from runs measured on this device; nil until there's
+    /// something to go on.
+    var runTimeEstimate: String? {
+        if let seconds = runTimes.lastRun(runSignature) {
+            return "Last run with these settings took \(RunTimeLog.format(seconds: seconds))"
+        }
+        // A pure tournament scales with its battle count, so a rate measured at
+        // another field size still gives a useful number.
+        if method == .tournament, let rate = runTimes.secondsPerBattle(battleSignature) {
+            return "Battles ≈ \(RunTimeLog.format(seconds: Double(estimatedBattles) * rate)), plus seeding"
+        }
+        return nil
+    }
+
+    /// Records a finished (not cancelled) run's duration; `battles` is the
+    /// round robin's size when one ran.
+    private func finishRun(battles: Int? = nil) {
+        guard let runStart else { return }
+        let end = ContinuousClock.now
+        func seconds(_ d: Duration) -> Double {
+            Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+        }
+        runTimes.record(signature: runSignature, seconds: seconds(end - runStart))
+        if method == .tournament, let battles, let tournamentStart {
+            runTimes.recordBattleRate(signature: battleSignature, battles: battles,
+                                      seconds: seconds(end - tournamentStart))
+        }
+        self.runStart = nil
+    }
+
     func cancel() {
         searchTask?.cancel()
         searchTask = nil
@@ -454,7 +540,7 @@ final class TeamFinderModel {
         let movesById = store.movesById
         let pokemonById = store.pokemonById
         let method = method
-        let verifySafeLeadTeams = verifySafeLeadTeams
+        let verifyWithTournament = verifyWithTournament
         let restarts = restarts
         let isMyMeta = method == .myMeta
         let metaSize = isMyMeta ? Self.myMetaBackfillSize : metaSize
@@ -466,6 +552,8 @@ final class TeamFinderModel {
         let broadFieldSize = broadFieldSize
 
         phase = .loadingRankings
+        runStart = .now
+        tournamentStart = nil
         progress = 0
         eta.reset()
         results = []
@@ -504,7 +592,7 @@ final class TeamFinderModel {
                 resultsFormat = format
                 resultsPoolSize = pool.count
 
-                if method == .gradeCheck {
+                if method == .gradeCheck && !verifyWithTournament {
                     let teams = await GradeFinder.findTopGradedTeams(
                         pool: pool, cpCap: format.cp, movesById: movesById,
                         onProgress: { fraction in
@@ -513,6 +601,7 @@ final class TeamFinderModel {
                     if Task.isCancelled { return }
                     withAnimation(.spring(duration: 0.6)) { gradedTeams = teams }
                     phase = .done
+                    finishRun()
                     return
                 }
 
@@ -573,6 +662,7 @@ final class TeamFinderModel {
                     }
                     withAnimation(.spring(duration: 0.6)) { optimizerResults = final }
                     phase = .done
+                    finishRun()
 
                     savedOptimizerRuns.save(SavedOptimizerRun(
                         date: .now,
@@ -584,7 +674,7 @@ final class TeamFinderModel {
                     return
                 }
 
-                // Combined: the AAAA grade check seeds the tournament's field, so the
+                // AAAA + verify: the grade check seeds the tournament's field, so the
                 // round robin only ranks teams that already grade A across the board.
                 var seededField: [[Int]]?
                 // Safe lead + cover: pick a safe lead and complementary back pairs
@@ -602,7 +692,7 @@ final class TeamFinderModel {
                         return
                     }
                     let trios = found.trios.map(\.indices)
-                    if verifySafeLeadTeams, trios.count >= 2 {
+                    if verifyWithTournament, trios.count >= 2 {
                         seededField = trios
                         eta.reset()
                     } else {
@@ -611,10 +701,11 @@ final class TeamFinderModel {
                             cpCap: format.cp, movesById: movesById)
                         withAnimation(.spring(duration: 0.6)) { gradedTeams = graded }
                         phase = .done
+                        finishRun()
                         return
                     }
                 }
-                if method == .combined {
+                if method == .gradeCheck {   // verifying: the AAAA teams seed the tournament
                     let graded = await GradeFinder.findTopGradedTeams(
                         pool: pool, cpCap: format.cp, movesById: movesById,
                         maxResults: fieldSize,
@@ -650,7 +741,10 @@ final class TeamFinderModel {
                             guard snapshot.battlesFought >= (self.standings?.battlesFought ?? -1) else { return }
                             // Battle speed differs from seeding speed: start a fresh
                             // measurement when the round robin begins.
-                            if self.standings == nil { self.eta.reset() }
+                            if self.standings == nil {
+                                self.eta.reset()
+                                self.tournamentStart = .now
+                            }
                             self.eta.record(Double(snapshot.battlesFought) / Double(max(snapshot.totalBattles, 1)))
                             withAnimation(.spring(duration: 0.6)) { self.standings = snapshot }
                         }
@@ -659,6 +753,7 @@ final class TeamFinderModel {
                 results = final.teams
                 withAnimation(.spring(duration: 0.6)) { standings = final }
                 phase = .done
+                if final.isComplete { finishRun(battles: final.battlesFought) }
 
                 // Only a finished round robin is worth keeping — a cancelled
                 // run's records aren't a full account of the field.
