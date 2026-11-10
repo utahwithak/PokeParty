@@ -102,7 +102,7 @@ struct TeamFinderView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if model.method == .safeLeadCover {
-                    Text("Builds teams the way many ladder players do: a safe lead — the Pokémon with the fewest bad matchups in the meta — then two back Pokémon chosen to cover what beats that lead and each other, without sharing its weaknesses. Uses pairwise 1v1 ratings only, so it's fast.")
+                    Text("Builds teams the way many ladder players do: a safe lead — the Pokémon with the fewest bad matchups in the meta — then two back Pokémon chosen so the team has an answer to as much of the meta as possible, including whatever beats the lead. Uses pairwise 1v1 ratings only, so it's fast.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Toggle("Verify with a 3v3 tournament", isOn: Bindable(model).verifySafeLeadTeams)

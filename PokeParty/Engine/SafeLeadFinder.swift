@@ -12,10 +12,11 @@
 //    1. Rank every pool member by lead threat — the mean softened rating of the
 //       meta attacking it (lower = safer) — and keep the safest few, one per
 //       evolutionary family.
-//    2. For each lead, take the "holes": the meta members that beat it, weighted
-//       by how badly. Score every compatible back pair by how well the best of
-//       the pair answers those holes, how well the whole team covers the meta,
-//       and a penalty for back members that share the lead's holes.
+//    2. For each lead, score every compatible back pair by how well the whole
+//       team covers the meta — for each other pool member, the best answer on
+//       the team. That is what "cover what beats the lead and each other"
+//       reduces to; `Config` can also weight the lead's own holes and penalize
+//       back members that share them, but measurement found neither helps.
 //    3. Keep the best few pairs per lead (no teammate dominating a lead's list),
 //       merge across leads, and rank.
 //
@@ -48,21 +49,27 @@ nonisolated enum SafeLeadFinder {
         case typeWeakness
     }
 
-    /// The tunable knobs of the heuristic. Defaults come from a sweep scored by
-    /// win rate against an independent random field on the LAIC GBL and Great
-    /// League pools: team-wide coverage carries most of the signal, the
-    /// lead-hole term helps a little, and the type-weakness lead rule is worse
-    /// than matchup pressure on both.
+    /// The tunable knobs of the heuristic. Defaults come from sweeping 72 configs
+    /// over 10 conditions (LAIC GBL + Great League; heuristic, learned and full
+    /// AI stacks; pools of 100 and 200), scoring each config's top-20 by win
+    /// rate against an independent random field:
+    ///  - team-wide coverage carries the signal; weighting the lead's own holes
+    ///    got monotonically worse (the lead's holes are already part of team
+    ///    coverage), and the shared-hole penalty and lead weight were flat;
+    ///  - lead safety matters: safe leads beat random leads by ~2 points, beat
+    ///    the least-safe leads by ~8, and top-ranked leads by <1;
+    ///  - the type-weakness lead rule is worse than matchup pressure.
+    /// Per-condition noise is ~±1.5 points, so don't re-tune on a single run.
     struct Config: Sendable {
         /// Blend of the two coverage terms: how well the back pair answers the
         /// lead's own holes vs how well the whole team covers the meta.
-        var holeCoverWeight = 0.3
-        var teamCoverWeight = 0.7
+        var holeCoverWeight = 0.0
+        var teamCoverWeight = 1.0
         /// Rating points subtracted when both back members are beaten by the same
         /// threats that beat the lead (scaled by the shared-hole fraction, 0…1).
-        var sharedHolePenalty = 120.0
+        var sharedHolePenalty = 0.0
         /// Rating points per point of lead threat — a safer lead ranks higher.
-        var leadSafetyWeight = 1.0
+        var leadSafetyWeight = 0.0
         var leadRule: LeadRule = .matchupPressure
 
         static let `default` = Config()
@@ -215,7 +222,7 @@ nonisolated enum SafeLeadFinder {
                 // How well the best of the pair answers the lead's holes.
                 var holeCover = 500.0
                 var shared = 0.0
-                if holeWeight > 0 {
+                if holeWeight > 0, config.holeCoverWeight > 0 || config.sharedHolePenalty > 0 {
                     var cover = 0.0
                     for h in holes {
                         cover += h.weight * Double(max(raw[b * n + h.threat], raw[c * n + h.threat]))
