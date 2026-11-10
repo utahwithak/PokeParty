@@ -371,6 +371,9 @@ struct GradedTeamsView: View {
     /// The format and pool size the run was started with (for the caption).
     let format: RankingFormat?
     let poolSize: Int
+    /// Safe-lead results: list every team in the order given (best structure
+    /// first) instead of filtering to the AAAA teams.
+    var isSafeLead = false
     let openInBuilder: (GradeFinder.GradedTeam) -> Void
 
     var body: some View {
@@ -402,12 +405,16 @@ struct GradedTeamsView: View {
 
     /// All AAAA teams when any exist; otherwise the best-available fallback.
     private var aaaaTeams: [GradeFinder.GradedTeam] { teams.filter(\.isAAAA) }
-    private var displayedTeams: [GradeFinder.GradedTeam] { aaaaTeams.isEmpty ? teams : aaaaTeams }
+    private var displayedTeams: [GradeFinder.GradedTeam] {
+        isSafeLead || aaaaTeams.isEmpty ? teams : aaaaTeams
+    }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Text(aaaaTeams.isEmpty
+                Text(isSafeLead
+                     ? "\(teams.count) safe-lead team\(teams.count == 1 ? "" : "s")"
+                     : aaaaTeams.isEmpty
                      ? "No AAAA teams — best available grades"
                      : "\(aaaaTeams.count) AAAA team\(aaaaTeams.count == 1 ? "" : "s")")
                     .font(.headline)
@@ -421,6 +428,9 @@ struct GradedTeamsView: View {
 
     private var caption: String {
         let league = format.map { "\($0.title) — " } ?? ""
+        if isSafeLead {
+            return "\(league)a safe lead (fewest bad meta matchups) with two back Pokémon chosen to cover what beats it and each other, from the \(TeamFinderModel.poolDescription(poolSize)) of ranked Pokémon. Ordered by that structure, not by grade; the grades shown are the Team Builder's. The first member is the lead."
+        }
         let base = "\(league)every trio from the \(TeamFinderModel.poolDescription(poolSize)) of ranked Pokémon, graded with the Team Builder's static analysis (no battle simulations)."
         if aaaaTeams.isEmpty {
             return "\(base) No trio grades A in all of Coverage, Bulk, Safety and Consistency, so these are the teams whose worst grade is best. The first member is the lead."

@@ -28,6 +28,7 @@ struct TeamFinderResultsView: View {
                     teams: graded,
                     format: model.resultsFormat,
                     poolSize: model.resultsPoolSize,
+                    isSafeLead: model.method == .safeLeadCover,
                     openInBuilder: { openInTeamBuilder($0.members.map(\.member)) })
             } else if let results = model.optimizerResults {
                 OptimizerResultsView(
@@ -58,6 +59,8 @@ struct TeamFinderResultsView: View {
 
     private var emptyDescription: String {
         switch model.phase {
+        case .searching where model.method == .safeLeadCover:
+            "Choosing the safest leads and the back pairs that cover them…"
         case .searching where model.method == .gradeCheck:
             "Grading every candidate trio with the Team Builder's static analysis…"
         case .searching where model.method.isOptimizer:

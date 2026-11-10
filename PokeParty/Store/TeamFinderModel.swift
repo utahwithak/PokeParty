@@ -32,6 +32,7 @@ final class TeamFinderModel {
         case combined
         case aiOptimizer
         case myMeta
+        case safeLeadCover
 
         var id: Self { self }
 
@@ -44,6 +45,7 @@ final class TeamFinderModel {
             case .combined: return "AAAA tournament (grades, then battles)"
             case .aiOptimizer: return "AI Optimizer (hill climbing)"
             case .myMeta: return "My Meta (leads & seen opponents)"
+            case .safeLeadCover: return "Safe lead + cover (static analysis)"
             }
         }
     }
@@ -162,6 +164,9 @@ final class TeamFinderModel {
     /// in Opponent Check for the chosen format (see `OpponentUsageStore`), the
     /// opponent's leads weighted most.
     var useObservedMeta = false { didSet { persistSettings() } }
+    /// "Safe lead + cover": run the chosen teams through the 3v3 tournament
+    /// instead of listing them straight from the static analysis.
+    var verifySafeLeadTeams = true { didSet { persistSettings() } }
 
     /// Number of ranked threats kept as a backfill in "My Meta" mode, so the
     /// field still has some general coverage beyond the opponents logged.
@@ -257,6 +262,7 @@ final class TeamFinderModel {
         var restarts: Int
         var exploreAlternateMovesets: Bool
         var useObservedMeta: Bool?
+        var verifySafeLeadTeams: Bool?
         var simulateCounterswaps: Bool
         var optimalShields: Bool
         var learnedShields: Bool
@@ -284,6 +290,7 @@ final class TeamFinderModel {
             fieldSize: fieldSize, restarts: restarts,
             exploreAlternateMovesets: exploreAlternateMovesets,
             useObservedMeta: useObservedMeta,
+            verifySafeLeadTeams: verifySafeLeadTeams,
             simulateCounterswaps: simulateCounterswaps, optimalShields: optimalShields,
             learnedShields: learnedShields, learnedSwitches: learnedSwitches,
             learnedFarming: learnedFarming, playSkill: playSkill, broadFieldSize: broadFieldSize,
@@ -309,6 +316,7 @@ final class TeamFinderModel {
         restarts = saved.restarts
         exploreAlternateMovesets = saved.exploreAlternateMovesets
         useObservedMeta = saved.useObservedMeta ?? false
+        verifySafeLeadTeams = saved.verifySafeLeadTeams ?? true
         simulateCounterswaps = saved.simulateCounterswaps
         optimalShields = saved.optimalShields
         learnedShields = saved.learnedShields
@@ -446,6 +454,7 @@ final class TeamFinderModel {
         let movesById = store.movesById
         let pokemonById = store.pokemonById
         let method = method
+        let verifySafeLeadTeams = verifySafeLeadTeams
         let restarts = restarts
         let isMyMeta = method == .myMeta
         let metaSize = isMyMeta ? Self.myMetaBackfillSize : metaSize
@@ -578,6 +587,33 @@ final class TeamFinderModel {
                 // Combined: the AAAA grade check seeds the tournament's field, so the
                 // round robin only ranks teams that already grade A across the board.
                 var seededField: [[Int]]?
+                // Safe lead + cover: pick a safe lead and complementary back pairs
+                // from the pairwise ratings. Listed directly (graded, in score
+                // order) unless the tournament is verifying them.
+                if method == .safeLeadCover {
+                    let found = await SafeLeadFinder.findTrios(
+                        pool: pool, movesById: movesById,
+                        onProgress: { fraction in
+                            Task { @MainActor in self.noteProgress(fraction) }
+                        })
+                    if Task.isCancelled { return }
+                    guard !found.trios.isEmpty else {
+                        phase = .failed("Not enough compatible Pokémon in this pool to build safe-lead teams — try a larger pool.")
+                        return
+                    }
+                    let trios = found.trios.map(\.indices)
+                    if verifySafeLeadTeams, trios.count >= 2 {
+                        seededField = trios
+                        eta.reset()
+                    } else {
+                        let graded = GradeFinder.gradeTrios(
+                            trios, pool: pool, ratings: found.ratings,
+                            cpCap: format.cp, movesById: movesById)
+                        withAnimation(.spring(duration: 0.6)) { gradedTeams = graded }
+                        phase = .done
+                        return
+                    }
+                }
                 if method == .combined {
                     let graded = await GradeFinder.findTopGradedTeams(
                         pool: pool, cpCap: format.cp, movesById: movesById,

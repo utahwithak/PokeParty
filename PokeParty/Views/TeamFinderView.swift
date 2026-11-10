@@ -101,6 +101,15 @@ struct TeamFinderView: View {
                     Text("Every trio from the pool is first graded with the Team Builder's static analysis; only the teams graded A in Coverage, Bulk, Safety and Consistency enter the tournament, where a full 3v3 round robin settles their order.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else if model.method == .safeLeadCover {
+                    Text("Builds teams the way many ladder players do: a safe lead — the Pokémon with the fewest bad matchups in the meta — then two back Pokémon chosen to cover what beats that lead and each other, without sharing its weaknesses. Uses pairwise 1v1 ratings only, so it's fast.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle("Verify with a 3v3 tournament", isOn: Bindable(model).verifySafeLeadTeams)
+                        .disabled(model.isRunning)
+                    Text("When on, the chosen teams fight a full 3v3 round robin to settle their order. When off, they're listed with their Team Builder grades, best structure first.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else if model.method == .myMeta {
                     Text("Hill-climbs teams against the opponents you've logged for this format: every Pokémon you've seen becomes a threat to beat, with your opponents' leads weighted most. A few top-ranked threats are kept as a light backfill. Needs logged opponents — check some in the Team Builder or scan battles first.")
                         .font(.caption)
@@ -117,6 +126,9 @@ struct TeamFinderView: View {
                 lockedPokemonSection
                 strongAgainstSection
                 optimizerSection
+            } else if model.method == .safeLeadCover {
+                // Only the tournament-verified variant has battle settings to show.
+                if model.verifySafeLeadTeams { tournamentFieldSection }
             } else if model.method != .gradeCheck {
                 tournamentFieldSection
             }
@@ -255,6 +267,7 @@ struct TeamFinderView: View {
         case .gradeCheck: return "Grading teams…"
         case .combined: return "Finding AAAA teams…"
         case .aiOptimizer, .myMeta: return "Building meta field…"
+        case .safeLeadCover: return "Finding safe leads and cover…"
         }
     }
 
@@ -265,6 +278,7 @@ struct TeamFinderView: View {
         case .combined: return "Run AAAA Tournament"
         case .aiOptimizer: return "Run AI Optimizer"
         case .myMeta: return "Run My Meta Optimizer"
+        case .safeLeadCover: return "Find Safe-Lead Teams"
         }
     }
 

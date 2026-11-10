@@ -398,8 +398,81 @@ nonisolated enum GradeFinder {
         return matrix
     }
 
+    /// Grades specific trios (pool indices, lead first) with the same formulas
+    /// as the full sweep, for modes that choose their own trios (`SafeLeadFinder`).
+    /// `ratings` is the pool's `n × n` matrix from `ratingMatrix`; results keep
+    /// the input order and each trio's own lead/switch/closer order.
+    static func gradeTrios(
+        _ trios: [[Int]],
+        pool: [TeamFinder.Candidate],
+        ratings raw: [Int],
+        cpCap: Int,
+        movesById: [String: Move],
+        metaRelevantCount: Int = 40
+    ) -> [GradedTeam] {
+        let n = pool.count
+        guard n >= 3, raw.count == n * n else { return [] }
+
+        var soft = [Double](repeating: 0, count: n * n)
+        for i in 0..<n {
+            let metaRelevant = i < metaRelevantCount
+            for j in 0..<n where i != j {
+                soft[i * n + j] = TeamAnalyzer.softScore(Double(raw[i * n + j]), metaRelevant: metaRelevant)
+            }
+        }
+        let bulk: [Double] = pool.map { c in
+            c.stats.def * (c.shadow ? DamageMultiplier.shadowDef : 1) * Double(c.stats.hp)
+        }
+        let consistency: [Double] = pool.map {
+            Consistency.score(fastMoveId: $0.combatant.fastMoveId,
+                              chargedMoveIds: $0.combatant.chargedMoveIds,
+                              types: $0.combatant.species.types,
+                              movesById: movesById)
+        }
+        let safety: [Double] = pool.map { $0.switchesScore ?? 60 }
+        let famKey: [String?] = pool.map(\.familyId)
+        let speciesIds: [String] = pool.map(\.member.speciesId)
+        let bulkGoal = TeamAnalyzer.bulkGoal(cpCap: cpCap)
+
+        // `gradeTrios(lead:…)` sweeps ascending (i < j < k) trios gated by a
+        // compatibility mask, so opening just one trio's three edges at a time
+        // grades exactly that trio; the original order is restored afterwards.
+        var compatible = [Bool](repeating: false, count: n * n)
+        var graded: [GradedTeam] = []
+        for trio in trios where trio.count == 3 && Set(trio).count == 3 && trio.allSatisfy({ $0 >= 0 && $0 < n }) {
+            let sorted = trio.sorted()
+            let edges = [(sorted[0], sorted[1]), (sorted[0], sorted[2]), (sorted[1], sorted[2])]
+            for (a, b) in edges { compatible[a * n + b] = true; compatible[b * n + a] = true }
+            defer { for (a, b) in edges { compatible[a * n + b] = false; compatible[b * n + a] = false } }
+
+            guard let team = gradeTrios(
+                lead: sorted[0], memberCount: n, threatCount: n, members: pool,
+                ratings: raw, softRatings: soft, compatible: compatible,
+                bulk: bulk, consistency: consistency, safety: safety,
+                memberFamKey: famKey, memberSpeciesIds: speciesIds,
+                threatFamKey: famKey, threatSpeciesIds: speciesIds,
+                bulkGoal: bulkGoal, maxResults: 1).first
+            else { continue }
+
+            graded.append(GradedTeam(
+                members: trio.map { idx in
+                    let c = pool[idx]
+                    return TeamFinder.RankedTeam.Member(
+                        member: c.member, speciesName: c.speciesName, types: c.types, shadow: c.shadow)
+                },
+                poolIndices: trio,
+                coverage: team.coverage, bulk: team.bulk, safety: team.safety,
+                consistency: team.consistency, threatScore: team.threatScore,
+                coverageValue: team.coverageValue, bulkValue: team.bulkValue,
+                safetyValue: team.safetyValue, consistencyValue: team.consistencyValue,
+                minGradeFraction: team.minGradeFraction))
+        }
+        return graded
+    }
+
     /// One fast 1v1 per unordered pair at 1 shield each fills both directions.
-    private static func ratingMatrix(
+    /// Internal so `SafeLeadFinder` can reuse the same matrix.
+    static func ratingMatrix(
         pool: [TeamFinder.Candidate], movesById: [String: Move],
         progress: (@Sendable (Double) -> Void)? = nil
     ) async -> [Int] {
