@@ -406,13 +406,13 @@ struct OpponentCheckView: View {
         cmp = slots.map { slot in
             guard let slot, model.hasMembers, let species = store.pokemonById[slot.speciesId],
                   let theirs = CMPOutlook.attackRange(
-                    species: species, shadow: slot.shadow, megaLevel: slot.megaLevel,
+                    species: species, megaLevel: slot.megaLevel,
                     isBestBuddy: false, ivs: nil, cpCap: cap)
             else { return [] }
             return model.members.map { member in
                 guard let mine = store.pokemonById[member.speciesId],
                       let range = CMPOutlook.attackRange(
-                        species: mine, shadow: member.shadow, megaLevel: member.megaLevel,
+                        species: mine, megaLevel: member.megaLevel,
                         isBestBuddy: member.isBestBuddy, ivs: member.ivs, cpCap: cap)
                 else { return nil }
                 return CMPOutlook.compare(mine: range, theirs: theirs)

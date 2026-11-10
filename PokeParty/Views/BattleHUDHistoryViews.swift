@@ -93,7 +93,6 @@ private struct SetTrackerPanel: View {
     /// Same as a new game, but in a fresh set.
     let onNewSet: () -> Void
     @State private var confirmingReset = false
-    @State private var showEarlier = false
 
     private var history: BattleHistoryStore { coach.history }
 
@@ -185,45 +184,8 @@ private struct SetTrackerPanel: View {
                     .help("Delete this game from the history")
                 }
             } else {
-                Text("Press New game to add the next game to this set.")
+                Text("Press New game to add the next game to this set. Earlier sets are in Battle Log.")
                     .font(.caption).foregroundStyle(.secondary)
-            }
-
-            let older = history.sets.filter { $0.id != set.id }
-            if !older.isEmpty {
-                // A whole-row button: DisclosureGroup only responds on its small chevron.
-                Button {
-                    withAnimation(.easeOut(duration: 0.15)) { showEarlier.toggle() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.right")
-                            .rotationEffect(.degrees(showEarlier ? 90 : 0))
-                            .font(.caption.weight(.semibold))
-                        Text("Earlier sets (\(older.count))")
-                        Spacer()
-                    }
-                    .font(.subheadline)
-                    .padding(.vertical, 6)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                if showEarlier {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(older.prefix(20)) { past in
-                            HStack(spacing: 8) {
-                                Text(past.date.formatted(date: .abbreviated, time: .shortened))
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Text("\(past.wins)–\(past.losses)").font(.caption.weight(.semibold).monospacedDigit())
-                                ForEach(Array(past.battles.enumerated()), id: \.element.id) { index, game in
-                                    gameChip(index: index, game: game)
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .dropDestination(for: String.self) { items, _ in drop(items, into: past.id) }
-                        }
-                    }
-                    .padding(.top, 4)
-                }
             }
         }
         .padding(12)
@@ -298,7 +260,7 @@ private struct SetTrackerPanel: View {
 
 // MARK: - Battle log
 
-private struct BattleLogPanel: View {
+struct BattleLogPanel: View {
     let coach: BattleCoachModel
     let store: RankingsStore
     let battle: RecordedBattle
@@ -398,7 +360,7 @@ private struct BattleLogPanel: View {
 
 // MARK: - Sim review
 
-private struct BattleReviewPanel: View {
+struct BattleReviewPanel: View {
     let coach: BattleCoachModel
     let store: RankingsStore
     let battle: RecordedBattle
@@ -509,15 +471,18 @@ private struct BulletLabelStyle: LabelStyle {
 
 /// Sim versus reality over every game marked with this team — the answer to
 /// "is it me, the team, or the sim?".
-private struct BattleInsightsPanel: View {
+struct BattleInsightsPanel: View {
     let history: BattleHistoryStore
     let team: [TeamMember]
     let store: RankingsStore
+    /// The league to count games in; the current one unless given.
+    var cup: String?
+    var cp: Int?
 
     var body: some View {
         let ids = Set(team.map(\.speciesId))
         let insights = history.insights { battle in
-            battle.cup == store.format.cup && battle.cp == store.format.cp
+            battle.cup == (cup ?? store.format.cup) && battle.cp == (cp ?? store.format.cp)
                 && Set(battle.team.map(\.speciesId)) == ids
         }
         if insights.games > 0 {

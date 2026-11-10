@@ -256,7 +256,8 @@ nonisolated enum BattleReviewer {
                                         moveName: (String) -> String) -> [String] {
         var out: [String] = []
 
-        let myShieldsUsed = battle.events.filter { $0.kind == .shield && $0.mine }.count
+        // Distinct shields-left values, so duplicate events from older recordings (a flickering read) don't count twice.
+        let myShieldsUsed = Set(battle.events.filter { $0.kind == .shield && $0.mine }.map { $0.value ?? -1 }).count
         let simShieldsUsed = max(0, 2 - simLog.result.shieldsA)
         if myShieldsUsed > simShieldsUsed {
             out.append("You spent \(myShieldsUsed) shield\(myShieldsUsed == 1 ? "" : "s"); the sim used \(simShieldsUsed). It held shields for the moves that mattered.")

@@ -78,8 +78,11 @@ struct PaywallView: View {
 
                 Button("Restore Purchases") {
                     Task {
-                        try? await AppStore.sync()
-                        await entitlements.load()
+                        do {
+                            try await entitlements.restore()
+                        } catch {
+                            entitlements.purchaseError = "Couldn't restore purchases: \(error.localizedDescription)"
+                        }
                     }
                 }
                 .font(.footnote)

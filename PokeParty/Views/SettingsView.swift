@@ -160,8 +160,10 @@ struct SettingsView: View {
     private func restorePurchases() {
         Task { @MainActor in
             do {
-                try await AppStore.sync()
-                restoreMessage = "Your purchases have been restored."
+                try await entitlements.restore()
+                restoreMessage = entitlements.isUnlocked
+                    ? "Your purchases have been restored."
+                    : "No previous purchase was found for this Apple ID."
             } catch {
                 restoreMessage = "Couldn't restore purchases: \(error.localizedDescription)"
             }

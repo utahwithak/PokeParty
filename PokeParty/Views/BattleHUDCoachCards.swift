@@ -240,6 +240,52 @@ struct MidGameCard: View {
     }
 }
 
+/// Why the banner says what it does: every option's win chance and how much of
+/// your team it leaves standing. When win chances tie, the HP column is the reason.
+struct CoachOptionsCard: View {
+    let coach: BattleCoachModel
+
+    var body: some View {
+        if let advice = coach.advice, advice.options.count > 1 {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Why this call")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(advice.options, id: \.pokemonIndex) { option in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(option.pokemonName).font(.body.weight(.medium))
+                        Text(option.action == .stay ? "stay" : "switch")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("wins \(Int((option.winRate * 100).rounded()))%")
+                            .font(.body.monospacedDigit())
+                        Text("HP left \(Int((option.averageRating / 10).rounded()))")
+                            .font(.body.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .fontWeight(option.action == advice.recommended.action ? .semibold : .regular)
+                }
+                if tiedOnWinRate(advice) {
+                    Text("Win chances are level, so the call goes to the option that finishes with more of your team's HP.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    /// The recommended option and staying in win equally often, to the shown percent.
+    private func tiedOnWinRate(_ advice: BattleCoach.Advice) -> Bool {
+        guard advice.recommended.action != .stay,
+              let stay = advice.options.first(where: { $0.action == .stay }) else { return false }
+        return Int((advice.recommended.winRate * 100).rounded()) == Int((stay.winRate * 100).rounded())
+    }
+}
+
 /// Who the opponent probably has in the back, from what they've shown and what
 /// the meta pairs with it.
 struct BackLineCard: View {

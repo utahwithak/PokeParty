@@ -19,6 +19,34 @@ struct BattleSetSummary: Identifiable {
     var losses: Int { battles.filter { $0.outcome == .loss }.count }
     var decided: Int { wins + losses }
     var date: Date { battles.first?.date ?? .distantPast }
+    /// When the set's last game was recorded.
+    var endDate: Date { battles.map(\.date).max() ?? .distantPast }
+}
+
+/// Sets played close together — a sitting at the game.
+struct BattleSession: Identifiable {
+    /// Sets further apart than this start a new session.
+    static let maxGap: TimeInterval = 60 * 60
+
+    let sets: [BattleSetSummary]
+    var id: UUID { sets[0].id }
+    var wins: Int { sets.reduce(0) { $0 + $1.wins } }
+    var losses: Int { sets.reduce(0) { $0 + $1.losses } }
+    var start: Date { sets.map(\.date).min() ?? .distantPast }
+    var end: Date { sets.map(\.endDate).max() ?? .distantPast }
+
+    /// Groups sets (newest first) into sessions, newest first.
+    static func group(_ sets: [BattleSetSummary]) -> [BattleSession] {
+        var sessions: [[BattleSetSummary]] = []
+        for set in sets {
+            if let last = sessions.last?.last, last.date.timeIntervalSince(set.endDate) <= maxGap {
+                sessions[sessions.count - 1].append(set)
+            } else {
+                sessions.append([set])
+            }
+        }
+        return sessions.map { BattleSession(sets: $0) }
+    }
 }
 
 /// How the sim's calls compare with what happened, over many games.

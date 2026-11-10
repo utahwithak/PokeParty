@@ -18,6 +18,9 @@ struct ContentView: View {
     @State private var breakpoints = BreakpointModel()
     @State private var savedTeams = SavedTeamsStore()
     @State private var bench = BenchStore()
+    /// Shared by the Battle HUD (which records into it) and the Battle Log (which browses it).
+    @State private var battleHistory = BattleHistoryStore()
+    @State private var selectedLogBattleId: UUID?
     @State private var shareImport = ShareImportModel()
     #if os(iOS)
     @AppStorage(AppTheme.defaultsKey) private var selectedTheme = AppTheme.standard
@@ -159,6 +162,13 @@ struct ContentView: View {
             } else {
                 PaywallView()
             }
+        case .battleLog:
+            if entitlements.isUnlocked {
+                BattleLogListPane(history: battleHistory, store: store, selectedId: $selectedLogBattleId,
+                                  onSelect: { compactColumn = .detail })
+            } else {
+                PaywallView()
+            }
         case .matchup:
             MatchupSimulatorView(store: store, model: matchup, hiddenCups: hiddenCups)
         case .breakpoints:
@@ -234,9 +244,15 @@ struct ContentView: View {
             }
         case .battleHUD:
             if entitlements.isUnlocked {
-                BattleHUDDetailView(store: store, model: teamBuilder)
+                BattleHUDDetailView(store: store, model: teamBuilder, history: battleHistory)
             } else {
                 ContentUnavailableView("", systemImage: "speedometer")
+            }
+        case .battleLog:
+            if entitlements.isUnlocked {
+                BattleLogDetailView(history: battleHistory, store: store, selectedId: selectedLogBattleId)
+            } else {
+                ContentUnavailableView("", systemImage: "clock.arrow.circlepath")
             }
         case .matchup:
             MatchupDetailView(store: store, model: matchup, hiddenCups: hiddenCups)

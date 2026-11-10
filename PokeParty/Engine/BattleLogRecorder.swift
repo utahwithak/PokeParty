@@ -33,6 +33,9 @@ nonisolated struct BattleLogRecorder: Sendable {
     private var loggedTheirs: Int?
     private var lastFlash: [Bool: (flash: Int, at: Date)] = [:]
     private var lastCharged: [Bool: (moveId: String?, at: Date)] = [:]
+    /// The fewest shields each side has been logged with. Shields only ever go
+    /// down, so a reading that flickers back up and down again isn't a new break.
+    private var lowestShields: [Bool: Int] = [:]
 
     var isEmpty: Bool { events.isEmpty }
 
@@ -90,12 +93,16 @@ nonisolated struct BattleLogRecorder: Sendable {
 
         guard let last else { return }
 
-        // A shield breaking means a charged move was thrown at it.
-        if now.myShields < last.myShields {
+        // A shield breaking means a charged move was thrown at it. Compared with
+        // the lowest count already logged, so a misread that bounces back up
+        // can't log the same break again.
+        if now.myShields < min(last.myShields, lowestShields[true] ?? 2) {
+            lowestShields[true] = now.myShields
             append(.shield, mine: true, species: mySpecies(now.myActive), other: theirSpecies(now.opponentActive),
                    value: Double(now.myShields))
         }
-        if now.opponentShields < last.opponentShields {
+        if now.opponentShields < min(last.opponentShields, lowestShields[false] ?? 2) {
+            lowestShields[false] = now.opponentShields
             append(.shield, mine: false, species: theirSpecies(now.opponentActive), other: mySpecies(now.myActive),
                    value: Double(now.opponentShields))
         }

@@ -18,6 +18,8 @@ enum SidebarSelection: Hashable {
     case partyFinder
     /// Live coaching tips: on the Mac and iPad (they run the simulations; the iPhone just feeds it).
     case battleHUD
+    /// Past games: sets grouped into sessions, each with its teams, log and sim review.
+    case battleLog
     case matchup
     case breakpoints
     case bench
@@ -55,6 +57,7 @@ enum SidebarSelection: Hashable {
         case .teamBuilder: return "teamBuilder"
         case .partyFinder: return "partyFinder"
         case .battleHUD: return "battleHUD"
+        case .battleLog: return "battleLog"
         case .matchup: return "matchup"
         case .breakpoints: return "breakpoints"
         case .bench: return "bench"
@@ -83,6 +86,7 @@ enum SidebarSelection: Hashable {
         case "teamBuilder": return .teamBuilder
         case "partyFinder": return .partyFinder
         case "battleHUD": return battleHUDAvailable ? .battleHUD : nil
+        case "battleLog": return battleHUDAvailable ? .battleLog : nil
         case "matchup": return .matchup
         // "breakpoints" intentionally unresolved: the tab is pulled from
         // this release's sidebar, so a persisted selection from before the
@@ -143,10 +147,12 @@ struct LeagueSidebar: View {
         var tools = [Tool(selection: .partyFinder, title: "Party Finder", systemImage: "wand.and.stars")]
         #if os(macOS)
         tools.append(Tool(selection: .battleHUD, title: "Battle HUD", systemImage: "speedometer"))
+        tools.append(Tool(selection: .battleLog, title: "Battle Log", systemImage: "clock.arrow.circlepath"))
         tools.append(Tool(selection: .scan, title: "Scan", systemImage: "camera.viewfinder"))
         #else
         if SidebarSelection.battleHUDAvailable {
             tools.append(Tool(selection: .battleHUD, title: "Battle HUD", systemImage: "speedometer"))
+            tools.append(Tool(selection: .battleLog, title: "Battle Log", systemImage: "clock.arrow.circlepath"))
         }
         #if !targetEnvironment(simulator)
         // The simulator has no full-display ScreenCaptureKit capture, so Begin Scan just errors.

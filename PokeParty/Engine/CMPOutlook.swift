@@ -20,11 +20,12 @@ nonisolated enum CMPOutlook: Equatable {
 
     /// The lowest and highest Attack a species can reach under `cpCap`.
     /// A known `ivs` pins it to one value; otherwise every spread counts.
-    static func attackRange(species: Pokemon, shadow: Bool, megaLevel: Int?,
+    /// Shadow isn't a factor: its 1.2× Attack applies to damage only, and CMP
+    /// compares the plain Attack stat.
+    static func attackRange(species: Pokemon, megaLevel: Int?,
                             isBestBuddy: Bool, ivs: IVs?, cpCap: Int) -> ClosedRange<Double>? {
         let levelCap = species.levelCap(megaLevel: megaLevel, isBestBuddy: isBestBuddy, cpCap: cpCap)
         let base = species.baseStats
-        let multiplier = shadow ? DamageMultiplier.shadowAtk : 1
         let spreads: [IVs]
         if let ivs {
             spreads = [ivs]
@@ -39,8 +40,8 @@ nonisolated enum CMPOutlook: Equatable {
             guard let stats = IVCalculator.stats(baseAtk: base.atk, baseDef: base.def, baseHp: base.hp,
                                                  ivs: spread, cpCap: cpCap, levelCap: levelCap)
             else { continue }
-            low = min(low, stats.atk * multiplier)
-            high = max(high, stats.atk * multiplier)
+            low = min(low, stats.atk)
+            high = max(high, stats.atk)
         }
         return low <= high ? low...high : nil
     }

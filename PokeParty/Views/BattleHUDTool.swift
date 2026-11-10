@@ -187,7 +187,7 @@ struct BattleHUDTeamPane: View {
 struct BattleHUDDetailView: View {
     let store: RankingsStore
     let model: TeamBuilderModel
-    @State private var coach = BattleCoachModel()
+    @State private var coach: BattleCoachModel
     @State private var opponents: [TeamMember] = []
     /// Listens for opponents sent from the iPhone while this screen is up.
     @State private var phoneLink = PhoneLinkServer()
@@ -197,6 +197,12 @@ struct BattleHUDDetailView: View {
     @State private var resetToken = UUID()
     /// A past game picked from the set tracker; nil follows the game in progress.
     @State private var selectedBattleId: UUID?
+    init(store: RankingsStore, model: TeamBuilderModel, history: BattleHistoryStore) {
+        self.store = store
+        self.model = model
+        _coach = State(initialValue: BattleCoachModel(history: history))
+    }
+
     /// Whether the coaching bar on the right is showing.
     @AppStorage("battleHUDShowCoachBar") private var showCoachBar = true
     /// Width of the whole detail column, to pick side-by-side or stacked layout.
@@ -289,6 +295,7 @@ struct BattleHUDDetailView: View {
     private var coachContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             CoachBanner(coach: coach)
+            CoachOptionsCard(coach: coach)
             ShieldPlanCard(coach: coach)
             TempoCard(coach: coach)
             LeadPlanCard(coach: coach)

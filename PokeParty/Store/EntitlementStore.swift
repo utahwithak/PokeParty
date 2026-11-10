@@ -75,6 +75,7 @@ final class EntitlementStore {
         }
 
         product = await productsFetch?.first
+        print("EntitlementStore: load finished, product: \(product?.id ?? "nil"), unlocked: \(isUnlocked)")
     }
 
     // MARK: - Purchase
@@ -100,10 +101,27 @@ final class EntitlementStore {
         }
     }
 
+    // MARK: - Restore
+
+    /// Syncs with the App Store, then re-reads current entitlements so
+    /// `isUnlocked` reflects the result immediately. Throws if the sync fails
+    /// (e.g. the user cancels the App Store sign-in).
+    func restore() async throws {
+        try await AppStore.sync()
+        await load()
+    }
+
     // MARK: - Private
 
     private func handle(_ result: VerificationResult<Transaction>) async {
-        guard case .verified(let transaction) = result else { return }
+        guard case .verified(let transaction) = result else {
+            if case .unverified(_, let error) = result {
+                print("EntitlementStore: ignoring unverified transaction: \(error)")
+                purchaseError = "Purchase could not be verified: \(error.localizedDescription)"
+            }
+            return
+        }
+        print("EntitlementStore: verified transaction for \(transaction.productID), revoked: \(transaction.revocationDate != nil)")
         isUnlocked = transaction.revocationDate == nil
         await transaction.finish()
     }
