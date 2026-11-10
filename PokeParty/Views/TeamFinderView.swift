@@ -308,7 +308,8 @@ struct TeamFinderView: View {
             .font(.subheadline.weight(.semibold))
         ForEach(model.lockedMembers) { member in
             memberRow(member,
-                      setShadow: { model.setLockedMemberShadow($0, for: member) },
+                      shadow: Binding(get: { member.shadow },
+                                      set: { model.setLockedMemberShadow($0, for: member) }),
                       remove: { model.unlockMember(member) })
         }
         .disabled(model.isRunning)
@@ -342,7 +343,8 @@ struct TeamFinderView: View {
             .padding(.top, 4)
         ForEach(model.strongAgainstMembers) { member in
             memberRow(member,
-                      setShadow: { model.setStrongAgainstShadow($0, for: member) },
+                      shadow: Binding(get: { member.shadow },
+                                      set: { model.setStrongAgainstShadow($0, for: member) }),
                       remove: { model.removeStrongAgainst(member) })
         }
         .disabled(model.isRunning)
@@ -371,7 +373,7 @@ struct TeamFinderView: View {
 
     /// A locked / strong-against Pokémon row: name, optional shadow toggle, remove.
     private func memberRow(
-        _ member: TeamMember, setShadow: @escaping (Bool) -> Void, remove: @escaping () -> Void
+        _ member: TeamMember, shadow: Binding<Bool>, remove: @escaping () -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
@@ -387,7 +389,7 @@ struct TeamFinderView: View {
             }
             if let species = store.pokemonById[member.speciesId],
                species.isShadow || species.isShadowEligible || member.shadow {
-                Toggle("Shadow", isOn: Binding(get: { member.shadow }, set: setShadow))
+                Toggle("Shadow", isOn: shadow)
                     .toggleStyle(.switch)
                     .controlSize(.mini)
                     .font(.caption)
