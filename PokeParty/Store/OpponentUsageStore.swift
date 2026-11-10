@@ -144,6 +144,13 @@ final class OpponentUsageStore {
             .map { (speciesId: $0.key, count: $0.value) }
     }
 
+    /// How much logged data backs this format's meta (see `OpponentSample`).
+    func sample(in format: RankingFormat) -> OpponentSample {
+        guard let u = usage.first(where: { $0.formatId == format.id }) else { return OpponentSample(battles: 0) }
+        return OpponentSample(leadsLogged: u.leadCounts.values.reduce(0, +),
+                              sightings: u.counts.values.reduce(0, +))
+    }
+
     func count(for speciesId: String, in format: RankingFormat) -> Int {
         usage.first { $0.formatId == format.id }?.counts[speciesId] ?? 0
     }

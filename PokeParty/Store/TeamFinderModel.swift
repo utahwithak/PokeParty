@@ -70,7 +70,7 @@ final class TeamFinderModel {
 
     /// The format whose meta to build teams from (defaults to Great League;
     /// switchable to any core league or active cup).
-    var format: RankingFormat = .great { didSet { persistSettings() } }
+    var format: RankingFormat = .great { didSet { persistSettings(); refreshOpponentSample() } }
     /// How many of the format's top-ranked Pokémon form the candidate pool.
     var poolSize: Int = 15 {
         didSet {
@@ -182,6 +182,15 @@ final class TeamFinderModel {
     /// in Opponent Check for the chosen format (see `OpponentUsageStore`), the
     /// opponent's leads weighted most.
     var useObservedMeta = false { didSet { persistSettings() } }
+    /// How much logged-opponent data backs this format's "My Meta" (a cached
+    /// read of the usage log; refreshed when the format changes or the view
+    /// appears, since opponents are logged elsewhere).
+    private(set) var opponentSample = OpponentSample(battles: 0)
+    func refreshOpponentSample() {
+        opponentSample = OpponentUsageStore().sample(in: format)
+    }
+    /// Whether the current method weights the logged opponents at all.
+    var usesObservedMeta: Bool { method == .myMeta || (method == .aiOptimizer && useObservedMeta) }
     /// For the static methods (`Method.supportsVerify`): run the chosen teams
     /// through the 3v3 tournament instead of listing them straight from the
     /// static analysis.
@@ -309,6 +318,7 @@ final class TeamFinderModel {
 
     init() {
         restoreSettings()
+        refreshOpponentSample()
         CoreLimit.executor.workers = coreLimit
     }
 
@@ -550,6 +560,7 @@ final class TeamFinderModel {
         let observedMeta = (isMyMeta || (method == .aiOptimizer && useObservedMeta))
             ? observedThreats(using: store, focus: isMyMeta) : []
         let broadFieldSize = broadFieldSize
+        let observedConfidence = OpponentUsageStore().sample(in: format).confidence
 
         phase = .loadingRankings
         runStart = .now
@@ -627,6 +638,7 @@ final class TeamFinderModel {
                         strongAgainstMembers: strongAgainstMembers,
                         observedMeta: observedMeta,
                         observedFocus: isMyMeta,
+                        observedConfidence: observedConfidence,
                         metaSize: metaSize,
                         restarts: restarts,
                         learnedShields: learnedShields,

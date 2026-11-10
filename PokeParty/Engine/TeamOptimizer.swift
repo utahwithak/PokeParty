@@ -123,6 +123,16 @@ nonisolated enum TeamOptimizer {
     /// relative to the top ranked threat at 1.0) dominate the field.
     static let observedFocusAutoScale = 0.25
 
+    /// How a confidence (see `OpponentSample`) scales the field: the weight
+    /// multiplier on the user's logged opponents, and the scale on the ranked
+    /// meta threats. At zero confidence the logged opponents vanish and the
+    /// ranked meta keeps full weight (a plain optimizer run); at full confidence
+    /// "My Meta" shrinks the ranked meta to `observedFocusAutoScale`.
+    static func observedScales(confidence: Double, focus: Bool) -> (observedWeight: Double, autoScale: Double) {
+        let c = min(max(confidence, 0), 1)
+        return (c, focus ? 1 - (1 - observedFocusAutoScale) * c : 1.0)
+    }
+
     // MARK: - Entry point
 
     /// Runs the multi-start hill-climb and returns the best teams found.
@@ -138,6 +148,9 @@ nonisolated enum TeamOptimizer {
         strongAgainstMembers: [TeamMember] = [],
         observedMeta: [ObservedThreat] = [],
         observedFocus: Bool = false,
+        /// 0…1 trust in `observedMeta` (from how many battles back it); scales
+        /// its weights and, in focus mode, how much the ranked meta recedes.
+        observedConfidence: Double = 1.0,
         metaSize: Int = 15,
         restarts: Int = 20,
         maxResults: Int = 50,
@@ -172,9 +185,10 @@ nonisolated enum TeamOptimizer {
 
         // Opponents seen in the user's own meta join the field too, weighted
         // by how often they appeared (leads count extra).
+        let scales = observedScales(confidence: observedConfidence, focus: observedFocus)
         let observedCandidates: [(Candidate, Double)] = observedMeta.compactMap { threat in
             makeLockedCandidate(member: threat.member, cpCap: cpCap, pokemonById: pokemonById)
-                .map { ($0, threat.weight) }
+                .map { ($0, threat.weight * scales.observedWeight) }
         }
         let extraTargets: [(Candidate, Double)] =
             strongAgainstCandidates.map { ($0, 1.0) } + observedCandidates
@@ -183,7 +197,7 @@ nonisolated enum TeamOptimizer {
         let metaField = await buildMetaField(
             pool: pool, metaSize: metaSize, movesById: movesById, shieldNet: shieldNet,
             extraTargets: extraTargets,
-            autoWeightScale: observedFocus ? observedFocusAutoScale : 1.0)
+            autoWeightScale: scales.autoScale)
         guard !metaField.isEmpty else {
             return Results(teams: [], completedClimbers: 0, totalClimbers: restarts, isComplete: true)
         }

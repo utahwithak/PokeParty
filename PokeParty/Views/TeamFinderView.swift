@@ -58,6 +58,7 @@ struct TeamFinderView: View {
         }
         .formStyle(.grouped)
         .themedBackground()
+        .onAppear { model.refreshOpponentSample() }
         // The run button, progress and Cancel stay pinned so a long form never
         // hides them.
         .safeAreaInset(edge: .bottom, spacing: 0) { runBar }
@@ -174,8 +175,46 @@ struct TeamFinderView: View {
                 }
             }
 
+            if model.usesObservedMeta { opponentSampleNote }
         }
         .themedRow()
+    }
+
+    /// How much logged data backs the opponents being used, and how that
+    /// limits their influence — so a thin log isn't mistaken for the real meta.
+    private var opponentSampleNote: some View {
+        let sample = model.opponentSample
+        let battles = sample.battles
+        let headline: String
+        let detail: String
+        let color: Color
+        let icon: String
+        switch sample.verdict {
+        case .none:
+            headline = "No opponents logged for this format"
+            detail = model.method == .myMeta
+                ? "Log opponents in the Team Builder or by scanning battles before running My Meta."
+                : "Turning this on has no effect until you've logged some opponents."
+            color = .orange; icon = "exclamationmark.triangle.fill"
+        case .thin, .limited:
+            let thin = sample.verdict == .thin
+            headline = "\(battles) \(battles == 1 ? "battle" : "battles") logged — \(thin ? "very little" : "limited") data"
+            detail = "Your logged opponents count at \(Int((sample.confidence * 100).rounded()))%; the rest of the weight stays on the regular meta. Log \(OpponentSample.fullConfidenceBattles - battles) more for full weight."
+            color = thin ? .orange : Color(red: 0.75, green: 0.55, blue: 0)
+            icon = thin ? "exclamationmark.triangle.fill" : "info.circle.fill"
+        case .good:
+            headline = "\(battles) battles logged — good data"
+            detail = "Your logged opponents count at full weight."
+            color = Theme.win; icon = "checkmark.circle.fill"
+        }
+        return VStack(alignment: .leading, spacing: 2) {
+            Label(headline, systemImage: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var verifyCaption: String {
