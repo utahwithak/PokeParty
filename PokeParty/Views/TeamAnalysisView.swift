@@ -13,18 +13,64 @@ import SwiftUI
 
 struct TeamAnalysisSections: View {
     let analysis: TeamAnalysis
-    /// Called when a suggested teammate is tapped (nil disables tapping, e.g. when
-    /// the team is already full).
-    var onAddSuggestion: ((String) -> Void)?
-    /// When provided, suggestions that appear in the bench for `league` are highlighted.
-    var bench: BenchStore? = nil
-    var league: League? = nil
+    /// Pokémon the player has checked against the team, newest first (ratings
+    /// follow team order, like the threats table).
+    var checked: [ThreatEntry] = []
+    /// Searches the roster / bench for a Pokémon to check; nil hides the control.
+    var checkPicker: CheckPicker? = nil
+    var onCheck: ((TeamMember) -> Void)? = nil
+    var onRemoveChecked: ((ThreatEntry) -> Void)? = nil
+    @State private var showingCheckPicker = false
+    @State private var showAllThreats = false
+    /// Threats listed before "Show all" — keeps the table about as tall as the
+    /// grades and insight panels beside it.
+    private static let collapsedThreatCount = 12
+    /// The team as the weakness / lead panels need it (empty hides them).
+    var members: [TeamInsightMember] = []
+    /// Attacking types the format forbids, left out of the weakness panel.
+    var bannedTypes: Set<String> = []
+
+    /// Measured width of the available space, to pick the layout.
+    @State private var width: CGFloat = 0
+    /// Wide enough for two columns: grades and insights beside the threats table.
+    private var isWide: Bool { width >= 860 }
+    /// The threats table stops growing here — past it the Pokémon names and
+    /// their rating chips drift apart across a big empty gap.
+    private static let threatsWidth: CGFloat = 480
+    /// How far the "Your checks" tint extends past the table's edges (cosmetic).
+    private static let checkedBleed: CGFloat = 8
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            gradesSection
-            threatsSection
-            suggestionsSection
+        Group {
+            if isWide {
+                HStack(alignment: .top, spacing: 28) {
+                    VStack(alignment: .leading, spacing: 24) {
+                        gradesSection
+                        insightPanels
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    threatsSection
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 20) {
+                    gradesSection
+                    insightPanels
+                    threatsSection
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+    }
+
+    // MARK: - Weaknesses & leads
+
+    /// Only when every team member resolved, so threat ratings line up with members.
+    @ViewBuilder
+    private var insightPanels: some View {
+        if !members.isEmpty, members.count == analysis.memberNames.count {
+            TeamWeaknessPanel(members: members, banned: bannedTypes)
+            TeamLeadsPanel(members: members, threats: analysis.threats)
         }
     }
 
@@ -78,88 +124,89 @@ struct TeamAnalysisSections: View {
 
     private var threatsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Top Threats")
-                .font(.title3.weight(.semibold))
+            HStack {
+                Text("Top Threats")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                if let checkPicker, let onCheck {
+                    Button {
+                        showingCheckPicker = true
+                    } label: {
+                        Label("Check a Pokémon", systemImage: "magnifyingglass")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("See how any Pokémon stacks up against this team, even if it isn't a top threat")
+                    .popover(isPresented: $showingCheckPicker) {
+                        LockedPokemonPickerView(
+                            store: checkPicker.store, bench: checkPicker.bench, format: checkPicker.store.format,
+                            excludingSpeciesIds: [],
+                            onSelect: { member in
+                                showingCheckPicker = false
+                                onCheck(member)
+                            })
+                        #if os(iOS)
+                        .presentationCompactAdaptation(.sheet)
+                        #endif
+                    }
+                }
+            }
 
-            // Column headers: the team members.
+            // Column headers: the team members (two lines so a long name like
+            // "Gyarados (Mega)" stays readable instead of shrinking).
             HStack(spacing: 8) {
+                Color.clear.frame(width: ThreatRow.removeSlotWidth, height: 1)
                 Text("Threat").frame(maxWidth: .infinity, alignment: .leading)
                 ForEach(Array(analysis.memberNames.enumerated()), id: \.offset) { _, name in
                     Text(name)
                         .frame(width: 56)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .minimumScaleFactor(0.8)
                 }
             }
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
 
-            ForEach(analysis.threats) { threat in
-                ThreatRow(threat: threat)
-            }
-        }
-    }
-
-    // MARK: - Suggestions
-
-    private func isInBench(_ speciesId: String) -> Bool {
-        guard let bench, let league else { return false }
-        return bench.contains(speciesId: speciesId, league: league)
-    }
-
-    private var suggestionsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Suggested Teammates")
-                .font(.title3.weight(.semibold))
-            Text(onAddSuggestion == nil
-                 ? "Meta Pokémon that beat your biggest threats."
-                 : "Meta Pokémon that beat your biggest threats — tap to add.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
-                ForEach(analysis.suggestions) { suggestion in
-                    let inBench = isInBench(suggestion.speciesId)
-                    Button {
-                        onAddSuggestion?(suggestion.speciesId)
-                    } label: {
-                        HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 4) {
-                                    Text(suggestion.speciesName)
-                                        .font(.subheadline.weight(.medium))
-                                        .lineLimit(1)
-                                    if suggestion.shadow { ShadowBadge() }
-                                    if inBench {
-                                        Image(systemName: "tray.fill")
-                                            .font(.caption2)
-                                            .foregroundStyle(.tint)
-                                            .help("In your bench")
-                                    }
-                                }
-                                TypeBadgeRow(types: suggestion.types)
-                            }
-                            Spacer(minLength: 0)
-                            if onAddSuggestion != nil {
-                                Image(systemName: "plus.circle.fill")
-                                    .foregroundStyle(.tint)
-                            }
-                        }
-                        .padding(8)
-                        .frame(maxWidth: .infinity)
-                        .background(
-                            inBench ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.05),
-                            in: RoundedRectangle(cornerRadius: 8))
-                        .contentShape(RoundedRectangle(cornerRadius: 8))
+            if !checked.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Your checks")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(checked) { threat in
+                        ThreatRow(threat: threat, reservesRemoveSlot: true,
+                                  onRemove: onRemoveChecked.map { remove in { remove(threat) } })
                     }
-                    .buttonStyle(.plain)
-                    // Read-only when the team is full; hit testing off rather than
-                    // `.disabled`, which would fade the whole card as if broken.
-                    .allowsHitTesting(onAddSuggestion != nil)
                 }
+                // The tint extends slightly past the table by exactly its inner
+                // padding, so the rows inside keep the table's columns.
+                .padding(.vertical, 8)
+                .padding(.horizontal, Self.checkedBleed)
+                .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, -Self.checkedBleed)
+            }
+
+            ForEach(showAllThreats ? analysis.threats : Array(analysis.threats.prefix(Self.collapsedThreatCount))) { threat in
+                ThreatRow(threat: threat, reservesRemoveSlot: true)
+            }
+
+            if analysis.threats.count > Self.collapsedThreatCount {
+                Button(showAllThreats ? "Show fewer" : "Show all \(analysis.threats.count) threats") {
+                    withAnimation { showAllThreats.toggle() }
+                }
+                .buttonStyle(.link)
+                .font(.caption)
             }
         }
+        .frame(maxWidth: Self.threatsWidth, alignment: .topLeading)
     }
+}
+
+/// What the "Check a Pokémon" search needs to list the roster and the bench.
+struct CheckPicker {
+    let store: RankingsStore
+    let bench: BenchStore
 }
 
 /// A single grade card: big letter + label + optional detail line.
@@ -202,9 +249,31 @@ struct GradeCard: View {
 /// section (filtered there to opposing leads actually encountered in that run).
 struct ThreatRow: View {
     let threat: ThreatEntry
+    /// Reserves a fixed slot before the name for a remove button (filled for
+    /// checked Pokémon, empty otherwise), so a table that mixes rows with and
+    /// without one stays aligned. Pass `true` on every row of such a table,
+    /// plus `Self.removeSlotWidth` of space in its header.
+    var reservesRemoveSlot = false
+    /// Shows the remove button in the reserved slot.
+    var onRemove: (() -> Void)? = nil
+
+    static let removeSlotWidth: CGFloat = 20
 
     var body: some View {
         HStack(spacing: 8) {
+            if reservesRemoveSlot {
+                ZStack {
+                    if let onRemove {
+                        Button(action: onRemove) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove this check")
+                    }
+                }
+                .frame(width: Self.removeSlotWidth)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Text(threat.speciesName)

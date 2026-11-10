@@ -31,6 +31,9 @@ final class TeamBuilderModel {
     private(set) var members: [TeamMember] = []
 
     private(set) var analysis: TeamAnalysis?
+    /// The analyzed team's combatants and stats, kept so `compare` can rate any
+    /// other Pokémon against it without rebuilding the team.
+    private var analyzedTeam: (combatants: [MatchupSimulator.Combatant], stats: [BattlePokemon.Stats])?
     private(set) var phase: Phase = .empty
 
     private var analyzeTask: Task<Void, Never>?
@@ -318,30 +321,13 @@ final class TeamBuilderModel {
         var teamStats: [BattlePokemon.Stats] = []
         var switchesScores: [Double?] = []
         for member in members {
-            guard let species = pokemonById[member.speciesId] else { continue }
-            let combatant = MatchupSimulator.Combatant(
-                species: species, shadow: member.shadow,
-                fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds, megaLevel: member.megaLevel)
-            // If the member has specific IVs (from the player's bench), compute
-            // stats for those exact IVs at the best level under the cap.
-            // Otherwise prefer the IV-optimal stats from ranking data, falling
-            // back to the full optimizer for unranked mons.
-            let levelCap = species.levelCap(megaLevel: member.megaLevel, isBestBuddy: member.isBestBuddy, cpCap: cpCap)
-            let stats: BattlePokemon.Stats?
-            if let ivs = member.ivs {
-                stats = Self.statsForIVs(species: species, ivs: ivs, cpCap: cpCap, levelCap: levelCap)
-            } else {
-                // Ranked stats assume the species' default mega level (and
-                // so its level cap), so a custom mega level recomputes them.
-                stats = (member.megaLevel == nil ? Self.rankedStats(speciesId: member.speciesId, store: store) : nil)
-                    ?? MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap, levelCap: levelCap)
-            }
-            guard let stats else { continue }
-            team.append(combatant)
-            teamStats.append(stats)
+            guard let ready = Self.battleReady(member, store: store, cpCap: cpCap) else { continue }
+            team.append(ready.combatant)
+            teamStats.append(ready.stats)
             switchesScores.append(store.entry(id: member.speciesId)?.switchesScore)
         }
         guard !team.isEmpty else { phase = .empty; return }
+        analyzedTeam = (team, teamStats)
 
         let meta = Self.metaCandidates(from: store.entries, pokemonById: pokemonById)
 
@@ -354,6 +340,52 @@ final class TeamBuilderModel {
             self.analysis = result
             self.phase = .done
         }
+    }
+
+    /// A member as a battle-ready combatant with stats: the player's exact IVs at
+    /// the best level under the cap when it has them, otherwise the IV-optimal
+    /// stats from the ranking data, falling back to the full optimizer for
+    /// unranked mons. Nil when the species or its stats can't be found.
+    private static func battleReady(
+        _ member: TeamMember, store: RankingsStore, cpCap: Int
+    ) -> (combatant: MatchupSimulator.Combatant, stats: BattlePokemon.Stats)? {
+        guard let species = store.pokemonById[member.speciesId] else { return nil }
+        let combatant = MatchupSimulator.Combatant(
+            species: species, shadow: member.shadow,
+            fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds, megaLevel: member.megaLevel)
+        let levelCap = species.levelCap(megaLevel: member.megaLevel, isBestBuddy: member.isBestBuddy, cpCap: cpCap)
+        let stats: BattlePokemon.Stats?
+        if let ivs = member.ivs {
+            stats = statsForIVs(species: species, ivs: ivs, cpCap: cpCap, levelCap: levelCap)
+        } else {
+            // Ranked stats assume the species' default mega level (and
+            // so its level cap), so a custom mega level recomputes them.
+            stats = (member.megaLevel == nil ? rankedStats(speciesId: member.speciesId, store: store) : nil)
+                ?? MatchupSimulator.optimalStats(for: combatant, cpCap: cpCap, levelCap: levelCap)
+        }
+        guard let stats else { return nil }
+        return (combatant, stats)
+    }
+
+    /// How any Pokémon — not just a top threat — stacks up against the analyzed
+    /// team: its 1v1 rating against each member (its own side, so above 500
+    /// beats that member), in the same form as the Top Threats table.
+    func compare(_ member: TeamMember, store: RankingsStore) async -> ThreatEntry? {
+        guard let analyzed = analyzedTeam,
+              let ready = Self.battleReady(member, store: store, cpCap: store.format.cp)
+        else { return nil }
+        let candidate = MetaCandidate(
+            species: ready.combatant.species, shadow: member.shadow,
+            fastMoveId: member.fastMoveId, chargedMoveIds: member.chargedMoveIds,
+            familyId: ready.combatant.species.family?.id,
+            metaRelevant: false, precomputedStats: ready.stats)
+        let cpCap = store.format.cp
+        let movesById = store.movesById
+        return await Task.detached(priority: .userInitiated) {
+            TeamAnalyzer.threatEntry(
+                for: candidate, team: analyzed.combatants, teamStats: analyzed.stats,
+                cpCap: cpCap, movesById: movesById)
+        }.value
     }
 
     // MARK: - Head-to-head 3v3 battle

@@ -152,6 +152,44 @@ nonisolated enum TeamAnalyzer {
         return s
     }
 
+    /// One candidate attacking each team member 1v1: its rating against every
+    /// member (the candidate's side, 0–1000) and the softened, meta-weighted
+    /// score that orders threats. Shared by the full analysis and the Team
+    /// Builder's "check a Pokémon", which rates any Pokémon, not just the top
+    /// threats. Nil when the candidate can't be made battle-ready.
+    nonisolated static func threatEntry(
+        for cand: MetaCandidate,
+        team: [MatchupSimulator.Combatant],
+        teamStats: [BattlePokemon.Stats],
+        cpCap: Int,
+        movesById: [String: Move],
+        shields: Int = 1
+    ) -> ThreatEntry? {
+        guard let candStats = stats(for: cand, cpCap: cpCap) else { return nil }
+        var ratings: [Int] = []
+        ratings.reserveCapacity(team.count)
+        for (i, member) in team.enumerated() {
+            let res = MatchupSimulator.rate(
+                cand.combatant, statsA: candStats,
+                member, statsB: teamStats[i],
+                movesById: movesById,
+                shieldsA: shields, shieldsB: shields)
+            ratings.append(res?.a ?? 500)   // res.a = candidate's rating
+        }
+        guard !ratings.isEmpty else { return nil }
+        let avgRaw = ratings.reduce(0, +) / ratings.count
+        let scores = ratings.map { softScore(Double($0), metaRelevant: cand.metaRelevant) }
+        let matchupScore = scores.reduce(0, +) / Double(scores.count)
+        return ThreatEntry(
+            speciesId: cand.species.speciesId,
+            speciesName: cand.species.speciesName,
+            types: cand.species.types.filter { $0 != "none" },
+            shadow: cand.shadow,
+            ratings: ratings,
+            averageRating: avgRaw,
+            score: matchupScore)
+    }
+
     /// A candidate's IV-optimal stats: the precomputed ones from the ranking data
     /// when available, otherwise (rarely) computed on the fly. Avoiding the IV
     /// optimizer here is the main analysis speedup.
@@ -188,29 +226,8 @@ nonisolated enum TeamAnalyzer {
         let threats = await withTaskGroup(of: ThreatEntry?.self) { group in
             for cand in meta {
                 group.addTask {
-                    guard let candStats = stats(for: cand, cpCap: cpCap) else { return nil }
-                    var ratings: [Int] = []
-                    ratings.reserveCapacity(team.count)
-                    for (i, member) in team.enumerated() {
-                        let res = MatchupSimulator.rate(
-                            cand.combatant, statsA: candStats,
-                            member, statsB: teamStats[i],
-                            movesById: movesById,
-                            shieldsA: shields, shieldsB: shields)
-                        ratings.append(res?.a ?? 500)   // res.a = candidate's rating
-                    }
-                    guard !ratings.isEmpty else { return nil }
-                    let avgRaw = ratings.reduce(0, +) / ratings.count
-                    let scores = ratings.map { softScore(Double($0), metaRelevant: cand.metaRelevant) }
-                    let matchupScore = scores.reduce(0, +) / Double(scores.count)
-                    return ThreatEntry(
-                        speciesId: cand.species.speciesId,
-                        speciesName: cand.species.speciesName,
-                        types: cand.species.types.filter { $0 != "none" },
-                        shadow: cand.shadow,
-                        ratings: ratings,
-                        averageRating: avgRaw,
-                        score: matchupScore)
+                    threatEntry(for: cand, team: team, teamStats: teamStats, cpCap: cpCap,
+                                movesById: movesById, shields: shields)
                 }
             }
             var out: [ThreatEntry] = []

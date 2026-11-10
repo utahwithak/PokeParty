@@ -28,6 +28,9 @@ struct TeamBuilderDetailView: View {
     @State private var pickerSlot: Int?
     /// The slot whose Pokémon is being swapped for another.
     @State private var replaceSlot: Int?
+    /// Pokémon checked against the current team (cleared when the team changes,
+    /// since their ratings are for that team).
+    @State private var checked: [ThreatEntry] = []
     @State private var nameText = ""
     @FocusState private var nameFocused: Bool
 
@@ -45,7 +48,7 @@ struct TeamBuilderDetailView: View {
         }
         .navigationTitle("Team Builder")
         .onAppear { model.syncFromSaved(); analyzeIfNeeded(); syncNameText() }
-        .onChange(of: model.members) { analyzeIfNeeded() }
+        .onChange(of: model.members) { checked = []; analyzeIfNeeded() }
         // The open team changed outside the builder (an import, another device).
         .onChange(of: currentTeam?.members) { model.syncFromSaved() }
         .confirmationDialog(
@@ -289,31 +292,50 @@ struct TeamBuilderDetailView: View {
         }
     }
 
-    /// Click to pick a Pokémon from this league's bench and list.
+    /// An empty slot: click to pick a Pokémon from this league's bench and list,
+    /// or tap one of the suggested teammates (the ones that beat the team's
+    /// biggest threats) to add it straight away. Once the team is full there
+    /// are no empty slots, so no suggestions are shown.
     private func emptySlot(_ index: Int) -> some View {
-        Button {
-            pickerSlot = index
-        } label: {
-            VStack(spacing: 6) {
-                Image(systemName: "plus")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                Text("Add Pokémon")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+        let suggestions = slotSuggestions(index)
+        let league = League(cpCap: store.format.cp)
+        return VStack(spacing: 8) {
+            Button {
+                pickerSlot = index
+            } label: {
+                VStack(spacing: 6) {
+                    Image(systemName: "plus")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text("Add Pokémon")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: suggestions.isEmpty ? 120 : 56)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 150)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
-                    .foregroundStyle(.quaternary)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .buttonStyle(.plain)
+
+            if !suggestions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Suggested")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(suggestions) { suggestion in
+                        suggestionChip(suggestion, inBench: bench.contains(speciesId: suggestion.speciesId, league: league))
+                    }
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 150, alignment: .top)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
+                .foregroundStyle(.quaternary)
+        )
         .popover(isPresented: Binding(
             get: { pickerSlot == index },
             set: { if !$0, pickerSlot == index { pickerSlot = nil } }
@@ -323,6 +345,39 @@ struct TeamBuilderDetailView: View {
                 .presentationCompactAdaptation(.sheet)
                 #endif
         }
+    }
+
+    private func suggestionChip(_ suggestion: SuggestionEntry, inBench: Bool) -> some View {
+        Button {
+            addSuggestion(suggestion.speciesId)
+        } label: {
+            HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(suggestion.speciesName)
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+                        if suggestion.shadow { ShadowBadge() }
+                        if inBench {
+                            Image(systemName: "tray.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.tint)
+                                .help("In your bench")
+                        }
+                    }
+                    TypeBadgeRow(types: suggestion.types)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "plus.circle.fill")
+                    .foregroundStyle(.tint)
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity)
+            .background(inBench ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Analysis
@@ -360,9 +415,13 @@ struct TeamBuilderDetailView: View {
         if let analysis = model.analysis {
             TeamAnalysisSections(
                 analysis: analysis,
-                onAddSuggestion: model.isFull ? nil : { addSuggestion($0) },
-                bench: bench,
-                league: League(cpCap: store.format.cp))
+                checked: checked,
+                checkPicker: CheckPicker(store: store, bench: bench),
+                onCheck: { check($0) },
+                onRemoveChecked: { entry in checked.removeAll { $0.speciesId == entry.speciesId } },
+                members: insightMembers,
+                bannedTypes: TeamWeakness.bannedTypes(
+                    in: store.cups.first { $0.name == store.format.cup }, cpCap: store.format.cp))
         } else if model.phase == .analyzing {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
@@ -376,6 +435,40 @@ struct TeamBuilderDetailView: View {
                 description: Text("Add up to three Pokémon from the list to see coverage, bulk, threats and suggested teammates for \(store.format.title)."))
             .frame(maxWidth: .infinity, minHeight: 200)
         }
+    }
+
+    /// The team as the weakness / lead panels need it: names, types and the
+    /// ranking's per-role scores (the shadow ranking entry for a shadow member).
+    private var insightMembers: [TeamInsightMember] {
+        model.members.compactMap { member in
+            guard let species = store.pokemonById[member.speciesId] else { return nil }
+            let rankingId = member.shadow && !member.speciesId.hasSuffix("_shadow")
+                ? member.speciesId + "_shadow" : member.speciesId
+            let entry = store.entry(id: rankingId) ?? store.entry(id: member.speciesId)
+            return TeamInsightMember(
+                name: species.speciesName + (member.shadow ? " (Shadow)" : ""),
+                types: species.types.filter { $0 != "none" },
+                roles: RoleOrder.Scores(entry?.scores))
+        }
+    }
+
+    /// Rates a searched-for Pokémon against the team and pins it above the threats.
+    private func check(_ member: TeamMember) {
+        Task {
+            guard let entry = await model.compare(member, store: store) else { return }
+            checked.removeAll { $0.speciesId == entry.speciesId }
+            checked.insert(entry, at: 0)
+        }
+    }
+
+    /// Suggested teammates for one empty slot: three each, so two empty slots
+    /// offer different Pokémon. Skips anything already on the team (the analysis
+    /// lags a team change by a moment).
+    private func slotSuggestions(_ index: Int) -> [SuggestionEntry] {
+        guard let all = model.analysis?.suggestions else { return [] }
+        let available = all.filter { !model.contains(speciesId: $0.speciesId) }
+        let ordinal = max(index - model.members.count, 0)   // empty slots trail the team
+        return Array(available.dropFirst(ordinal * 3).prefix(3))
     }
 
     private func addSuggestion(_ speciesId: String) {
