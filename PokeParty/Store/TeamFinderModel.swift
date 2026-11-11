@@ -63,7 +63,7 @@ final class TeamFinderModel {
             case .myMeta:
                 return "Hill-climbs against the opponents you've logged, leads weighted most."
             case .safeLeadCover:
-                return "A safe lead with two back Pokémon that cover the meta between them."
+                return "A safe lead with two backs that cover the whole meta, rank 1 counting most. Uses the top 150 candidates."
             }
         }
     }
@@ -693,8 +693,14 @@ final class TeamFinderModel {
                 // from the pairwise ratings. Listed directly (graded, in score
                 // order) unless the tournament is verifying them.
                 if method == .safeLeadCover {
+                    // Candidates come from the pool (the finder keeps the top 150); the
+                    // opponents are the whole ranked list, weighted by rank.
+                    let ranked = Self.buildPool(
+                        entries: entries, poolSize: Self.fullListPoolSize,
+                        cpCap: format.cp, pokemonById: pokemonById)
                     let found = await SafeLeadFinder.findTrios(
-                        pool: pool, movesById: movesById,
+                        all: ranked, candidateCount: pool.count, opponentCount: ranked.count,
+                        movesById: movesById,
                         onProgress: { fraction in
                             Task { @MainActor in self.noteProgress(fraction) }
                         })
@@ -709,7 +715,9 @@ final class TeamFinderModel {
                         eta.reset()
                     } else {
                         let graded = GradeFinder.gradeTrios(
-                            trios, pool: pool, ratings: found.ratings,
+                            trios, members: Array(ranked.prefix(found.field.candidateCount)),
+                            threats: Array(ranked.prefix(found.field.opponentCount)),
+                            threatRatings: found.field.threatRatings,
                             cpCap: format.cp, movesById: movesById)
                         withAnimation(.spring(duration: 0.6)) { gradedTeams = graded }
                         phase = .done

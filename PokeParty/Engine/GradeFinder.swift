@@ -398,40 +398,46 @@ nonisolated enum GradeFinder {
         return matrix
     }
 
-    /// Grades specific trios (pool indices, lead first) with the same formulas
+    /// Grades specific trios (member indices, lead first) with the same formulas
     /// as the full sweep, for modes that choose their own trios (`SafeLeadFinder`).
-    /// `ratings` is the pool's `n × n` matrix from `ratingMatrix`; results keep
-    /// the input order and each trio's own lead/switch/closer order.
+    /// `members` are the candidates the trios are drawn from; `threats` are the
+    /// opponents they're graded against (often the same list). `threatRatings`
+    /// is `threats.count × members.count`: `[t * members.count + i]` is threat
+    /// t's rating attacking member i. Results keep the input order and each
+    /// trio's own lead/switch/closer order.
     static func gradeTrios(
         _ trios: [[Int]],
-        pool: [TeamFinder.Candidate],
-        ratings raw: [Int],
+        members: [TeamFinder.Candidate],
+        threats: [TeamFinder.Candidate],
+        threatRatings raw: [Int],
         cpCap: Int,
         movesById: [String: Move],
         metaRelevantCount: Int = 40
     ) -> [GradedTeam] {
-        let n = pool.count
-        guard n >= 3, raw.count == n * n else { return [] }
+        let n = members.count, m = threats.count
+        guard n >= 3, m > 0, raw.count == m * n else { return [] }
 
-        var soft = [Double](repeating: 0, count: n * n)
-        for i in 0..<n {
-            let metaRelevant = i < metaRelevantCount
-            for j in 0..<n where i != j {
-                soft[i * n + j] = TeamAnalyzer.softScore(Double(raw[i * n + j]), metaRelevant: metaRelevant)
+        var soft = [Double](repeating: 0, count: m * n)
+        for t in 0..<m {
+            let metaRelevant = t < metaRelevantCount
+            for i in 0..<n {
+                soft[t * n + i] = TeamAnalyzer.softScore(Double(raw[t * n + i]), metaRelevant: metaRelevant)
             }
         }
-        let bulk: [Double] = pool.map { c in
+        let bulk: [Double] = members.map { c in
             c.stats.def * (c.shadow ? DamageMultiplier.shadowDef : 1) * Double(c.stats.hp)
         }
-        let consistency: [Double] = pool.map {
+        let consistency: [Double] = members.map {
             Consistency.score(fastMoveId: $0.combatant.fastMoveId,
                               chargedMoveIds: $0.combatant.chargedMoveIds,
                               types: $0.combatant.species.types,
                               movesById: movesById)
         }
-        let safety: [Double] = pool.map { $0.switchesScore ?? 60 }
-        let famKey: [String?] = pool.map(\.familyId)
-        let speciesIds: [String] = pool.map(\.member.speciesId)
+        let safety: [Double] = members.map { $0.switchesScore ?? 60 }
+        let memberFamKey: [String?] = members.map(\.familyId)
+        let memberSpeciesIds: [String] = members.map(\.member.speciesId)
+        let threatFamKey: [String?] = threats.map(\.familyId)
+        let threatSpeciesIds: [String] = threats.map(\.member.speciesId)
         let bulkGoal = TeamAnalyzer.bulkGoal(cpCap: cpCap)
 
         // `gradeTrios(lead:…)` sweeps ascending (i < j < k) trios gated by a
@@ -446,17 +452,17 @@ nonisolated enum GradeFinder {
             defer { for (a, b) in edges { compatible[a * n + b] = false; compatible[b * n + a] = false } }
 
             guard let team = gradeTrios(
-                lead: sorted[0], memberCount: n, threatCount: n, members: pool,
+                lead: sorted[0], memberCount: n, threatCount: m, members: members,
                 ratings: raw, softRatings: soft, compatible: compatible,
                 bulk: bulk, consistency: consistency, safety: safety,
-                memberFamKey: famKey, memberSpeciesIds: speciesIds,
-                threatFamKey: famKey, threatSpeciesIds: speciesIds,
+                memberFamKey: memberFamKey, memberSpeciesIds: memberSpeciesIds,
+                threatFamKey: threatFamKey, threatSpeciesIds: threatSpeciesIds,
                 bulkGoal: bulkGoal, maxResults: 1).first
             else { continue }
 
             graded.append(GradedTeam(
                 members: trio.map { idx in
-                    let c = pool[idx]
+                    let c = members[idx]
                     return TeamFinder.RankedTeam.Member(
                         member: c.member, speciesName: c.speciesName, types: c.types, shadow: c.shadow)
                 },
@@ -471,8 +477,7 @@ nonisolated enum GradeFinder {
     }
 
     /// One fast 1v1 per unordered pair at 1 shield each fills both directions.
-    /// Internal so `SafeLeadFinder` can reuse the same matrix.
-    static func ratingMatrix(
+    private static func ratingMatrix(
         pool: [TeamFinder.Candidate], movesById: [String: Move],
         progress: (@Sendable (Double) -> Void)? = nil
     ) async -> [Int] {

@@ -429,7 +429,7 @@ struct GradedTeamsView: View {
     private var caption: String {
         let league = format.map { "\($0.title) — " } ?? ""
         if isSafeLead {
-            return "\(league)a safe lead (fewest bad meta matchups) with two back Pokémon chosen so the team covers as much of the meta as possible, from the \(TeamFinderModel.poolDescription(poolSize)) of ranked Pokémon. Ordered by that structure, not by grade; the grades shown are the Team Builder's. The first member is the lead."
+            return "\(league)a safe lead (fewest bad meta matchups) with two back Pokémon chosen so the team covers the meta as well as possible — every ranked Pokémon is an opponent, weighted by rank (rank 1 counts far more than rank 200). Candidates: the \(TeamFinderModel.poolDescription(min(poolSize, SafeLeadFinder.Config.default.maxCandidates))) of ranked Pokémon. Ordered by that structure, not by grade; the grades shown are the Team Builder's. The first member is the lead."
         }
         let base = "\(league)every trio from the \(TeamFinderModel.poolDescription(poolSize)) of ranked Pokémon, graded with the Team Builder's static analysis (no battle simulations)."
         if aaaaTeams.isEmpty {
