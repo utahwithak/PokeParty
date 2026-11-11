@@ -79,6 +79,36 @@ private func makeRatings() -> [Int] {
         #expect(Set(top.indices).count == 3)
     }
 
+    @Test func theBackPairFavorsStrongClosers() throws {
+        // Every matchup is even, so all back pairs cover the meta equally and only
+        // the closer bonus can separate them. The bonus rewards the better closer
+        // of the two backs, so the best closer (mon4) must be on the team.
+        var pool = makePool()
+        let closers: [Double] = [50, 50, 50, 90, 95, 10]
+        for i in pool.indices { pool[i].closerScore = closers[i] }
+        let even = [Int](repeating: 500, count: 36)
+
+        let top = try #require(SafeLeadFinder.select(pool: pool, ratings: even, leadCount: 1, teamsPerLead: 3).first)
+        #expect(top.indices.first == 0)
+        #expect(top.indices.contains(4))
+        // 240 rating points per 100 closer points, on top of the (tied) coverage.
+        #expect(abs(top.score - (500 + 240 * 0.95)) < 1e-9)
+
+        // With the bonus off every pair ties, so closers can't decide the team.
+        var cfg = SafeLeadFinder.Config()
+        cfg.backCloserWeight = 0
+        let flat = SafeLeadFinder.select(pool: pool, ratings: even, leadCount: 1, teamsPerLead: 3, config: cfg)
+        #expect(Set(flat.map(\.score)).count == 1)
+        #expect(flat.first!.score < top.score)
+    }
+
+    @Test func missingCloserScoresCountAsZero() {
+        // No ranking data: the bonus is simply absent, never a crash or a NaN.
+        let trios = SafeLeadFinder.select(pool: makePool(), ratings: makeRatings())
+        #expect(!trios.isEmpty)
+        #expect(trios.allSatisfy { $0.score.isFinite })
+    }
+
     @Test func resultsAreRankedAndDeduplicated() {
         let pool = makePool()
         let trios = SafeLeadFinder.select(pool: pool, ratings: makeRatings())

@@ -934,7 +934,8 @@ final class TeamFinderModel {
                 combatant: combatant,
                 stats: stats,
                 isMegaEvolution: r.species.isMegaEvolution,
-                switchesScore: entry.switchesScore))
+                switchesScore: entry.switchesScore,
+                closerScore: entry.closerScore))
         }
         return pool
     }

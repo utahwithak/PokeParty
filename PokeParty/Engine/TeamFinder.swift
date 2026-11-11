@@ -79,6 +79,9 @@ nonisolated enum TeamFinder {
         /// PvPoke "switches" category score from the ranking data (feeds the
         /// Safety grade in `GradeFinder`); nil falls back to PvPoke's default.
         var switchesScore: Double? = nil
+        /// PvPoke "closers" category score from the ranking data; `SafeLeadFinder`
+        /// favors strong closers in the back. Nil for unranked Pokémon.
+        var closerScore: Double? = nil
     }
 
     /// One entrant with its accumulated round-robin record. Members are in

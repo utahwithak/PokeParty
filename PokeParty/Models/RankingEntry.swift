@@ -35,6 +35,10 @@ nonisolated struct RankingEntry: Codable, Identifiable, Hashable {
     /// in at an energy disadvantage. Drives the team Safety grade.
     var switchesScore: Double? { (scores?.count ?? 0) > 2 ? scores?[2] : nil }
 
+    /// The "closers" category score (index 1) — how well this Pokémon finishes a
+    /// battle from the back of the team.
+    var closerScore: Double? { (scores?.count ?? 0) > 1 ? scores?[1] : nil }
+
     /// A battle outcome against a specific opponent.
     struct Matchup: Codable, Identifiable, Hashable {
         let opponent: String

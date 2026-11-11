@@ -50,7 +50,11 @@ nonisolated enum SafeLeadFinder {
     ///  - lead safety matters: safe leads beat random leads by ~2 points, beat
     ///    the least-safe leads by ~8, and top-ranked leads by <1;
     ///  - ranking leads by fewest type weaknesses (tried, then removed) was worse than
-    ///    ranking by matchup pressure, which is what `leadThreats` measures.
+    ///    ranking by matchup pressure, which is what `leadThreats` measures; ranking
+    ///    them by PvPoke's safe-swap score was no better;
+    ///  - favoring a strong closer in the back helps: the gain grows with
+    ///    `backCloserWeight` (+0.9 pts at 120, +1.4 at 240), then fades and turns
+    ///    negative by ~960; a bulk bonus on the back pair was unreliable.
     /// Per-condition noise is ~±1.5 points, so don't re-tune on a single run.
     struct Config: Sendable {
         /// Blend of the two coverage terms: how well the back pair answers the
@@ -62,6 +66,9 @@ nonisolated enum SafeLeadFinder {
         var sharedHolePenalty = 0.0
         /// Rating points per point of lead threat — a safer lead ranks higher.
         var leadSafetyWeight = 0.0
+        /// Rating points per 100 closer-score points of the better closer among
+        /// the two back members (0 when a Pokémon has no ranking data).
+        var backCloserWeight = 240.0
 
         static let `default` = Config()
     }
@@ -214,8 +221,10 @@ nonisolated enum SafeLeadFinder {
                 }
                 let teamCover = count > 0 ? wide / Double(count) : 500
 
+                let bestCloser = max(pool[b].closerScore ?? 0, pool[c].closerScore ?? 0)
                 let score = config.holeCoverWeight * holeCover + config.teamCoverWeight * teamCover
                     - config.sharedHolePenalty * shared - config.leadSafetyWeight * leadThreat
+                    + config.backCloserWeight * bestCloser / 100
 
                 // Switch before closer: the back member that answers the holes better.
                 let bCover = holes.reduce(0.0) { $0 + $1.weight * Double(raw[b * n + $1.threat]) }
