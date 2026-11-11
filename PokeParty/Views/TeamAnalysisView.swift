@@ -195,7 +195,11 @@ struct TeamAnalysisSections: View {
                 Button(showAllThreats ? "Show fewer" : "Show all \(analysis.threats.count) threats") {
                     withAnimation { showAllThreats.toggle() }
                 }
+                #if os(macOS)
                 .buttonStyle(.link)
+                #else
+                .buttonStyle(.borderless)
+                #endif
                 .font(.caption)
             }
         }
@@ -276,7 +280,7 @@ struct ThreatRow: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
-                    Text(threat.speciesName)
+                    Text(threat.speciesName.replacingOccurrences(of: " (Shadow)", with: ""))
                         .font(.subheadline.weight(.medium))
                         .lineLimit(1)
                     if threat.shadow { ShadowBadge() }

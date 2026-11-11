@@ -25,16 +25,21 @@ nonisolated enum OpponentNameMatcher {
         let exact = species.filter { words(in: $0.speciesName) == wanted }
         if !exact.isEmpty { return exact }
 
+        // "Swampert (Shadow)" and "Shadow Swampert" read as the plain name: the
+        // regular form wins, and a Shadow-only species is still found below.
+        let plain = wanted.subtracting(["shadow"])
+        guard !plain.isEmpty else { return [] }
+
         // Base name = the words outside any parentheses: "Kyurem (Black)" → ["kyurem"].
         let forms = species.filter { !$0.isShadow && !$0.isMegaEvolution }
-        if let found = closestBaseMatch(wanted, in: forms) { return found }
+        if let found = closestBaseMatch(plain, in: forms) { return found }
 
         // A species that's only ranked as a Shadow ("Palkia (Shadow)" in Great
         // League, where the regular one is over the cap) is still shown on screen
         // as plain "Palkia". Only reached when no regular form fits, so it never
         // steals a name from a ranked regular one.
         let shadows = species.filter { $0.isShadow && !$0.isMegaEvolution }
-        return closestBaseMatch(wanted, in: shadows) ?? []
+        return closestBaseMatch(plain, in: shadows) ?? []
     }
 
     /// Forms in `pool` sharing the base name `wanted`, else the closest base name

@@ -28,6 +28,8 @@ struct TeamFinderView: View {
     var onOpenedTeamBuilder: () -> Void = {}
     @State private var showingLockedPicker = false
     @State private var showingStrongAgainstPicker = false
+    @State private var showingExcludedPicker = false
+    @State private var showExcluded = false
     @State private var showingResults = false
     @State private var showConstraints = false
     @State private var showSimulation = false
@@ -52,6 +54,7 @@ struct TeamFinderView: View {
             methodSection
             if model.runsTournament { tournamentFieldSection }
             if model.method.isOptimizer { constraintsSection }
+            excludedSection
             if model.simulatesBattles { simulationSection }
             advancedSection
             savedSections
@@ -369,6 +372,50 @@ struct TeamFinderView: View {
         Text("Teams are also weighted against these as extra threats, without forcing any onto the team.")
             .font(.caption)
             .foregroundStyle(.secondary)
+    }
+
+    // MARK: - Excluded Pokémon
+
+    private var excludedSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $showExcluded) {
+                ForEach(model.excludedMembers) { member in
+                    memberRow(member,
+                              shadow: Binding(get: { member.shadow },
+                                              set: { model.setExcludedShadow($0, for: member) }),
+                              remove: { model.removeExcluded(member) })
+                }
+                .disabled(model.isRunning)
+
+                Button {
+                    showingExcludedPicker = true
+                } label: {
+                    Label("Exclude a Pokémon", systemImage: "nosign")
+                }
+                .disabled(model.isRunning)
+                .popover(isPresented: $showingExcludedPicker) {
+                    LockedPokemonPickerView(
+                        store: store, bench: bench, format: model.format,
+                        excludingSpeciesIds: Set(model.excludedMembers.map(\.speciesId)),
+                        onSelect: { member in
+                            model.excludeMember(member)
+                            showingExcludedPicker = false
+                        })
+                }
+                Text("These never appear on a suggested team — handy for getting past a core every run finds. The Shadow switch excludes only that form. Optimizer methods still face them as opponents.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } label: {
+                HStack {
+                    Text("Excluded Pokémon")
+                    Spacer()
+                    Text(model.excludedMembers.isEmpty ? "None" : "\(model.excludedMembers.count) excluded")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .themedRow()
     }
 
     /// A locked / strong-against Pokémon row: name, optional shadow toggle, remove.

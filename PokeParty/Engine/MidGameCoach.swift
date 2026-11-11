@@ -162,6 +162,8 @@ nonisolated enum MidGameCoach {
     /// Turns the situation and sim findings into the tip. Pure.
     static func plan(_ s: Situation, insight: Insight?) -> Plan {
         var tips: [String] = []
+        // When the matchup has its own bait call it decides whether baiting helps; the generic rules mustn't contradict it.
+        let hasBaitCall = insight?.bait?.lines.isEmpty == false
 
         // What the shields on the field are worth.
         if let swing = insight?.swing {
@@ -169,7 +171,8 @@ nonisolated enum MidGameCoach {
                 tips.append("Your shield is worth about \(swing.costOfSpending) rating points against \(s.theirActiveName) — save it for their biggest hit.")
             }
             if s.theirShields > 0, swing.gainFromTheirs >= decisiveSwing {
-                tips.append("Making \(s.theirActiveName) spend a shield is worth about \(swing.gainFromTheirs) points — bait it with your cheaper move first.")
+                tips.append("Making \(s.theirActiveName) spend a shield is worth about \(swing.gainFromTheirs) points"
+                            + (hasBaitCall ? "." : " — bait it with your cheaper move first."))
             }
             if s.myShields + s.theirShields > 0,
                swing.costOfSpending < negligibleSwing, swing.gainFromTheirs < negligibleSwing {
@@ -190,7 +193,7 @@ nonisolated enum MidGameCoach {
                 tips.append("You're up on shields — apply pressure, and spend one early if it protects your closer.")
             } else if s.myShields < s.theirShields {
                 tips.append("You're down on shields — make them spend theirs first and save yours for a move that would hurt.")
-            } else {
+            } else if !hasBaitCall {
                 tips.append("Shields are even — bait with your cheaper charged move before committing the big one.")
             }
         }
@@ -235,11 +238,12 @@ nonisolated enum MidGameCoach {
             rows.append(Plan.Row(index: entry.index, name: s.myNames[entry.index], winShare: entry.winShare, role: role))
         }
 
-        return Plan(headline: headline(s), tips: tips, endgame: rows, bait: bait)
+        return Plan(headline: headline(s, hasBaitCall: hasBaitCall), tips: tips, endgame: rows, bait: bait)
     }
 
-    /// The big line: where the shields stand.
-    static func headline(_ s: Situation) -> String {
+    /// The big line: where the shields stand. With a matchup-specific bait call, even shields
+    /// don't promise a bait, so the headline leaves that to the call.
+    static func headline(_ s: Situation, hasBaitCall: Bool = false) -> String {
         switch (s.myShields, s.theirShields) {
         case (0, 0): return "Shields are down — play the endgame"
         case (0, _): return "No shields — play around theirs"
@@ -247,7 +251,7 @@ nonisolated enum MidGameCoach {
         default:
             if s.myShields > s.theirShields { return "Up on shields — keep the pressure on" }
             if s.myShields < s.theirShields { return "Down on shields — make them spend first" }
-            return "Shields even — bait first"
+            return hasBaitCall ? "Shields even" : "Shields even — bait first"
         }
     }
 }

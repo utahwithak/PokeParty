@@ -161,6 +161,43 @@ final class TeamFinderModel {
         strongAgainstMembers[index].shadow = shadow
     }
 
+    /// Pokémon (and form — a shadow is excluded separately from its regular
+    /// form) that no method may put on a team, e.g. to push the finder past a
+    /// ubiquitous core. The AI Optimizer / My Meta still score teams against
+    /// them as opponents; the other methods drop them from the ranked list.
+    private(set) var excludedMembers: [TeamMember] = [] { didSet { persistSettings() } }
+
+    func excludeMember(_ member: TeamMember) {
+        guard !excludedMembers.contains(where: { $0.speciesId == member.speciesId })
+        else { return }
+        excludedMembers.append(member)
+    }
+
+    func removeExcluded(_ member: TeamMember) {
+        excludedMembers.removeAll { $0.id == member.id }
+    }
+
+    /// Toggles an excluded pick's shadow flag — only meaningful for species
+    /// that can be caught as either form (see `Pokemon.isShadowEligible`).
+    func setExcludedShadow(_ shadow: Bool, for member: TeamMember) {
+        guard let index = excludedMembers.firstIndex(where: { $0.id == member.id }) else { return }
+        excludedMembers[index].shadow = shadow
+    }
+
+    /// `entries` without the excluded species/forms. Compares resolved
+    /// (species, shadow) pairs so a ranking id like "machoke_shadow" matches
+    /// an excluded Machoke with the shadow flag on.
+    static func removing(
+        _ excluded: [TeamMember], from entries: [RankingEntry], pokemonById: [String: Pokemon]
+    ) -> [RankingEntry] {
+        guard !excluded.isEmpty else { return entries }
+        let keys = Set(excluded.map { Pokemon.formKey(speciesId: $0.speciesId, shadow: $0.shadow) })
+        return entries.filter { entry in
+            let shadow = RankingsStore.resolve(speciesId: entry.speciesId, pokemonById: pokemonById)?.shadow ?? false
+            return !keys.contains(Pokemon.formKey(speciesId: entry.speciesId, shadow: shadow))
+        }
+    }
+
     /// How many coverage-seeded teams enter the round robin (slider-driven;
     /// the tournament fights fieldSize·(fieldSize−1)/2 battles).
     var fieldSize: Int = 500 { didSet { persistSettings() } }
@@ -297,6 +334,7 @@ final class TeamFinderModel {
         var method: String
         var lockedMembers: [TeamMember]
         var strongAgainstMembers: [TeamMember]
+        var excludedMembers: [TeamMember]?
         var fieldSize: Int
         var restarts: Int
         var exploreAlternateMovesets: Bool
@@ -327,6 +365,7 @@ final class TeamFinderModel {
         let settings = Settings(
             format: format, poolSize: poolSize, metaSize: metaSize, method: method.rawValue,
             lockedMembers: lockedMembers, strongAgainstMembers: strongAgainstMembers,
+            excludedMembers: excludedMembers,
             fieldSize: fieldSize, restarts: restarts,
             exploreAlternateMovesets: exploreAlternateMovesets,
             useObservedMeta: useObservedMeta,
@@ -353,6 +392,7 @@ final class TeamFinderModel {
         method = saved.method == "combined" ? .gradeCheck : (Method(rawValue: saved.method) ?? .tournament)
         lockedMembers = saved.lockedMembers
         strongAgainstMembers = saved.strongAgainstMembers
+        excludedMembers = saved.excludedMembers ?? []
         fieldSize = saved.fieldSize
         restarts = saved.restarts
         exploreAlternateMovesets = saved.exploreAlternateMovesets
@@ -441,6 +481,7 @@ final class TeamFinderModel {
                       "obs\(useObservedMeta)", "skill\(playSkill.rawValue)",
                       "locked\(lockedMembers.count)", "strong\(strongAgainstMembers.count)"]
         }
+        if !excludedMembers.isEmpty { parts.append("excl\(excludedMembers.count)") }
         if simulatesBattles { parts.append(battleSignature) }
         return parts.joined(separator: "|")
     }
@@ -557,6 +598,7 @@ final class TeamFinderModel {
         let exploreAlternateMovesets = exploreAlternateMovesets
         let lockedMembers = lockedMembers
         let strongAgainstMembers = strongAgainstMembers
+        let excludedMembers = excludedMembers
         let observedMeta = (isMyMeta || (method == .aiOptimizer && useObservedMeta))
             ? observedThreats(using: store, focus: isMyMeta) : []
         let broadFieldSize = broadFieldSize
@@ -582,14 +624,20 @@ final class TeamFinderModel {
 
         searchTask = Task {
             await withTaskExecutorPreference(CoreLimit.executor) {
-                let entries: [RankingEntry]
+                let rankedEntries: [RankingEntry]
                 do {
-                    entries = try await DataService.shared.rankings(for: format)
+                    rankedEntries = try await DataService.shared.rankings(for: format)
                 } catch {
                     if !Task.isCancelled { phase = .failed(error.localizedDescription) }
                     return
                 }
                 if Task.isCancelled { return }
+                // The optimizer keeps excluded Pokémon in its pool (as opponents) and
+                // bars them from teams itself; the other methods have no separate
+                // opponent field, so they just drop them.
+                let entries = method.isOptimizer
+                    ? rankedEntries
+                    : Self.removing(excludedMembers, from: rankedEntries, pokemonById: pokemonById)
 
                 let pool = Self.buildPool(
                     entries: entries, poolSize: poolSize,
@@ -636,6 +684,7 @@ final class TeamFinderModel {
                         movesById: movesById,
                         lockedMembers: lockedMembers,
                         strongAgainstMembers: strongAgainstMembers,
+                        excludedMembers: excludedMembers,
                         observedMeta: observedMeta,
                         observedFocus: isMyMeta,
                         observedConfidence: observedConfidence,

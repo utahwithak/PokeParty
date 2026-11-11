@@ -146,6 +146,9 @@ nonisolated enum TeamOptimizer {
         movesById: [String: Move],
         lockedMembers: [TeamMember] = [],
         strongAgainstMembers: [TeamMember] = [],
+        /// Species/forms that may not join a searched team. They stay in the
+        /// pool, so they still count in the meta field the teams are scored against.
+        excludedMembers: [TeamMember] = [],
         observedMeta: [ObservedThreat] = [],
         observedFocus: Bool = false,
         /// 0…1 trust in `observedMeta` (from how many battles back it); scales
@@ -171,6 +174,8 @@ nonisolated enum TeamOptimizer {
             exploreAlternateMovesets: exploreAlternateMovesets, lockedMembers: lockedMembers)
         let pool = built.pool
         let lockedIndices = built.lockedIndices
+        let excluded = excludedPoolIndices(
+            pool: pool, excluded: excludedMembers, pokemonById: pokemonById, keeping: lockedIndices)
         guard pool.count >= 3 else {
             return Results(teams: [], completedClimbers: 0, totalClimbers: restarts, isComplete: true)
         }
@@ -211,7 +216,8 @@ nonisolated enum TeamOptimizer {
             : nil
         if Task.isCancelled { return empty }
 
-        let starts = generateStarts(pool: pool, count: restarts, lockedIndices: lockedIndices)
+        let starts = generateStarts(
+            pool: pool, count: restarts, lockedIndices: lockedIndices, excluded: excluded)
         guard !starts.isEmpty else {
             return Results(teams: [], completedClimbers: 0, totalClimbers: 0, isComplete: true)
         }
@@ -238,7 +244,8 @@ nonisolated enum TeamOptimizer {
                     guard !Task.isCancelled else { return nil }
                     return await climb(
                         start: start, env: env,
-                        prefilter: prefilterData, lockedCount: lockedIndices.count)
+                        prefilter: prefilterData, lockedCount: lockedIndices.count,
+                        excluded: excluded)
                 }
             }
             for await result in group {
@@ -389,6 +396,20 @@ nonisolated enum TeamOptimizer {
         let lockedIndices = Array(pool.count..<(pool.count + lockedCandidates.count))
         pool.append(contentsOf: lockedCandidates)
         return (pool, lockedIndices)
+    }
+
+    /// Pool indices of candidates matching an excluded species/form, so the
+    /// search can keep them off teams while they stay in the meta field.
+    /// Locked picks are never excluded.
+    static func excludedPoolIndices(
+        pool: [Candidate], excluded: [TeamMember], pokemonById: [String: Pokemon], keeping locked: [Int]
+    ) -> Set<Int> {
+        guard !excluded.isEmpty else { return [] }
+        let keys = Set(excluded.map { Pokemon.formKey(speciesId: $0.speciesId, shadow: $0.shadow) })
+        return Set(pool.indices.filter { i in
+            !locked.contains(i)
+                && keys.contains(Pokemon.formKey(speciesId: pool[i].member.speciesId, shadow: pool[i].shadow))
+        })
     }
 
     /// A hill-climbable candidate for a user-locked Pokémon: uses its bench
@@ -739,12 +760,16 @@ nonisolated enum TeamOptimizer {
     /// `lockedIndices` is non-empty (1–2 user-locked Pokémon), those pool
     /// indices occupy the first slots of every start and only the remaining
     /// slot(s) vary — the climb below then only searches for partners.
-    private static func generateStarts(pool: [Candidate], count: Int, lockedIndices: [Int] = []) -> [[Int]] {
-        guard !lockedIndices.isEmpty else { return generateUnlockedStarts(pool: pool, count: count) }
+    private static func generateStarts(
+        pool: [Candidate], count: Int, lockedIndices: [Int] = [], excluded: Set<Int> = []
+    ) -> [[Int]] {
+        guard !lockedIndices.isEmpty else {
+            return generateUnlockedStarts(pool: pool, count: count, excluded: excluded)
+        }
 
         let lockedCandidates = lockedIndices.map { pool[$0] }
         var firstByDex: [Int: Int] = [:]
-        for (i, c) in pool.enumerated() where !c.isAlternateMoveset {
+        for (i, c) in pool.enumerated() where !c.isAlternateMoveset && !excluded.contains(i) {
             if firstByDex[c.dex] == nil { firstByDex[c.dex] = i }
         }
         let unique = firstByDex.values.sorted().filter { !lockedIndices.contains($0) }
@@ -778,9 +803,11 @@ nonisolated enum TeamOptimizer {
         return starts
     }
 
-    private static func generateUnlockedStarts(pool: [Candidate], count: Int) -> [[Int]] {
+    private static func generateUnlockedStarts(
+        pool: [Candidate], count: Int, excluded: Set<Int> = []
+    ) -> [[Int]] {
         var firstByDex: [Int: Int] = [:]
-        for (i, c) in pool.enumerated() where !c.isAlternateMoveset {
+        for (i, c) in pool.enumerated() where !c.isAlternateMoveset && !excluded.contains(i) {
             if firstByDex[c.dex] == nil { firstByDex[c.dex] = i }
         }
         let unique = firstByDex.values.sorted()  // pool indices of recommended candidates
@@ -825,7 +852,8 @@ nonisolated enum TeamOptimizer {
         start: [Int],
         env: EvalEnv,
         prefilter: PrefilterData?,
-        lockedCount: Int = 0
+        lockedCount: Int = 0,
+        excluded: Set<Int> = []
     ) async -> OptimizedTeam {
         let pool = env.pool
         var current = start
@@ -845,7 +873,7 @@ nonisolated enum TeamOptimizer {
             for position in lockedCount..<3 {
                 let others = (0..<3).filter { $0 != position }.map { pool[current[$0]] }
                 for ci in 0..<pool.count {
-                    if current.contains(ci) { continue }
+                    if current.contains(ci) || excluded.contains(ci) { continue }
                     guard others.allSatisfy({ distinct(pool[ci], $0) }) else { continue }
                     var neighbor = current
                     neighbor[position] = ci

@@ -42,6 +42,8 @@ final class OpponentScreenStream: NSObject, SCContentSharingPickerObserver {
 
     @ObservationIgnored private var stream: SCStream?
     @ObservationIgnored private var relay: StreamRelay?
+    /// Bumped on every stop, so a stopped stream's late callbacks can be told apart from the current one's.
+    @ObservationIgnored private var generation = 0
 
     // MARK: - Control
 
@@ -56,6 +58,7 @@ final class OpponentScreenStream: NSObject, SCContentSharingPickerObserver {
     }
 
     func stop() async {
+        generation += 1
         let current = stream
         stream = nil
         relay = nil
@@ -81,6 +84,7 @@ final class OpponentScreenStream: NSObject, SCContentSharingPickerObserver {
 
     private func start(with filter: SCContentFilter) async {
         await stop()
+        let generation = self.generation
 
         let relay = StreamRelay(
             onReading: { [weak self] reading, icons, lines in
@@ -97,8 +101,10 @@ final class OpponentScreenStream: NSObject, SCContentSharingPickerObserver {
             },
             onStop: { [weak self] message in
                 Task { @MainActor in
-                    self?.isStreaming = false
-                    if let message { self?.errorMessage = message }
+                    // A stream that was already replaced or stopped can report its failure late.
+                    guard let self, self.generation == generation else { return }
+                    self.isStreaming = false
+                    if let message { self.errorMessage = message }
                 }
             })
 
@@ -109,6 +115,7 @@ final class OpponentScreenStream: NSObject, SCContentSharingPickerObserver {
             self.stream = stream
             self.relay = relay
             isStreaming = true
+            errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -180,6 +187,24 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
     private var shieldFilter = ShieldReadingFilter()
     private var lastResultCheck: TimeInterval = 0
     private var lastResultSent: TimeInterval = -100
+    // Pacing of the full-screen OCR, only touched on `queue`.
+    private var nextTextPass: TimeInterval = 0
+    private var lastTextPass: TimeInterval = 0
+    private var textSignature: [UInt8]?
+    /// Smoothed duration of the full-screen OCR pass, so slow phones back off.
+    private var textPassCost: TimeInterval = 0
+    #if DEBUG
+    private var passCount = 0
+    private var lastTextLog: TimeInterval = 0
+    private var framesIn = 0
+    private var stageTotal: [String: TimeInterval] = [:]
+    private var stageMax: [String: TimeInterval] = [:]
+    private var framesHandled = 0
+    private var handlerTotal: TimeInterval = 0
+    private var handlerMax: TimeInterval = 0
+    private var skippedForCost = 0
+    private var skippedUnchanged = 0
+    #endif
 
     /// A label that stays up across several frames is one hit's worth of news.
     private static let flashRepeatInterval: TimeInterval = 0.8
@@ -191,6 +216,13 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
     private static let resultRepeatInterval: TimeInterval = 8
     /// The same line of text, still on screen, isn't news again.
     private static let textRepeatInterval: TimeInterval = 2.5
+    /// The next full-screen OCR waits this many times the last one's duration, so a
+    /// slow phone spends its time on the quick readers instead of dropping frames.
+    private static let textPassBackoff = 1.5
+    /// A full-frame signature this close to the last OCR'd frame's skips the pass...
+    private static let textChangeThreshold = 0.25
+    /// ...but never for longer than this, in case the change was too small to sample.
+    private static let textMaxStale: TimeInterval = 1.5
 
     init(onReading: @escaping @Sendable (OpponentReading?, [IconColor], [String]) -> Void,
          onAppraisalFrame: @escaping @Sendable (CGImage) -> Void,
@@ -204,6 +236,20 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         self.onStop = onStop
     }
 
+    /// Runs `body`, adding its duration to the DEBUG log's per-stage breakdown.
+    @inline(__always)
+    private func timed<T>(_ stage: String, _ body: () -> T) -> T {
+        #if DEBUG
+        let start = ProcessInfo.processInfo.systemUptime
+        defer {
+            let cost = ProcessInfo.processInfo.systemUptime - start
+            stageTotal[stage, default: 0] += cost
+            stageMax[stage] = max(stageMax[stage] ?? 0, cost)
+        }
+        #endif
+        return body()
+    }
+
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen,
               let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
@@ -214,14 +260,37 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         else { return }
 
         let now = ProcessInfo.processInfo.systemUptime
+        #if DEBUG
+        framesIn += 1
+        #endif
         guard now - lastHandled >= Self.minimumInterval else { return }
         lastHandled = now
+        #if DEBUG
+        framesHandled += 1
+        defer {
+            let cost = ProcessInfo.processInfo.systemUptime - now
+            handlerTotal += cost
+            handlerMax = max(handlerMax, cost)
+            if now - lastTextLog >= 5 {
+                lastTextLog = now
+                print(String(format: "frames: %d delivered, %d handled · handler %.0f ms avg, %.0f ms max · OCR %.0f ms avg, %d passes, skipped %d (busy) %d (unchanged)",
+                             framesIn, framesHandled, handlerTotal / Double(max(framesHandled, 1)) * 1000, handlerMax * 1000,
+                             textPassCost * 1000, passCount, skippedForCost, skippedUnchanged))
+                let stages = stageTotal.keys.sorted().map {
+                    String(format: "%@ %.0f/%.0f", $0, stageTotal[$0]! / Double(max(framesHandled, 1)) * 1000, stageMax[$0]! * 1000)
+                }.joined(separator: " · ")
+                print("  stages (avg per frame/max ms): " + stages)
+                stageTotal = [:]; stageMax = [:]
+                framesIn = 0; framesHandled = 0; handlerTotal = 0; handlerMax = 0
+            }
+        }
+        #endif
 
         // The header and icon readers sample BGRA pixels, and iOS doesn't let the
         // capture be configured for that, so convert when the frame arrives as YUV.
-        let bgra = bgraBuffer(for: pixelBuffer)
-        updateHeaderShift(bgra ?? pixelBuffer)
-        readBattleState(bgra ?? pixelBuffer, sourceFormat: CVPixelBufferGetPixelFormatType(pixelBuffer), now: now)
+        let bgra = timed("convert") { bgraBuffer(for: pixelBuffer) }
+        timed("shift") { updateHeaderShift(bgra ?? pixelBuffer) }
+        timed("battle") { readBattleState(bgra ?? pixelBuffer, sourceFormat: CVPixelBufferGetPixelFormatType(pixelBuffer), now: now) }
 
         // Skip OCR on an unchanged panel — unless a first read is still
         // waiting on its confirmation, which needs another look at the same pixels.
@@ -233,7 +302,7 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         }
         lastSignature = signature
 
-        let reading = reader.read(pixelBuffer, yShift: headerShift)
+        let reading = timed("oppOCR") { reader.read(pixelBuffer, yShift: headerShift) }
         panelHasText = reading != nil
         guard let reading else {
             if !panelHasText { checkForAppraisal(pixelBuffer, now: now) }
@@ -245,7 +314,7 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         lastReadable = now
 
         // Icons are only sampled once there's a name to attach them to.
-        let icons = OpponentTypeReader.read(bgra ?? pixelBuffer, yShift: headerShift)
+        let icons = timed("oppIcons") { OpponentTypeReader.read(bgra ?? pixelBuffer, yShift: headerShift) }
         if reading == published {
             candidate = nil
             onReading(nil, icons, reader.lastRawLines)
@@ -288,8 +357,8 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
     /// snapshot when something changed. Frames that show neither the header nor
     /// an HP bar aren't a battle and produce nothing.
     private func readBattleState(_ pixelBuffer: CVPixelBuffer, sourceFormat: OSType, now: TimeInterval) {
-        let header = BattleHeaderReader.read(pixelBuffer, yShift: headerShift)
-        let hp = HPBarReader.read(pixelBuffer)
+        let header = timed("header") { BattleHeaderReader.read(pixelBuffer, yShift: headerShift) }
+        let hp = timed("hpBars") { HPBarReader.read(pixelBuffer) }
 
         #if DEBUG
         if now - lastHeaderDebug >= 1 {
@@ -312,12 +381,12 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         if myName == nil || signature == nil || mySignature == nil
             || OpponentStripReader.difference(signature!, mySignature!) >= Self.changeThreshold {
             mySignature = signature
-            myName = myReader.read(pixelBuffer, yShift: headerShift)?.name ?? myName
+            myName = timed("myOCR") { myReader.read(pixelBuffer, yShift: headerShift)?.name } ?? myName
         }
-        let icons = OpponentTypeReader.read(pixelBuffer, slots: OpponentTypeReader.mySlots, yShift: headerShift)
+        let icons = timed("myIcons") { OpponentTypeReader.read(pixelBuffer, slots: OpponentTypeReader.mySlots, yShift: headerShift) }
 
-        let text = textReader.read(pixelBuffer)
-        lastBandLines = text.lines
+        let text = readText(pixelBuffer, now: now) ?? BattleText(flash: nil, flashY: nil, fainted: [], result: nil, screenLines: [])
+        if !text.screenLines.isEmpty { lastBandLines = text.lines }
         var result = text.result
         if result != nil {
             if now - lastResultSent < Self.resultRepeatInterval { result = nil } else { lastResultSent = now }
@@ -365,14 +434,50 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
         }
     }
 
+    /// The full-screen OCR, paced to the phone: it's skipped while the last pass's
+    /// cost says it can't keep up, and when the frame looks the same as the last
+    /// one read. Returns nil when skipped. One-off events (flashes, faints) only
+    /// matter on the frame they appear, so a skipped pass loses nothing but latency.
+    private func readText(_ pixelBuffer: CVPixelBuffer, now: TimeInterval) -> BattleText? {
+        guard now >= nextTextPass else {
+            #if DEBUG
+            skippedForCost += 1
+            #endif
+            return nil
+        }
+        let signature = OpponentStripReader.signature(of: pixelBuffer, region: CGRect(x: 0, y: 0, width: 1, height: 1))
+        if let signature, let last = textSignature, now - lastTextPass < Self.textMaxStale,
+           OpponentStripReader.difference(signature, last) < Self.textChangeThreshold {
+            #if DEBUG
+            skippedUnchanged += 1
+            #endif
+            return nil
+        }
+        textSignature = signature
+        lastTextPass = now
+
+        let start = ProcessInfo.processInfo.systemUptime
+        let text = timed("textOCR") { textReader.read(pixelBuffer) }
+        let cost = ProcessInfo.processInfo.systemUptime - start
+        textPassCost = textPassCost == 0 ? cost : textPassCost * 0.6 + cost * 0.4
+        // No floor at the frame interval: frames are already spaced by `minimumInterval`, and
+        // a floor made frames arriving a few ms early get skipped.
+        nextTextPass = start + textPassCost * Self.textPassBackoff
+
+        #if DEBUG
+        passCount += 1
+        #endif
+        return text
+    }
+
     /// Looks for the "YOU WIN!" / "Good Effort" screen while no battle header is
     /// showing, and reports it as a snapshot carrying only the result. Throttled,
     /// since it OCRs the frame.
     private func checkForResult(_ pixelBuffer: CVPixelBuffer, now: TimeInterval) {
         guard now - lastResultCheck >= Self.resultCheckInterval else { return }
         lastResultCheck = now
-        let text = textReader.read(pixelBuffer)
-        guard let result = text.result, now - lastResultSent >= Self.resultRepeatInterval else { return }
+        guard let text = readText(pixelBuffer, now: now),
+              let result = text.result, now - lastResultSent >= Self.resultRepeatInterval else { return }
         lastResultSent = now
         onSnapshot(BattleSnapshot(
             myName: nil, myIcons: [], myShields: nil, opponentShields: nil, myAlive: nil, opponentAlive: nil,
@@ -384,7 +489,7 @@ nonisolated private final class StreamRelay: NSObject, SCStreamOutput, SCStreamD
     private func checkForAppraisal(_ pixelBuffer: CVPixelBuffer, now: TimeInterval) {
         guard now - lastAppraisalCheck >= Self.appraisalInterval else { return }
         lastAppraisalCheck = now
-        guard appraisalDetector.isAppraisalScreen(pixelBuffer) else { return }
+        guard timed("appraisal", { appraisalDetector.isAppraisalScreen(pixelBuffer) }) else { return }
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         guard let image = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
         onAppraisalFrame(image)

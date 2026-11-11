@@ -165,9 +165,13 @@ struct TeamLeadsPanel: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let lead = order?.first, members.indices.contains(lead) {
-                leadMatchups(leadIndex: lead)
-            } else if members.count < 3 {
+            // Your lead is whoever is first in the team order, not whoever the role
+            // scores would suggest — so the threats listed are the ones that beat
+            // the Pokémon actually in the lead slot.
+            if !members.isEmpty {
+                leadMatchups(leadIndex: 0)
+            }
+            if members.count < 3 {
                 Text("Add three Pokémon for a suggested lead, switch and closer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

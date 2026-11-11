@@ -153,6 +153,15 @@ nonisolated struct Pokemon: Decodable, Identifiable, Hashable {
         return nil
     }
 
+    /// Identity of a species *and form*, so a picked Machoke with the shadow
+    /// flag on matches the ranking/candidate entry "machoke_shadow" (shadows
+    /// are separate gamemaster entries) but not regular Machoke.
+    static func formKey(speciesId: String, shadow: Bool) -> String {
+        let isShadowId = speciesId.hasSuffix("_shadow")
+        let base = isShadowId ? String(speciesId.dropLast("_shadow".count)) : speciesId
+        return "\(base)|\(shadow || isShadowId)"
+    }
+
     /// Resolves a ranking-entry species id to its species + shadow flag.
     /// Shadow Pokémon are their own gamemaster entries (tagged "shadow");
     /// falls back to stripping a "_shadow" suffix if the entry is ever missing.

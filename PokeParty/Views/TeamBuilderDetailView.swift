@@ -446,7 +446,9 @@ struct TeamBuilderDetailView: View {
                 ? member.speciesId + "_shadow" : member.speciesId
             let entry = store.entry(id: rankingId) ?? store.entry(id: member.speciesId)
             return TeamInsightMember(
-                name: species.speciesName + (member.shadow ? " (Shadow)" : ""),
+                // A shadow species' own name may already say "(Shadow)".
+                name: species.speciesName
+                    + (member.shadow && !species.speciesName.hasSuffix("(Shadow)") ? " (Shadow)" : ""),
                 types: species.types.filter { $0 != "none" },
                 roles: RoleOrder.Scores(entry?.scores))
         }

@@ -90,7 +90,7 @@ struct OpponentColumn: View {
                     }
                     HStack(spacing: 4) {
                         speciesTitle(member: member, species: species)
-                        if member.shadow { ShadowBadge() }
+                        if member.shadow || species.isShadow { ShadowBadge() }
                     }
                 }
                 Spacer()
@@ -145,7 +145,8 @@ struct OpponentColumn: View {
 
     /// The species name. Its other forms are shown as chips under the type badges.
     private func speciesTitle(member: TeamMember, species: Pokemon) -> some View {
-        Text(species.speciesName)
+        // The flame badge already says Shadow.
+        Text(species.speciesName.replacingOccurrences(of: " (Shadow)", with: ""))
             .font(.headline)
             .lineLimit(1)
             .minimumScaleFactor(0.7)
