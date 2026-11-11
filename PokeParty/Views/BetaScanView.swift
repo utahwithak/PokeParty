@@ -36,11 +36,33 @@ extension ScreenScanner {
     /// The iPhone Mirroring window's current on-screen frame, in the same
     /// global-display coordinate space `CGEventPost` expects.
     private func mirroringWindowFrame() async throws -> CGRect {
+        try await mirroringWindowTarget().frame
+    }
+
+    /// The window's frame plus the app that owns it.
+    private func mirroringWindowTarget() async throws -> (frame: CGRect, app: NSRunningApplication?) {
         let content = try await SCShareableContent.current
         guard let window = findMirroringWindow(in: content) else {
             throw ScanError.windowNotFound
         }
-        return window.frame
+        let app = window.owningApplication.flatMap { NSRunningApplication(processIdentifier: $0.processID) }
+        return (window.frame, app)
+    }
+
+    /// Brings `app` to the front and waits until it's frontmost. Goes
+    /// through `NSWorkspace.openApplication` because, unlike
+    /// `NSRunningApplication.activate`, it works while PokeParty itself is in
+    /// the background.
+    private func bringToFront(_ app: NSRunningApplication) async {
+        guard let url = app.bundleURL else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        for _ in 0..<20 where NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        // Let the window finish raising before events land on it.
+        try? await Task.sleep(for: .milliseconds(100))
     }
 
     /// Whether this process has the Accessibility permission needed to post
@@ -53,23 +75,33 @@ extension ScreenScanner {
         AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": prompt] as CFDictionary)
     }
 
-    /// True when the mouse cursor is over the iPhone Mirroring window. Each
-    /// swipe relocates the real system cursor, so auto-advance pauses once
-    /// the user's mouse has moved elsewhere.
-    func isMouseOverMirroringWindow() async -> Bool {
-        guard let frame = try? await mirroringWindowFrame() else { return false }
-        let location = CGEvent(source: nil)?.location ?? .zero
-        return frame.contains(location)
-    }
-
     /// Swipes from the mid-right toward the mid-left of the mirroring window
     /// — the gesture Pokémon GO's detail screen uses to advance to the next
     /// Pokémon. Vertically centered so the drag lands on the card itself
-    /// rather than a header panel that can swallow it as a tap.
+    /// rather than a header panel that can swallow it as a tap. Synthetic
+    /// events land on whichever window is under the cursor, so if iPhone
+    /// Mirroring isn't frontmost it's raised for the swipe and the app the
+    /// user was in is brought back afterward.
     func swipeToNextPokemon() async throws {
         guard hasAccessibilityAccess(prompt: true) else {
             throw BetaScanError.accessibilityDenied
         }
+        let target = try await mirroringWindowTarget()
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        let raised = if let app = target.app, previousApp?.processIdentifier != app.processIdentifier {
+            true
+        } else {
+            false
+        }
+        if raised, let app = target.app {
+            await bringToFront(app)
+        }
+        defer {
+            if raised, let previousApp {
+                Task { await bringToFront(previousApp) }
+            }
+        }
+        // Re-read the frame: raising the window can move or resize it.
         let frame = try await mirroringWindowFrame()
         let y = frame.minY + frame.height * 0.5
         let start = CGPoint(x: frame.minX + frame.width * 0.85, y: y)
@@ -79,10 +111,22 @@ extension ScreenScanner {
 
     /// Posts a mouseDown at `start`, interpolated mouseDragged events toward
     /// `end`, then a mouseUp — indistinguishable to the receiving app from a
-    /// real trackpad/mouse drag.
+    /// real trackpad/mouse drag. iPhone Mirroring ignores events posted
+    /// straight to its process (`postToPid`), so the drag goes through the
+    /// HID tap and moves the real cursor; it's decoupled from the mouse
+    /// while the drag runs and warped back to where it was afterward.
     private func postDrag(from start: CGPoint, to end: CGPoint, steps: Int = 12) async throws {
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw BetaScanError.inputSynthesisFailed
+        }
+        source.localEventsSuppressionInterval = 0
+        let originalLocation = CGEvent(source: nil)?.location
+        CGAssociateMouseAndMouseCursorPosition(0)
+        defer {
+            if let originalLocation {
+                CGWarpMouseCursorPosition(originalLocation)
+            }
+            CGAssociateMouseAndMouseCursorPosition(1)
         }
         func post(_ type: CGEventType, at point: CGPoint) throws {
             guard let event = CGEvent(
@@ -215,10 +259,6 @@ final class AutoAdvanceModel {
             return
         }
         guard scan.bestRankHit(store: store) != nil else { return }
-        guard await scanner.isMouseOverMirroringWindow() else {
-            pausedReason = "Move the mouse back over iPhone Mirroring to resume auto-advance."
-            return
-        }
         pausedReason = nil
         if !(await performSwipe()) {
             // Swiping is broken (e.g. permission not granted) — stop
