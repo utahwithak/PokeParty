@@ -167,6 +167,16 @@ final class BattleHistoryStore {
         save()
     }
 
+    /// The coach's advice for the matchup on the field, written into the log.
+    func observeCoach(_ lines: [CoachNarrator.Line], _ observation: BattleObservation, team: [TeamMember],
+                      opponents: [TeamMember], at time: Date = Date()) {
+        guard let index = battles.firstIndex(where: { $0.id == currentId }) else { return }
+        recorder.observeCoach(lines, now: observation, team: team.map(\.speciesId),
+                              opponents: opponents.map(\.speciesId), at: time)
+        battles[index].events = recorder.events
+        save()
+    }
+
     /// The result screen said who won. Counts unless the player already marked
     /// the game by hand. Returns the game's id when this is news worth a review
     /// (a changed result, or one not yet reviewed).

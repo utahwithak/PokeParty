@@ -70,9 +70,6 @@ final class BattleCoachModel {
     /// The shield call for the latest charged move they threw, and when.
     private(set) var incomingThrow: ThrowAlert.Incoming?
     private(set) var incomingThrowAt: TimeInterval = 0
-    /// The shield call for each charged move their Pokémon on the field might throw,
-    /// ready before any of them goes off.
-    private(set) var shieldPlan: [ThrowAlert.Incoming] = []
 
     /// Every game seen, grouped into sets; the one in progress is logged live.
     let history: BattleHistoryStore
@@ -106,8 +103,6 @@ final class BattleCoachModel {
 
     /// The script for the lead matchup — set only while it's still the lead.
     private(set) var leadPlan: LeadCoach.Plan?
-    /// Who the opponent is likely holding back, given what they've shown.
-    private(set) var backLine: [BackLineGuess.Prediction] = []
     /// Whether the lead matchup is still on: the leads haven't swapped or fainted.
     private(set) var inLead = false
     /// Shields, endgame prep and rules of thumb for after the lead.
@@ -120,8 +115,15 @@ final class BattleCoachModel {
     private var midTask: Task<Void, Never>?
     private var leadKey: LeadKey?
     private var leadTask: Task<Void, Never>?
-    private var backLineKey: BackLineKey?
-    private var backLineTask: Task<Void, Never>?
+
+    // What the coach writes into the log (see `narrate`).
+    /// What `refresh` is working from, for the entries written when a sim lands later.
+    private var narration: (team: [TeamMember], opponents: [TeamMember], store: RankingsStore)?
+    /// The matchup (your active, their active) that `advice` and `midInsight` were computed for.
+    private var adviceMatchup: String?
+    private var midInsightMatchup: String?
+    /// The matchup and call last written to the log, so the same one isn't written twice.
+    private var lastNarrated: String?
     /// Meta pool for filling unrevealed opponent slots, per format id.
     private var poolCache: [String: [TeamFinder.Candidate]] = [:]
 
@@ -158,7 +160,6 @@ final class BattleCoachModel {
         seenOpponentMoves = [:]
         tempo = TempoTracker()
         incomingThrow = nil
-        shieldPlan = []
         staleFaints = Set(lastFaintMessages)
         myActiveEstablished = false
         opponentActiveEstablished = false
@@ -175,9 +176,9 @@ final class BattleCoachModel {
         midKey = nil
         midInsight = nil
         midGame = nil
-        backLineTask?.cancel()
-        backLineKey = nil
-        backLine = []
+        adviceMatchup = nil
+        midInsightMatchup = nil
+        lastNarrated = nil
     }
 
     /// Deletes a game. If it was the one in progress, the opponents still on
@@ -317,14 +318,6 @@ final class BattleCoachModel {
             myActiveEstablished = true
         }
 
-        // HP of the two Pokémon on the field, remembered per Pokémon.
-        if let hp = snapshot.myHP, team.indices.contains(updated.myActive) {
-            updated.myHP[updated.myActive] = hp
-        }
-        if let hp = snapshot.opponentHP, opponents.indices.contains(updated.opponentActive) {
-            updated.opponentHP[updated.opponentActive] = hp
-        }
-
         if updated != inputs { inputs = updated }
 
         // The result screen is the word on who won; it beats a guess from the faint count.
@@ -377,26 +370,6 @@ final class BattleCoachModel {
         else { return }
         incomingThrow = alert
         incomingThrowAt = clock
-    }
-
-    /// Works out, ahead of time, whether to shield each charged move their active
-    /// Pokémon has: the sim's call against your active Pokémon at its current HP.
-    private func updateShieldPlan(team: [TeamMember], opponents: [TeamMember], store: RankingsStore) {
-        var plan: [ThrowAlert.Incoming] = []
-        if team.indices.contains(inputs.myActive), !inputs.fainted.contains(inputs.myActive),
-           opponents.indices.contains(inputs.opponentActive), !inputs.opponentFainted.contains(inputs.opponentActive) {
-            let theirs = Self.applying(seen: seenOpponentMoves, to: [opponents[inputs.opponentActive]])[0]
-            if let attacker = battler(theirs, shields: inputs.opponentShields, store: store),
-               let defender = battler(team[inputs.myActive], shields: inputs.myShields, store: store) {
-                plan = theirs.chargedMoveIds.compactMap { moveId in
-                    ThrowAlert.incoming(
-                        moveId: moveId, attacker: attacker, defender: defender,
-                        defenderShields: inputs.myShields, attackerShields: inputs.opponentShields,
-                        defenderHP: inputs.myHP[inputs.myActive], attackerHP: inputs.opponentHP[inputs.opponentActive])
-                }
-            }
-        }
-        if plan != shieldPlan { shieldPlan = plan }
     }
 
     /// Brings the tempo tracker in line with who's on the field. Safe to call
@@ -579,7 +552,7 @@ final class BattleCoachModel {
         runTask?.cancel()
         recordProgress(team: team, opponents: opponents, store: store)
         trackTempo(team: team, opponents: opponents, store: store)
-        updateShieldPlan(team: team, opponents: opponents, store: store)
+        narration = (team, opponents, store)
 
         guard !team.isEmpty else { phase = .needsTeam; advice = nil; return }
         guard !opponents.isEmpty else { phase = .needsOpponent; advice = nil; return }
@@ -682,6 +655,8 @@ final class BattleCoachModel {
             }
             advice = result
             phase = result == nil ? .failed("Couldn't evaluate this situation.") : .ready
+            adviceMatchup = "\(team[active].speciesId)|\(opponents[opponentActive].speciesId)"
+            narrate()
         }
     }
 
@@ -707,12 +682,6 @@ final class BattleCoachModel {
         var opponentHP: [Int: Double]
         /// New sightings of their moves change the call, so they're part of the key.
         var seen: [String: [String]]
-        var format: String
-    }
-
-    private struct BackLineKey: Equatable {
-        var opponents: [String]
-        var opponentAlive: Int
         var format: String
     }
 
@@ -765,6 +734,7 @@ final class BattleCoachModel {
                         opponentTeamSize: opponentAlive, pool: pool, movesById: movesById)
                     if Task.isCancelled { return }
                     leadPlan = plan
+                    narrate()
                 }
             }
         } else if leadKey != nil {
@@ -808,33 +778,81 @@ final class BattleCoachModel {
                     }
                     if Task.isCancelled { return }
                     midInsight = insight
+                    midInsightMatchup = "\(teamIds[myActive])|\(opponentIds[theirActive])"
                     midGame = MidGameCoach.plan(latestSituation ?? situation, insight: insight)
+                    narrate()
                 }
             }
             latestSituation = situation
             // Until the sims land (or after, on a plain HP change) show the rules of thumb.
             midGame = MidGameCoach.plan(situation, insight: midInsight)
         }
+    }
 
-        // Back line: whoever hasn't shown yet.
-        let slots = opponentAlive - opponentIds.count
-        let backKey = BackLineKey(opponents: opponentIds, opponentAlive: opponentAlive, format: format.id)
-        guard backKey != backLineKey else { return }
-        backLineKey = backKey
-        backLineTask?.cancel()
-        guard slots > 0 else { backLine = []; return }
-        backLineTask = Task {
-            guard let opponentTeam = ThreeVThreeBattle.makeTeam(theirs.combatants, stats: theirs.stats, movesById: movesById)
-            else { return }
-            let pool = await pool(for: format, pokemonById: pokemonById)
-            if Task.isCancelled { return }
-            let ids = opponentTeam.map(\.speciesId), types = opponentTeam.map(\.types)
-            let guess = await runDetached(priority: .utility) {
-                BackLineGuess.predict(revealedIds: ids, revealedTypes: types, slots: slots, pool: pool)
-            }
-            if Task.isCancelled { return }
-            backLine = guess
+    // MARK: - The coach in the log
+
+    /// The matchup on the field, as a key: your active and their active species.
+    private func matchupKey(team: [TeamMember], opponents: [TeamMember]) -> String? {
+        guard team.indices.contains(inputs.myActive), opponents.indices.contains(inputs.opponentActive) else { return nil }
+        return "\(team[inputs.myActive].speciesId)|\(opponents[inputs.opponentActive].speciesId)"
+    }
+
+    /// Writes what to do from here into the battle log, in plain words — once per
+    /// matchup, and again if the call for it changes. It waits until every sim behind
+    /// the entry has landed for this exact matchup (the call, and the lead script or
+    /// the bait call), so one matchup doesn't produce a half-finished entry and then
+    /// a second.
+    private func narrate() {
+        guard let narration, phase == .ready, let advice,
+              !inputs.fainted.contains(inputs.myActive), !inputs.opponentFainted.contains(inputs.opponentActive),
+              let matchup = matchupKey(team: narration.team, opponents: narration.opponents),
+              adviceMatchup == matchup
+        else { return }
+        if inLead {
+            guard leadPlan != nil else { return }
+        } else {
+            guard midInsightMatchup == matchup else { return }
         }
+
+        let call = advice.recommended
+        let key = "\(matchup)|\(call.action == .stay ? "stay" : call.pokemonName)"
+        guard key != lastNarrated else { return }
+
+        let (team, opponents, store) = (narration.team, narration.opponents, narration.store)
+        let me = team[inputs.myActive], them = opponents[inputs.opponentActive]
+        let myName = store.name(forSpeciesId: me.speciesId), theirName = store.name(forSpeciesId: them.speciesId)
+
+        var context = CoachNarrator.Context(
+            myName: myName, theirName: theirName,
+            myShields: inputs.myShields, theirShields: inputs.opponentShields)
+        context.lead = inLead ? leadPlan : nil
+        context.action = call.action
+        if call.action != .stay { context.switchName = call.pokemonName }
+        context.backup = advice.options.first { $0.action != .stay && $0.action != call.action }?.pokemonName
+        if !inLead {
+            context.bait = midInsight?.bait
+            context.closer = midGame?.endgame.first { $0.role == .closer && $0.name != myName }?.name
+        }
+        context.timing = timing(me: me, them: them, store: store)
+
+        let lines = CoachNarrator.lines(context)
+        guard !lines.isEmpty else { return }
+        lastNarrated = key
+        history.observeCoach(lines, inputs.observation, team: team, opponents: opponents)
+    }
+
+    /// When to throw your first charged move, from the two fast moves' rhythm and
+    /// who wins a tie. Nil when either fast move can't be read.
+    private func timing(me: TeamMember, them: TeamMember, store: RankingsStore) -> CoachNarrator.Timing? {
+        let theirFastId = observedFastMoves[them.speciesId] ?? them.fastMoveId
+        guard let myFast = store.move(id: me.fastMoveId), let theirFast = store.move(id: theirFastId),
+              let mine = battler(me, shields: inputs.myShields, store: store),
+              let theirs = battler(them, shields: inputs.opponentShields, store: store)
+        else { return nil }
+        let charged = me.chargedMoveIds.compactMap { store.move(id: $0) }
+        return CoachNarrator.timing(
+            myFast: myFast, myCharged: charged, theirFast: theirFast,
+            myAttack: mine.stats.atk, theirAttack: theirs.stats.atk)
     }
 
     private func pool(for format: RankingFormat, pokemonById: [String: Pokemon]) async -> [TeamFinder.Candidate] {

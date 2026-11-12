@@ -28,6 +28,16 @@ import Testing
         #expect(events.map(\.speciesId) == ["azumarill", "registeel"])
     }
 
+    @Test func aFaintMarkedAliveByHandComesOutOfTheLog() {
+        var wrong = BattleObservation(); wrong.opponentFainted = [1]
+        var corrected = BattleObservation(); corrected.opponentFainted = [0]
+
+        let events = record([BattleObservation(), wrong, corrected]).filter { $0.kind == .faint }
+
+        // Altaria was marked fainted by mistake, then taken back for Registeel.
+        #expect(events.map(\.speciesId) == ["registeel"])
+    }
+
     @Test func aSwapByChoiceIsVoluntaryAndAReplacementIsNot() {
         var swapped = BattleObservation(); swapped.myActive = 1
         var fainted = swapped; fainted.myFainted = [1]

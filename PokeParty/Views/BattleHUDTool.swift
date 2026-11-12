@@ -267,9 +267,25 @@ struct BattleHUDDetailView: View {
         .navigationTitle("Battle HUD")
         .onAppear {
             phoneLink.start()
+            // Every snapshot is applied, in order: watching `latestSnapshot` would drop
+            // one that lands in the same UI turn as the next.
+            phoneLink.onSnapshot = { snapshot in
+                coach.apply(snapshot, team: model.members, opponents: opponents, store: store)
+            }
+            #if os(iOS)
+            scan.onSnapshot = { snapshot in
+                coach.apply(snapshot, team: model.members, opponents: opponents, store: store)
+            }
+            #endif
             refresh()
         }
-        .onDisappear { phoneLink.stop() }
+        .onDisappear {
+            phoneLink.stop()
+            phoneLink.onSnapshot = nil
+            #if os(iOS)
+            scan.onSnapshot = nil
+            #endif
+        }
         .onChange(of: coach.inputs) { refresh() }
         .onChange(of: coach.seenOpponentMoves) { refresh() }
         .onChange(of: model.members) { refresh() }
@@ -279,29 +295,17 @@ struct BattleHUDDetailView: View {
         }
         .onChange(of: activeOpponentId) { syncActiveOpponent() }
         .onChange(of: store.format) { refresh() }
-        .onChange(of: phoneLink.latestSnapshot) { _, snapshot in
-            guard let snapshot else { return }
-            coach.apply(snapshot, team: model.members, opponents: opponents, store: store)
-        }
-        #if os(iOS)
-        .onChange(of: scan.latestSnapshot) { _, snapshot in
-            guard let snapshot else { return }
-            coach.apply(snapshot, team: model.members, opponents: opponents, store: store)
-        }
-        #endif
     }
 
-    /// Right-hand column: the coach's call and plans, with the battle log.
+    /// Right-hand column: the coach's call, the switch timers, the battle log (where the
+    /// coach writes what to do for each matchup as the game goes), and the sim's review
+    /// of the game once it's over.
     private var coachContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             CoachBanner(coach: coach)
-            CoachOptionsCard(coach: coach)
-            ShieldPlanCard(coach: coach)
             TempoCard(coach: coach)
-            LeadPlanCard(coach: coach)
-            MidGameCard(coach: coach)
-            BackLineCard(coach: coach)
             BattleLogSection(coach: coach, store: store, selectedId: selectedBattleId)
+            BattleReviewSection(coach: coach, store: store, team: model.members, selectedId: selectedBattleId)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -330,7 +334,6 @@ struct BattleHUDDetailView: View {
                     resetToken: resetToken,
                     faintedOpponents: coach.inputs.opponentFainted,
                     phoneLink: phoneLink)
-                BattleReviewSection(coach: coach, store: store, team: model.members, selectedId: selectedBattleId)
                 BattleInsightsSection(coach: coach, store: store, team: model.members)
                 AttributionFooter()
             }

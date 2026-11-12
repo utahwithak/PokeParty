@@ -58,6 +58,23 @@ nonisolated struct BattleLogRecorder: Sendable {
         func mySpecies(_ index: Int?) -> String? { index.flatMap { team.indices.contains($0) ? team[$0] : nil } }
         func theirSpecies(_ index: Int?) -> String? { index.flatMap { opponents.indices.contains($0) ? opponents[$0] : nil } }
 
+        // A faint taken back (marked alive by hand, because it was read late or against the
+        // wrong Pokémon) comes out of the log, so the correction doesn't leave the mistake behind.
+        if let last {
+            for index in last.myFainted.subtracting(now.myFainted) {
+                if let species = mySpecies(index),
+                   let at = events.lastIndex(where: { $0.kind == .faint && $0.mine && $0.speciesId == species }) {
+                    events.remove(at: at)
+                }
+            }
+            for index in last.opponentFainted.subtracting(now.opponentFainted) {
+                if let species = theirSpecies(index),
+                   let at = events.lastIndex(where: { $0.kind == .faint && !$0.mine && $0.speciesId == species }) {
+                    events.remove(at: at)
+                }
+            }
+        }
+
         // Faints first, so a replacement entering in the same update reads as forced.
         if let last {
             for index in now.myFainted.subtracting(last.myFainted).sorted() {
@@ -158,6 +175,20 @@ nonisolated struct BattleLogRecorder: Sendable {
             speciesId: target.indices.contains(targetIndex) ? target[targetIndex] : nil,
             otherSpeciesId: attacker.indices.contains(attackerIndex) ? attacker[attackerIndex] : nil,
             value: Double(code), myShields: now.myShields, opponentShields: now.opponentShields))
+    }
+
+    /// The coach's advice for the matchup on the field, as a log entry. The same
+    /// advice twice running isn't logged again.
+    mutating func observeCoach(_ lines: [CoachNarrator.Line], now: BattleObservation, team: [String],
+                               opponents: [String], at time: Date = Date()) {
+        let text = lines.map(\.text).joined(separator: " ")
+        if events.last(where: { $0.kind == .coach })?.note == text { return }
+        if start == nil { start = time }
+        events.append(BattleLogEvent(
+            elapsed: time.timeIntervalSince(start ?? time), mine: true, kind: .coach,
+            speciesId: team.indices.contains(now.myActive) ? team[now.myActive] : nil,
+            otherSpeciesId: opponents.indices.contains(now.opponentActive) ? opponents[now.opponentActive] : nil,
+            myShields: now.myShields, opponentShields: now.opponentShields, note: text, coachLines: lines))
     }
 
     /// Whose charged move was logged most recently, if one was within `window`

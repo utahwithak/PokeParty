@@ -25,6 +25,8 @@ nonisolated struct BattleLogEvent: Codable, Hashable, Identifiable, Sendable {
         case bigHit
         /// The "super effective" / "not very effective" label flashed on a hit.
         case effective
+        /// What the coach would do from here, in plain words (`note`).
+        case coach
     }
 
     var id = UUID()
@@ -47,6 +49,11 @@ nonisolated struct BattleLogEvent: Codable, Hashable, Identifiable, Sendable {
     /// Shields (yours, theirs) when this happened.
     var myShields = 2
     var opponentShields = 2
+    /// `coach` only: the advice as plain text.
+    var note: String?
+    /// `coach` only: the same advice as separate lines, each with what it's about. Entries
+    /// from before this existed have only `note`.
+    var coachLines: [CoachNarrator.Line]?
 
     func text(name: (String) -> String, move: (String) -> String = { $0 }) -> String {
         let me = speciesId.map(name) ?? "?"
@@ -75,6 +82,8 @@ nonisolated struct BattleLogEvent: Codable, Hashable, Identifiable, Sendable {
             return (value ?? 0) > 0
                 ? "\(owner) \(me) was hit super effectively"
                 : "\(owner) \(me) resisted a hit"
+        case .coach:
+            return note ?? ""
         }
     }
 }

@@ -39,7 +39,7 @@ nonisolated struct ScreenLine: Codable, Equatable, Sendable {
 
 /// What the phone reads off the battle header on a frame: your active
 /// Pokémon's raw name and type icons, shields and Pokémon left on each side,
-/// and the effectiveness label if one was showing. HP and energy aren't here.
+/// and the effectiveness label if one was showing. HP and energy aren't read.
 nonisolated struct BattleSnapshot: Codable, Equatable, Sendable {
     var myName: String?
     var myIcons: [IconColor]
@@ -49,9 +49,6 @@ nonisolated struct BattleSnapshot: Codable, Equatable, Sendable {
     var myAlive: Int?
     var opponentAlive: Int?
     var flash: EffectivenessFlash?
-    /// HP left on each active Pokémon (0…1), when its bar was found.
-    var myHP: Double?
-    var opponentHP: Double?
     /// Names from "<name> fainted" messages showing on this frame.
     var fainted: [String] = []
     /// Every line of text read off the middle of the screen, each sent once per
@@ -154,6 +151,9 @@ final class PhoneLinkServer {
     private(set) var latest: OpponentDetection?
     /// Newest battle-header reading from the phone.
     private(set) var latestSnapshot: BattleSnapshot?
+    /// Called for every snapshot, in order. `latestSnapshot` only holds the newest, so
+    /// a consumer watching it misses one that lands in the same UI turn as the next.
+    @ObservationIgnored var onSnapshot: (@MainActor (BattleSnapshot) -> Void)?
 
     @ObservationIgnored private var listener: NWListener?
     @ObservationIgnored private var connection: NWConnection?
@@ -222,6 +222,7 @@ final class PhoneLinkServer {
             latest = OpponentDetection(name: name, cp: cp, icons: icons)
         case .snapshot(let snapshot):
             latestSnapshot = snapshot
+            onSnapshot?(snapshot)
         }
     }
 

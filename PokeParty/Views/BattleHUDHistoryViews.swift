@@ -325,8 +325,9 @@ struct BattleLogPanel: View {
     }
 
     private func row(_ event: BattleLogEvent) -> some View {
+        if event.kind == .coach { return AnyView(coachRow(event)) }
         let (icon, color) = style(event)
-        return HStack(spacing: 8) {
+        return AnyView(HStack(spacing: 8) {
             Text(clock(event.elapsed))
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 .frame(width: 40, alignment: .trailing)
@@ -337,6 +338,60 @@ struct BattleLogPanel: View {
             Text("\(event.myShields)–\(event.opponentShields)")
                 .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                 .help("Shields: yours – theirs")
+        })
+    }
+
+    /// The coach's advice: set apart from what happened, so it reads as the
+    /// voice in your ear rather than another event.
+    private func coachRow(_ event: BattleLogEvent) -> some View {
+        // Entries from before the lines were kept separately have only the text.
+        let lines = event.coachLines ?? [CoachNarrator.Line(kind: .call, text: event.note ?? "")]
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Image(systemName: "megaphone.fill").foregroundStyle(.green)
+                Text("Coach").font(.caption.weight(.semibold)).foregroundStyle(.green)
+                Text(clock(event.elapsed))
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                coachLine(line)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// One line of the advice. The call is the headline; the rest each get an icon, so the
+    /// throw, the shield call and the fallback can be found by their symbols.
+    @ViewBuilder
+    private func coachLine(_ line: CoachNarrator.Line) -> some View {
+        if line.kind == .call {
+            Text(line.text)
+                .font(.title3.weight(.bold))
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            let (icon, color) = coachStyle(line.kind)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: icon).foregroundStyle(color).frame(width: 18)
+                Text(line.text)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func coachStyle(_ kind: CoachNarrator.LineKind) -> (String, Color) {
+        switch kind {
+        case .call: return ("megaphone.fill", .green)
+        case .throwMove: return ("bolt.fill", .orange)
+        case .timing: return ("timer", .blue)
+        case .shield: return ("shield.lefthalf.filled", .purple)
+        case .plan: return ("list.bullet", .secondary)
+        case .backup: return ("arrow.triangle.swap", .teal)
+        case .closer: return ("star.fill", .yellow)
         }
     }
 
@@ -349,6 +404,7 @@ struct BattleLogPanel: View {
         case .shield: return ("shield.lefthalf.filled", .purple)
         case .bigHit: return ("bolt.fill", .yellow)
         case .effective: return ((event.value ?? 0) > 0 ? "arrow.up.circle" : "arrow.down.circle", .secondary)
+        case .coach: return ("megaphone.fill", .green)
         }
     }
 

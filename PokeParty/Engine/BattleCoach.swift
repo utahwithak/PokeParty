@@ -211,7 +211,6 @@ nonisolated enum BattleCoach {
                        incumbent: Option.Action? = nil) -> Advice? {
         guard let stay = options.first(where: { $0.action == .stay }) else { return nil }
         let ranked = options.sorted { $0.score > $1.score }
-        let shields = "\(myShields)–\(opponentShields) shields"
 
         let standing = incumbent.flatMap { action in options.first { $0.action == action } } ?? stay
         var chosen = standing
@@ -223,12 +222,14 @@ nonisolated enum BattleCoach {
             let urgent = stay.winRate < urgentWinRate
             return Advice(
                 headline: urgent ? "Switch to \(chosen.pokemonName) now" : "Switch to \(chosen.pokemonName)",
-                detail: "\(percent(chosen.winRate)) win chance with \(chosen.pokemonName) vs \(percent(stay.winRate)) staying in \(stay.pokemonName) (\(shields)).",
+                detail: urgent
+                    ? "\(stay.pokemonName) is losing this one — \(chosen.pokemonName) is the better matchup."
+                    : "\(chosen.pokemonName) is the better matchup than \(stay.pokemonName) here.",
                 recommended: chosen, options: ranked, samples: samples)
         }
         return Advice(
             headline: "Stay in with \(stay.pokemonName)",
-            detail: "No switch beats it clearly — \(percent(stay.winRate)) win chance (\(shields)).",
+            detail: "Nothing on your bench is clearly better here.",
             recommended: stay, options: ranked, samples: samples)
     }
 
@@ -269,10 +270,6 @@ nonisolated enum BattleCoach {
         }
         team.append(contentsOf: filled)
         return team
-    }
-
-    private static func percent(_ value: Double) -> String {
-        "\(Int((value * 100).rounded()))%"
     }
 }
 
